@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"x-ui/database"
 	"x-ui/database/model"
@@ -146,22 +147,29 @@ func (s *TunnelService) AddTunnel(tunnel *model.Tunnel) error {
 	return db.Save(tunnel).Error
 }
 
-func (s *TunnelService) DelTunnel(id int) error {
+func (s *TunnelService) DelTunnel(id int, userId int) error {
 	db := database.GetDB()
-	return db.Delete(model.Tunnel{}, id).Error
+	result := db.Where("id = ? and user_id = ?", id, userId).Delete(model.Tunnel{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return common.NewError("隧道不存在或无权限:", id)
+	}
+	return nil
 }
 
-func (s *TunnelService) GetTunnel(id int) (*model.Tunnel, error) {
+func (s *TunnelService) GetTunnel(id int, userId int) (*model.Tunnel, error) {
 	db := database.GetDB()
 	tunnel := &model.Tunnel{}
-	err := db.Model(model.Tunnel{}).First(tunnel, id).Error
+	err := db.Model(model.Tunnel{}).Where("user_id = ?", userId).First(tunnel, id).Error
 	if err != nil {
 		return nil, err
 	}
 	return tunnel, nil
 }
 
-func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel) error {
+func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	s.normalizeTunnel(tunnel)
 	if err := s.checkTunnel(tunnel); err != nil {
 		return err
@@ -174,7 +182,7 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel) error {
 		return common.NewError("本地监听端口已存在:", tunnel.ListenPort)
 	}
 
-	oldTunnel, err := s.GetTunnel(tunnel.Id)
+	oldTunnel, err := s.GetTunnel(tunnel.Id, userId)
 	if err != nil {
 		return err
 	}
@@ -204,19 +212,101 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel) error {
 	return db.Save(oldTunnel).Error
 }
 
+func (s *TunnelService) genXrayInboundConfig(tunnel *model.Tunnel) (*xray.InboundConfig, error) {
+	listen := tunnel.Listen
+	if listen != "" {
+		listen = fmt.Sprintf("\"%v\"", listen)
+	}
+
+	settings, err := json.Marshal(map[string]interface{}{
+		"address": tunnel.TargetAddress,
+		"port":    tunnel.TargetPort,
+		"network": tunnel.Network,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &xray.InboundConfig{
+		Listen:   json_util.RawMessage(listen),
+		Port:     tunnel.ListenPort,
+		Protocol: "dokodemo-door",
+		Settings: json_util.RawMessage(settings),
+		Tag:      tunnel.InboundTag(),
+	}, nil
+}
+
+func (s *TunnelService) genXrayOutboundConfig(tunnel *model.Tunnel) (json.RawMessage, error) {
+	user := map[string]interface{}{
+		"id": tunnel.UUID,
+	}
+	if tunnel.Protocol == "vmess" {
+		user["alterId"] = 0
+		user["security"] = "auto"
+	} else {
+		user["encryption"] = "none"
+	}
+
+	outbound := map[string]interface{}{
+		"tag":      tunnel.OutboundTag(),
+		"protocol": tunnel.Protocol,
+		"settings": map[string]interface{}{
+			"vnext": []interface{}{
+				map[string]interface{}{
+					"address": tunnel.RemoteAddress,
+					"port":    tunnel.RemotePort,
+					"users": []interface{}{
+						user,
+					},
+				},
+			},
+		},
+		"streamSettings": map[string]interface{}{
+			"network":  "kcp",
+			"security": "none",
+			"kcpSettings": map[string]interface{}{
+				"mtu":              tunnel.KcpMtu,
+				"tti":              tunnel.KcpTti,
+				"uplinkCapacity":   tunnel.KcpUplinkCapacity,
+				"downlinkCapacity": tunnel.KcpDownlinkCapacity,
+				"congestion":       tunnel.KcpCongestion,
+				"readBufferSize":   tunnel.KcpReadBufferSize,
+				"writeBufferSize":  tunnel.KcpWriteBufferSize,
+				"header": map[string]interface{}{
+					"type": tunnel.KcpHeaderType,
+				},
+				"seed": tunnel.KcpSeed,
+			},
+		},
+	}
+
+	data, err := json.Marshal(outbound)
+	return json.RawMessage(data), err
+}
+
+func (s *TunnelService) genXrayRoutingRule(tunnel *model.Tunnel) (json.RawMessage, error) {
+	rule := map[string]interface{}{
+		"type":        "field",
+		"inboundTag":  []string{tunnel.InboundTag()},
+		"outboundTag": tunnel.OutboundTag(),
+	}
+	data, err := json.Marshal(rule)
+	return json.RawMessage(data), err
+}
+
 func (s *TunnelService) ApplyToXrayConfig(xrayConfig *xray.Config) error {
 	tunnels, err := s.GetAllEnabledTunnels()
 	if err != nil {
 		return err
 	}
 	for _, tunnel := range tunnels {
-		inboundConfig, err := tunnel.GenXrayInboundConfig()
+		inboundConfig, err := s.genXrayInboundConfig(tunnel)
 		if err != nil {
 			return err
 		}
 		xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *inboundConfig)
 
-		outboundConfig, err := tunnel.GenXrayOutboundConfig()
+		outboundConfig, err := s.genXrayOutboundConfig(tunnel)
 		if err != nil {
 			return err
 		}
@@ -224,7 +314,7 @@ func (s *TunnelService) ApplyToXrayConfig(xrayConfig *xray.Config) error {
 			return err
 		}
 
-		routingRule, err := tunnel.GenXrayRoutingRule()
+		routingRule, err := s.genXrayRoutingRule(tunnel)
 		if err != nil {
 			return err
 		}

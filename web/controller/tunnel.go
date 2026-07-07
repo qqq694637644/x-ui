@@ -48,7 +48,6 @@ func (a *TunnelController) addTunnel(c *gin.Context) {
 	}
 	user := session.GetLoginUser(c)
 	tunnel.UserId = user.Id
-	tunnel.Enable = true
 	err = a.tunnelService.AddTunnel(tunnel)
 	jsonMsg(c, "添加", err)
 	if err == nil {
@@ -62,7 +61,8 @@ func (a *TunnelController) delTunnel(c *gin.Context) {
 		jsonMsg(c, "删除", err)
 		return
 	}
-	err = a.tunnelService.DelTunnel(id)
+	user := session.GetLoginUser(c)
+	err = a.tunnelService.DelTunnel(id, user.Id)
 	jsonMsg(c, "删除", err)
 	if err == nil {
 		a.xrayService.SetToNeedRestart()
@@ -83,7 +83,8 @@ func (a *TunnelController) updateTunnel(c *gin.Context) {
 		jsonMsg(c, "修改", err)
 		return
 	}
-	err = a.tunnelService.UpdateTunnel(tunnel)
+	user := session.GetLoginUser(c)
+	err = a.tunnelService.UpdateTunnel(tunnel, user.Id)
 	jsonMsg(c, "修改", err)
 	if err == nil {
 		a.xrayService.SetToNeedRestart()

@@ -91,6 +91,11 @@
                         </a-select>
                     </a-form-item>
                 </a-col>
+                <a-col :xs="24" :md="12">
+                    <a-form-item label="启用">
+                        <a-switch v-model="modal.tunnel.enable"></a-switch>
+                    </a-form-item>
+                </a-col>
             </a-row>
 
             <a-divider orientation="left">本地入口（dokodemo-door inbound）</a-divider>

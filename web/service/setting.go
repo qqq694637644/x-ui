@@ -33,6 +33,7 @@ var defaultValueMap = map[string]string{
 	"tgBotToken":         "",
 	"tgBotChatId":        "0",
 	"tgRunTime":          "",
+	"caddyPath":          "/opt/caddy",
 }
 
 type SettingService struct {
@@ -188,6 +189,14 @@ func (s *SettingService) setInt(key string, value int) error {
 
 func (s *SettingService) GetXrayConfigTemplate() (string, error) {
 	return s.getString("xrayTemplateConfig")
+}
+
+func (s *SettingService) GetCaddyPath() (string, error) {
+	return s.getString("caddyPath")
+}
+
+func (s *SettingService) SetCaddyPath(path string) error {
+	return s.setString("caddyPath", path)
 }
 
 func (s *SettingService) GetListen() (string, error) {

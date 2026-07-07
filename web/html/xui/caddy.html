@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+{{template "head" .}}
+<style>
+    @media (min-width: 769px) {
+        .ant-layout-content {
+            margin: 24px 16px;
+        }
+    }
+
+    .caddy-editor {
+        width: 100%;
+        min-height: 520px;
+        font-family: monospace;
+    }
+
+    .command-output {
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: #f6f8fa;
+        border: 1px solid #e8e8e8;
+        border-radius: 4px;
+        padding: 12px;
+        min-height: 120px;
+    }
+</style>
+<body>
+<a-layout id="app" v-cloak>
+    {{ template "commonSider" . }}
+    <a-layout id="content-layout">
+        <a-layout-content>
+            <a-spin :spinning="spinning" :delay="500" tip="loading">
+                <transition name="list" appear>
+                    <a-card hoverable style="margin-bottom: 20px;">
+                        <a-alert type="info" show-icon message="Caddyfile 管理"
+                                 description="只需要填写 Caddy 目录。面板会自动使用该目录下的 caddy 和 Caddyfile，保存前会校验，保存并 Reload 失败时会恢复旧 Caddyfile。"></a-alert>
+                    </a-card>
+                </transition>
+
+                <transition name="list" appear>
+                    <a-card hoverable style="margin-bottom: 20px;">
+                        <a-form layout="vertical">
+                            <a-row :gutter="16">
+                                <a-col :xs="24" :md="16">
+                                    <a-form-item label="Caddy 目录">
+                                        <a-input v-model="caddyPath" placeholder="例如 /opt/caddy"></a-input>
+                                    </a-form-item>
+                                </a-col>
+                                <a-col :xs="24" :md="8">
+                                    <a-form-item label=" ">
+                                        <a-button type="primary" @click="savePath">保存路径并读取</a-button>
+                                        <a-button style="margin-left: 8px" @click="getConfig">读取</a-button>
+                                    </a-form-item>
+                                </a-col>
+                            </a-row>
+                            <a-row :gutter="16">
+                                <a-col :xs="24" :md="12">
+                                    <span>Caddy：</span><a-tag color="green">[[ caddyBin || '-' ]]</a-tag>
+                                </a-col>
+                                <a-col :xs="24" :md="12">
+                                    <span>Caddyfile：</span><a-tag color="blue">[[ caddyfile || '-' ]]</a-tag>
+                                </a-col>
+                            </a-row>
+                        </a-form>
+                    </a-card>
+                </transition>
+
+                <transition name="list" appear>
+                    <a-card hoverable>
+                        <div slot="title">
+                            <a-space>
+                                <a-button @click="validateConfig">校验</a-button>
+                                <a-button type="primary" @click="saveConfig">保存</a-button>
+                                <a-button type="danger" @click="saveReloadConfig">保存并 Reload</a-button>
+                                <a-button @click="reloadConfig">Reload 当前配置</a-button>
+                            </a-space>
+                        </div>
+                        <a-textarea class="caddy-editor" v-model="content"></a-textarea>
+                    </a-card>
+                </transition>
+
+                <transition name="list" appear>
+                    <a-card hoverable style="margin-top: 20px;" title="命令输出">
+                        <a-tabs default-active-key="stdout">
+                            <a-tab-pane key="stdout" tab="stdout">
+                                <div class="command-output">[[ stdout || '无输出' ]]</div>
+                            </a-tab-pane>
+                            <a-tab-pane key="stderr" tab="stderr">
+                                <div class="command-output">[[ stderr || '无输出' ]]</div>
+                            </a-tab-pane>
+                        </a-tabs>
+                    </a-card>
+                </transition>
+            </a-spin>
+        </a-layout-content>
+    </a-layout>
+</a-layout>
+{{template "js" .}}
+<script>
+    const app = new Vue({
+        delimiters: ['[[', ']]'],
+        el: '#app',
+        data: {
+            siderDrawer,
+            spinning: false,
+            caddyPath: '',
+            caddyBin: '',
+            caddyfile: '',
+            content: '',
+            stdout: '',
+            stderr: '',
+        },
+        methods: {
+            loading(spinning = true) {
+                this.spinning = spinning;
+            },
+            setOutput(result) {
+                result = result || {};
+                this.stdout = result.stdout || '';
+                this.stderr = result.stderr || '';
+            },
+            setConfig(config) {
+                config = config || {};
+                this.caddyPath = config.path || this.caddyPath;
+                this.caddyBin = config.caddyBin || '';
+                this.caddyfile = config.caddyfile || '';
+                this.content = config.content || '';
+            },
+            async getConfig() {
+                this.loading(true);
+                const msg = await HttpUtil.post('/xui/caddy/config');
+                this.loading(false);
+                if (msg.success) {
+                    this.setConfig(msg.obj);
+                    this.setOutput({stdout: '读取 Caddyfile 成功'});
+                }
+            },
+            async savePath() {
+                this.loading(true);
+                const msg = await HttpUtil.post('/xui/caddy/path', {path: this.caddyPath});
+                this.loading(false);
+                if (msg.success) {
+                    await this.getConfig();
+                }
+            },
+            async validateConfig() {
+                this.loading(true);
+                const msg = await HttpUtil.post('/xui/caddy/validate', {content: this.content});
+                this.loading(false);
+                this.setOutput(msg.obj);
+            },
+            async saveConfig() {
+                this.loading(true);
+                const msg = await HttpUtil.post('/xui/caddy/save', {content: this.content});
+                this.loading(false);
+                if (msg.success) {
+                    this.setConfig(msg.obj);
+                    this.setOutput({stdout: '保存 Caddyfile 成功'});
+                }
+            },
+            async reloadConfig() {
+                this.loading(true);
+                const msg = await HttpUtil.post('/xui/caddy/reload');
+                this.loading(false);
+                this.setOutput(msg.obj);
+            },
+            async saveReloadConfig() {
+                await new Promise(resolve => {
+                    this.$confirm({
+                        title: '保存并 Reload Caddy',
+                        content: '将校验、备份并覆盖 Caddyfile，然后执行 caddy reload。reload 失败会尝试恢复旧 Caddyfile。确定继续吗？',
+                        okText: '继续',
+                        cancelText: '取消',
+                        onOk: () => resolve(),
+                    });
+                });
+                this.loading(true);
+                const msg = await HttpUtil.post('/xui/caddy/saveReload', {content: this.content});
+                this.loading(false);
+                this.setOutput(msg.obj);
+                if (msg.success) {
+                    await this.getConfig();
+                }
+            },
+        },
+        async mounted() {
+            await this.getConfig();
+        },
+    });
+</script>
+</body>
+</html>

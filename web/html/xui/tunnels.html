@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+{{template "head" .}}
+<style>
+    @media (min-width: 769px) {
+        .ant-layout-content {
+            margin: 24px 16px;
+        }
+    }
+
+    .ant-col-sm-24 {
+        margin-top: 10px;
+    }
+</style>
+<body>
+<a-layout id="app" v-cloak>
+    {{ template "commonSider" . }}
+    <a-layout id="content-layout">
+        <a-layout-content>
+            <a-spin :spinning="spinning" :delay="500" tip="loading">
+                <transition name="list" appear>
+                    <a-card hoverable style="margin-bottom: 20px;">
+                        <a-alert type="info" show-icon message="A 端隧道说明"
+                                 description="这里仅生成本机 dokodemo-door inbound、mKCP outbound 和 routing 规则。B 端 Xray 如何接收和落地由远端自行配置。"></a-alert>
+                    </a-card>
+                </transition>
+                <transition name="list" appear>
+                    <a-card hoverable>
+                        <div slot="title">
+                            <a-button type="primary" icon="plus" @click="openAddTunnel">添加隧道</a-button>
+                        </div>
+                        <a-table :columns="columns" :row-key="tunnel => tunnel.id"
+                                 :data-source="tunnels"
+                                 :loading="spinning" :scroll="{ x: 1200 }"
+                                 :pagination="false"
+                                 style="margin-top: 20px">
+                            <template slot="action" slot-scope="text, tunnel">
+                                <a-dropdown :trigger="['click']">
+                                    <a @click="e => e.preventDefault()">操作</a>
+                                    <a-menu slot="overlay" @click="a => clickAction(a, tunnel)">
+                                        <a-menu-item key="edit">
+                                            <a-icon type="edit"></a-icon>编辑
+                                        </a-menu-item>
+                                        <a-menu-item key="delete">
+                                            <span style="color: #FF4D4F">
+                                                <a-icon type="delete"></a-icon>删除
+                                            </span>
+                                        </a-menu-item>
+                                    </a-menu>
+                                </a-dropdown>
+                            </template>
+                            <template slot="enable" slot-scope="text, tunnel">
+                                <a-switch v-model="tunnel.enable" @change="() => switchEnable(tunnel)"></a-switch>
+                            </template>
+                            <template slot="local" slot-scope="text, tunnel">
+                                <a-tag color="blue">[[ tunnel.listen || '0.0.0.0' ]]:[[ tunnel.listenPort ]]</a-tag>
+                                <a-tag color="green">[[ tunnel.network ]]</a-tag>
+                            </template>
+                            <template slot="target" slot-scope="text, tunnel">
+                                <a-tag color="purple">[[ tunnel.targetAddress ]]:[[ tunnel.targetPort ]]</a-tag>
+                            </template>
+                            <template slot="remote" slot-scope="text, tunnel">
+                                <a-tag color="cyan">[[ tunnel.protocol ]]</a-tag>
+                                <a-tag color="orange">[[ tunnel.remoteAddress ]]:[[ tunnel.remotePort ]]</a-tag>
+                            </template>
+                            <template slot="kcp" slot-scope="text, tunnel">
+                                <a-tag color="green">[[ tunnel.kcpHeaderType ]]</a-tag>
+                                <a-tag color="blue">[[ tunnel.kcpSeed || 'no seed' ]]</a-tag>
+                            </template>
+                        </a-table>
+                    </a-card>
+                </transition>
+            </a-spin>
+        </a-layout-content>
+    </a-layout>
+
+    <a-modal v-model="modal.visible" :title="modal.title" width="900px"
+             :confirm-loading="modal.confirmLoading" ok-text="保存" cancel-text="取消" @ok="saveTunnel">
+        <a-form layout="vertical">
+            <a-row :gutter="16">
+                <a-col :xs="24" :md="12">
+                    <a-form-item label="备注">
+                        <a-input v-model="modal.tunnel.remark" placeholder="例如 A-to-B-SSH"></a-input>
+                    </a-form-item>
+                </a-col>
+                <a-col :xs="24" :md="12">
+                    <a-form-item label="协议">
+                        <a-select v-model="modal.tunnel.protocol">
+                            <a-select-option value="vless">vless</a-select-option>
+                            <a-select-option value="vmess">vmess</a-select-option>
+                        </a-select>
+                    </a-form-item>
+                </a-col>
+            </a-row>
+
+            <a-divider orientation="left">本地入口（dokodemo-door inbound）</a-divider>
+            <a-row :gutter="16">
+                <a-col :xs="24" :md="8">
+                    <a-form-item label="监听地址">
+                        <a-input v-model="modal.tunnel.listen" placeholder="0.0.0.0，留空则不写 listen"></a-input>
+                    </a-form-item>
+                </a-col>
+                <a-col :xs="24" :md="8">
+                    <a-form-item label="监听端口">
+                        <a-input type="number" v-model.number="modal.tunnel.listenPort"></a-input>
+                    </a-form-item>
+                </a-col>
+                <a-col :xs="24" :md="8">
+                    <a-form-item label="入口网络">
+                        <a-select v-model="modal.tunnel.network">
+                            <a-select-option value="tcp">tcp</a-select-option>
+                            <a-select-option value="udp">udp</a-select-option>
+                            <a-select-option value="tcp,udp">tcp,udp</a-select-option>
+                        </a-select>
+                    </a-form-item>
+                </a-col>
+            </a-row>
+            <a-row :gutter="16">
+                <a-col :xs="24" :md="12">
+                    <a-form-item label="目标地址">
+                        <a-input v-model="modal.tunnel.targetAddress" placeholder="例如 127.0.0.1"></a-input>
+                    </a-form-item>
+                </a-col>
+                <a-col :xs="24" :md="12">
+                    <a-form-item label="目标端口">
+                        <a-input type="number" v-model.number="modal.tunnel.targetPort"></a-input>
+                    </a-form-item>
+                </a-col>
+            </a-row>
+
+            <a-divider orientation="left">远端 Xray（mKCP outbound）</a-divider>
+            <a-row :gutter="16">
+                <a-col :xs="24" :md="12">
+                    <a-form-item label="远端地址">
+                        <a-input v-model="modal.tunnel.remoteAddress" placeholder="B 端公网 IP 或域名"></a-input>
+                    </a-form-item>
+                </a-col>
+                <a-col :xs="24" :md="12">
+                    <a-form-item label="远端 mKCP 端口">
+                        <a-input type="number" v-model.number="modal.tunnel.remotePort"></a-input>
+                    </a-form-item>
+                </a-col>
+            </a-row>
+            <a-row :gutter="16">
+                <a-col :xs="24" :md="20">
+                    <a-form-item label="UUID">
+                        <a-input v-model="modal.tunnel.uuid"></a-input>
+                    </a-form-item>
+                </a-col>
+                <a-col :xs="24" :md="4">
+                    <a-form-item label=" ">
+                        <a-button block @click="modal.tunnel.uuid = RandomUtil.randomUUID()">生成</a-button>
+                    </a-form-item>
+                </a-col>
+            </a-row>
+
+            <a-divider orientation="left">mKCP 参数</a-divider>
+            <a-row :gutter="16">
+                <a-col :xs="24" :md="8">
+                    <a-form-item label="伪装">
+                        <a-select v-model="modal.tunnel.kcpHeaderType">
+                            <a-select-option value="none">none</a-select-option>
+                            <a-select-option value="srtp">srtp</a-select-option>
+                            <a-select-option value="utp">utp</a-select-option>
+                            <a-select-option value="wechat-video">wechat-video</a-select-option>
+                            <a-select-option value="dtls">dtls</a-select-option>
+                            <a-select-option value="wireguard">wireguard</a-select-option>
+                        </a-select>
+                    </a-form-item>
+                </a-col>
+                <a-col :xs="24" :md="12">
+                    <a-form-item label="seed / 密码">
+                        <a-input v-model="modal.tunnel.kcpSeed"></a-input>
+                    </a-form-item>
+                </a-col>
+                <a-col :xs="24" :md="4">
+                    <a-form-item label=" ">
+                        <a-button block @click="modal.tunnel.kcpSeed = RandomUtil.randomSeq(10)">生成</a-button>
+                    </a-form-item>
+                </a-col>
+            </a-row>
+            <a-row :gutter="16">
+                <a-col :xs="24" :md="6">
+                    <a-form-item label="mtu">
+                        <a-input type="number" v-model.number="modal.tunnel.kcpMtu"></a-input>
+                    </a-form-item>
+                </a-col>
+                <a-col :xs="24" :md="6">
+                    <a-form-item label="tti (ms)">
+                        <a-input type="number" v-model.number="modal.tunnel.kcpTti"></a-input>
+                    </a-form-item>
+                </a-col>
+                <a-col :xs="24" :md="6">
+                    <a-form-item label="uplink capacity (MB/S)">
+                        <a-input type="number" v-model.number="modal.tunnel.kcpUplinkCapacity"></a-input>
+                    </a-form-item>
+                </a-col>
+                <a-col :xs="24" :md="6">
+                    <a-form-item label="downlink capacity (MB/S)">
+                        <a-input type="number" v-model.number="modal.tunnel.kcpDownlinkCapacity"></a-input>
+                    </a-form-item>
+                </a-col>
+            </a-row>
+            <a-row :gutter="16">
+                <a-col :xs="24" :md="6">
+                    <a-form-item label="congestion">
+                        <a-switch v-model="modal.tunnel.kcpCongestion"></a-switch>
+                    </a-form-item>
+                </a-col>
+                <a-col :xs="24" :md="9">
+                    <a-form-item label="read buffer size (MB)">
+                        <a-input type="number" v-model.number="modal.tunnel.kcpReadBufferSize"></a-input>
+                    </a-form-item>
+                </a-col>
+                <a-col :xs="24" :md="9">
+                    <a-form-item label="write buffer size (MB)">
+                        <a-input type="number" v-model.number="modal.tunnel.kcpWriteBufferSize"></a-input>
+                    </a-form-item>
+                </a-col>
+            </a-row>
+        </a-form>
+    </a-modal>
+</a-layout>
+{{template "js" .}}
+<script>
+    const columns = [{
+        title: "操作",
+        align: 'center',
+        width: 70,
+        scopedSlots: { customRender: 'action' },
+    }, {
+        title: "启用",
+        align: 'center',
+        width: 60,
+        scopedSlots: { customRender: 'enable' },
+    }, {
+        title: "id",
+        align: 'center',
+        dataIndex: "id",
+        width: 60,
+    }, {
+        title: "备注",
+        align: 'center',
+        dataIndex: "remark",
+        width: 140,
+    }, {
+        title: "本地入口",
+        align: 'center',
+        width: 180,
+        scopedSlots: { customRender: 'local' },
+    }, {
+        title: "目标",
+        align: 'center',
+        width: 180,
+        scopedSlots: { customRender: 'target' },
+    }, {
+        title: "远端 Xray",
+        align: 'center',
+        width: 220,
+        scopedSlots: { customRender: 'remote' },
+    }, {
+        title: "mKCP",
+        align: 'center',
+        width: 180,
+        scopedSlots: { customRender: 'kcp' },
+    }];
+
+    function newTunnel(data = {}) {
+        return Object.assign({
+            id: 0,
+            enable: true,
+            remark: '',
+            listen: '0.0.0.0',
+            listenPort: 0,
+            network: 'tcp',
+            targetAddress: '127.0.0.1',
+            targetPort: 0,
+            remoteAddress: '',
+            remotePort: 0,
+            protocol: 'vless',
+            uuid: RandomUtil.randomUUID(),
+            kcpHeaderType: 'none',
+            kcpSeed: RandomUtil.randomSeq(10),
+            kcpMtu: 1350,
+            kcpTti: 20,
+            kcpUplinkCapacity: 5,
+            kcpDownlinkCapacity: 20,
+            kcpCongestion: false,
+            kcpReadBufferSize: 2,
+            kcpWriteBufferSize: 2,
+        }, data || {});
+    }
+
+    const app = new Vue({
+        delimiters: ['[[', ']]'],
+        el: '#app',
+        data: {
+            siderDrawer,
+            spinning: false,
+            columns,
+            tunnels: [],
+            modal: {
+                visible: false,
+                title: '',
+                confirmLoading: false,
+                tunnel: newTunnel(),
+            },
+        },
+        methods: {
+            loading(spinning = true) {
+                this.spinning = spinning;
+            },
+            async getTunnels() {
+                this.loading(true);
+                const msg = await HttpUtil.post('/xui/tunnel/list');
+                this.loading(false);
+                if (!msg.success) {
+                    return;
+                }
+                this.tunnels = (msg.obj || []).map(tunnel => newTunnel(tunnel));
+            },
+            openAddTunnel() {
+                this.modal.title = '添加隧道';
+                this.modal.tunnel = newTunnel();
+                this.modal.visible = true;
+            },
+            openEditTunnel(tunnel) {
+                this.modal.title = '修改隧道';
+                this.modal.tunnel = newTunnel(JSON.parse(JSON.stringify(tunnel)));
+                this.modal.visible = true;
+            },
+            clickAction(action, tunnel) {
+                switch (action.key) {
+                    case 'edit':
+                        this.openEditTunnel(tunnel);
+                        break;
+                    case 'delete':
+                        this.delTunnel(tunnel);
+                        break;
+                }
+            },
+            async saveTunnel() {
+                this.modal.confirmLoading = true;
+                const tunnel = this.modal.tunnel;
+                let msg;
+                if (tunnel.id > 0) {
+                    msg = await HttpUtil.post(`/xui/tunnel/update/${tunnel.id}`, tunnel);
+                } else {
+                    msg = await HttpUtil.post('/xui/tunnel/add', tunnel);
+                }
+                this.modal.confirmLoading = false;
+                if (msg.success) {
+                    this.modal.visible = false;
+                    await this.getTunnels();
+                }
+            },
+            async switchEnable(tunnel) {
+                const msg = await HttpUtil.post(`/xui/tunnel/update/${tunnel.id}`, tunnel);
+                if (!msg.success) {
+                    tunnel.enable = !tunnel.enable;
+                }
+            },
+            async delTunnel(tunnel) {
+                await new Promise(resolve => {
+                    this.$confirm({
+                        title: '删除隧道',
+                        content: `确定删除隧道 ${tunnel.remark || tunnel.id} 吗？`,
+                        okText: '删除',
+                        okType: 'danger',
+                        cancelText: '取消',
+                        onOk: () => resolve(),
+                    });
+                });
+                this.loading(true);
+                const msg = await HttpUtil.post(`/xui/tunnel/del/${tunnel.id}`);
+                this.loading(false);
+                if (msg.success) {
+                    await this.getTunnels();
+                }
+            },
+        },
+        async mounted() {
+            await this.getTunnels();
+        },
+    });
+</script>
+</body>
+</html>

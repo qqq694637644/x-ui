@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -28,7 +30,12 @@ jobs:
 
       - name: Check gofmt
         run: |
-          files="$(gofmt -l $(git ls-files '*.go'))"
+          git fetch origin main
+          changed="$(git diff --name-only origin/main...HEAD -- '*.go')"
+          if [ -z "$changed" ]; then
+            exit 0
+          fi
+          files="$(gofmt -l $changed)"
           if [ -n "$files" ]; then
             echo "$files"
             exit 1

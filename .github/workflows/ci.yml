@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'gpt/**'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  go:
+    name: Go build and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.20.x'
+          cache: true
+
+      - name: Show Go version
+        run: go version
+
+      - name: Check gofmt
+        run: |
+          git fetch origin main
+          changed="$(git diff --name-only origin/main...HEAD -- '*.go')"
+          if [ -z "$changed" ]; then
+            exit 0
+          fi
+          files="$(gofmt -l $changed)"
+          if [ -n "$files" ]; then
+            echo "$files"
+            exit 1
+          fi
+
+      - name: Test
+        run: go test ./...

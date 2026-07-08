@@ -37,6 +37,10 @@ func initInbound() error {
 	return db.AutoMigrate(&model.Inbound{})
 }
 
+func initTunnel() error {
+	return db.AutoMigrate(&model.Tunnel{})
+}
+
 func initSetting() error {
 	return db.AutoMigrate(&model.Setting{})
 }
@@ -69,6 +73,10 @@ func InitDB(dbPath string) error {
 		return err
 	}
 	err = initInbound()
+	if err != nil {
+		return err
+	}
+	err = initTunnel()
 	if err != nil {
 		return err
 	}

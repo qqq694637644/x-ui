@@ -249,6 +249,7 @@ class KcpStreamSettings extends XrayCommonClass {
                 congestion=false,
                 readBufferSize=2,
                 writeBufferSize=2,
+                finalMaskType='none',
                 ) {
         super();
         this.mtu = mtu;
@@ -258,9 +259,10 @@ class KcpStreamSettings extends XrayCommonClass {
         this.congestion = congestion;
         this.readBuffer = readBufferSize;
         this.writeBuffer = writeBufferSize;
+        this.finalMaskType = finalMaskType;
     }
 
-    static fromJson(json={}) {
+    static fromJson(json={}, finalmask={}) {
         return new KcpStreamSettings(
             json.mtu,
             json.tti,
@@ -269,7 +271,28 @@ class KcpStreamSettings extends XrayCommonClass {
             json.congestion,
             json.readBufferSize,
             json.writeBufferSize,
+            KcpStreamSettings.parseFinalMaskType(finalmask),
         );
+    }
+
+    static parseFinalMaskType(finalmask={}) {
+        const allowed = ['header-srtp', 'header-utp', 'header-wechat', 'header-dtls', 'header-wireguard'];
+        if (ObjectUtil.isEmpty(finalmask) || !Array.isArray(finalmask.udp)) {
+            return 'none';
+        }
+        for (const mask of finalmask.udp) {
+            if (mask && allowed.includes(mask.type)) {
+                return mask.type;
+            }
+        }
+        return 'none';
+    }
+
+    toFinalMask() {
+        if (ObjectUtil.isEmpty(this.finalMaskType) || this.finalMaskType === 'none') {
+            return undefined;
+        }
+        return { udp: [{ type: this.finalMaskType, settings: {} }] };
     }
 
     toJson() {
@@ -549,7 +572,7 @@ class StreamSettings extends XrayCommonClass {
             json.security,
             tls,
             TcpStreamSettings.fromJson(json.tcpSettings),
-            KcpStreamSettings.fromJson(json.kcpSettings),
+            KcpStreamSettings.fromJson(json.kcpSettings, json.finalmask),
             WsStreamSettings.fromJson(json.wsSettings),
             HttpStreamSettings.fromJson(json.httpSettings),
             QuicStreamSettings.fromJson(json.quicSettings),
@@ -590,7 +613,7 @@ class StreamSettings extends XrayCommonClass {
             httpSettings: network === 'http' ? this.http.toJson() : undefined,
             quicSettings: network === 'quic' ? this.quic.toJson() : undefined,
             grpcSettings: network === 'grpc' ? this.grpc.toJson() : undefined,
-            finalmask: network === 'mkcp' ? this.finalMaskToJson() : undefined,
+            finalmask: network === 'mkcp' ? this.kcp.toFinalMask() : this.finalMaskToJson(),
         };
     }
 }
@@ -995,8 +1018,9 @@ class Inbound extends XrayCommonClass {
                 params.set("headerType", quic.type);
                 break;
             case "mkcp":
-                if (!ObjectUtil.isEmpty(this.stream.finalMask)) {
-                    params.set("fm", this.stream.finalMask);
+                const finalmask = this.stream.kcp.toFinalMask();
+                if (!ObjectUtil.isEmpty(finalmask)) {
+                    params.set("fm", JSON.stringify(finalmask));
                 }
                 break;
             case "grpc":

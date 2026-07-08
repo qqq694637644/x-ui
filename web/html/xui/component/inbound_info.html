@@ -17,7 +17,7 @@
 
 <template v-if="inbound.isKcp">
     <p>mKCP: <a-tag color="blue">Xray 26</a-tag></p>
-    <p>FinalMask: <a-tag :color="inbound.stream.finalMask ? 'green' : 'orange'">[[ inbound.stream.finalMask ? '已设置' : '无' ]]</a-tag></p>
+    <p>FinalMask UDP header: <a-tag :color="inbound.stream.kcp.finalMaskType !== 'none' ? 'green' : 'orange'">[[ inbound.stream.kcp.finalMaskType || 'none' ]]</a-tag></p>
 </template>
 
 <template v-if="inbound.isGrpc">

@@ -63,13 +63,16 @@ func (s *TunnelService) checkListenPortExist(port int, ignoreId int) (bool, erro
 func (s *TunnelService) normalizeTunnel(tunnel *model.Tunnel) {
 	tunnel.Protocol = strings.ToLower(strings.TrimSpace(tunnel.Protocol))
 	tunnel.Network = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(tunnel.Network), " ", ""))
-	tunnel.KcpFinalMask = strings.TrimSpace(tunnel.KcpFinalMask)
+	tunnel.KcpFinalMaskType = strings.TrimSpace(tunnel.KcpFinalMaskType)
 
 	if tunnel.Protocol == "" {
 		tunnel.Protocol = "vless"
 	}
 	if tunnel.Network == "" {
 		tunnel.Network = "tcp"
+	}
+	if tunnel.KcpFinalMaskType == "" {
+		tunnel.KcpFinalMaskType = "none"
 	}
 	if tunnel.KcpMtu == 0 {
 		tunnel.KcpMtu = 1350
@@ -122,25 +125,19 @@ func (s *TunnelService) checkTunnel(tunnel *model.Tunnel) error {
 	if tunnel.KcpMtu <= 0 || tunnel.KcpUplinkCapacity <= 0 || tunnel.KcpDownlinkCapacity <= 0 || tunnel.KcpReadBufferSize <= 0 || tunnel.KcpWriteBufferSize <= 0 {
 		return common.NewError("mKCP 参数必须大于 0")
 	}
-	if _, err := parseFinalMask(tunnel.KcpFinalMask); err != nil {
-		return common.NewError("FinalMask JSON 不合法:", err)
+	if !isValidKcpFinalMaskType(tunnel.KcpFinalMaskType) {
+		return common.NewError("FinalMask UDP header 不支持:", tunnel.KcpFinalMaskType)
 	}
 	return nil
 }
 
-func parseFinalMask(raw string) (map[string]interface{}, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return nil, nil
+func isValidKcpFinalMaskType(maskType string) bool {
+	switch strings.TrimSpace(maskType) {
+	case "", "none", "header-srtp", "header-utp", "header-wechat", "header-dtls", "header-wireguard":
+		return true
+	default:
+		return false
 	}
-	finalmask := map[string]interface{}{}
-	if err := json.Unmarshal([]byte(trimmed), &finalmask); err != nil {
-		return nil, err
-	}
-	if len(finalmask) == 0 {
-		return nil, nil
-	}
-	return finalmask, nil
 }
 
 func (s *TunnelService) AddTunnel(tunnel *model.Tunnel) error {
@@ -210,7 +207,7 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	oldTunnel.RemotePort = tunnel.RemotePort
 	oldTunnel.Protocol = tunnel.Protocol
 	oldTunnel.UUID = tunnel.UUID
-	oldTunnel.KcpFinalMask = tunnel.KcpFinalMask
+	oldTunnel.KcpFinalMaskType = tunnel.KcpFinalMaskType
 	oldTunnel.KcpMtu = tunnel.KcpMtu
 	oldTunnel.KcpTti = tunnel.KcpTti
 	oldTunnel.KcpUplinkCapacity = tunnel.KcpUplinkCapacity
@@ -271,11 +268,7 @@ func (s *TunnelService) genXrayOutboundConfig(tunnel *model.Tunnel) (json.RawMes
 			"writeBufferSize":  tunnel.KcpWriteBufferSize,
 		},
 	}
-	finalmask, err := parseFinalMask(tunnel.KcpFinalMask)
-	if err != nil {
-		return nil, err
-	}
-	if finalmask != nil {
+	if finalmask := buildKcpFinalMask(tunnel.KcpFinalMaskType); finalmask != nil {
 		streamSettings["finalmask"] = finalmask
 	}
 
@@ -298,6 +291,21 @@ func (s *TunnelService) genXrayOutboundConfig(tunnel *model.Tunnel) (json.RawMes
 
 	data, err := json.Marshal(outbound)
 	return json.RawMessage(data), err
+}
+
+func buildKcpFinalMask(maskType string) map[string]interface{} {
+	maskType = strings.TrimSpace(maskType)
+	if maskType == "" || maskType == "none" {
+		return nil
+	}
+	return map[string]interface{}{
+		"udp": []map[string]interface{}{
+			{
+				"type":     maskType,
+				"settings": map[string]interface{}{},
+			},
+		},
+	}
 }
 
 func (s *TunnelService) genXrayRoutingRule(tunnel *model.Tunnel) (json.RawMessage, error) {

@@ -63,7 +63,7 @@ type Tunnel struct {
 	Protocol string `json:"protocol" form:"protocol"`
 	UUID     string `json:"uuid" form:"uuid"`
 
-	KcpFinalMask        string `json:"kcpFinalMask" form:"kcpFinalMask" gorm:"column:kcp_final_mask"`
+	KcpFinalMaskType    string `json:"kcpFinalMaskType" form:"kcpFinalMaskType" gorm:"column:kcp_final_mask_type"`
 	KcpMtu              int    `json:"kcpMtu" form:"kcpMtu"`
 	KcpTti              int    `json:"kcpTti" form:"kcpTti"`
 	KcpUplinkCapacity   int    `json:"kcpUplinkCapacity" form:"kcpUplinkCapacity"`

@@ -1,12 +1,17 @@
 {{define "form/streamKCP"}}
 <a-form layout="inline">
     <a-alert type="warning" show-icon style="margin-bottom: 16px;"
-             message="mKCP 仅支持 Xray 26 FinalMask 配置"
-             description="本页不会写入旧版 kcpSettings.header/seed；需要混淆时请直接填写 streamSettings.finalmask JSON，留空则不写 finalmask。"></a-alert>
-    <a-form-item label="FinalMask JSON">
-        <a-textarea v-model="inbound.stream.finalMask"
-                    :auto-size="{ minRows: 3, maxRows: 10 }"
-                    placeholder='{"udp":[{"type":"header-srtp","settings":{}}]}'></a-textarea>
+             message="mKCP 参数会生成 Xray 26 配置"
+             description="这里只生成 kcpSettings 和 finalmask.udp；不会写入旧版 kcpSettings.header/seed。"></a-alert>
+    <a-form-item label="FinalMask UDP header">
+        <a-select v-model="inbound.stream.kcp.finalMaskType" style="width: 240px;">
+            <a-select-option value="none">none</a-select-option>
+            <a-select-option value="header-srtp">header-srtp</a-select-option>
+            <a-select-option value="header-utp">header-utp</a-select-option>
+            <a-select-option value="header-wechat">header-wechat</a-select-option>
+            <a-select-option value="header-dtls">header-dtls</a-select-option>
+            <a-select-option value="header-wireguard">header-wireguard</a-select-option>
+        </a-select>
     </a-form-item>
     <a-form-item label="mtu">
         <a-input type="number" v-model.number="inbound.stream.kcp.mtu"></a-input>

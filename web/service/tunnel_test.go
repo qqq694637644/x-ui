@@ -6,14 +6,14 @@ import (
 	"x-ui/database/model"
 )
 
-func TestGenXrayOutboundConfigPassesFinalMaskJSON(t *testing.T) {
+func TestGenXrayOutboundConfigBuildsFinalMaskFromUIType(t *testing.T) {
 	tunnel := &model.Tunnel{
 		Id:                  1,
 		RemoteAddress:       "example.com",
 		RemotePort:          443,
 		Protocol:            "vless",
 		UUID:                "00000000-0000-0000-0000-000000000000",
-		KcpFinalMask:        `{"udp":[{"type":"header-srtp","settings":{}}]}`,
+		KcpFinalMaskType:    "header-srtp",
 		KcpMtu:              1350,
 		KcpTti:              20,
 		KcpUplinkCapacity:   5,
@@ -73,6 +73,7 @@ func TestGenXrayOutboundConfigOmitsFinalMaskForPlainMkcp(t *testing.T) {
 		RemotePort:          443,
 		Protocol:            "vless",
 		UUID:                "00000000-0000-0000-0000-000000000000",
+		KcpFinalMaskType:    "none",
 		KcpMtu:              1350,
 		KcpTti:              20,
 		KcpUplinkCapacity:   5,

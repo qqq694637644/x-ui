@@ -6,15 +6,14 @@ import (
 	"x-ui/database/model"
 )
 
-func TestGenXrayOutboundConfigOmitsRemovedMkcpHeaderAndSeed(t *testing.T) {
+func TestGenXrayOutboundConfigPassesFinalMaskJSON(t *testing.T) {
 	tunnel := &model.Tunnel{
 		Id:                  1,
 		RemoteAddress:       "example.com",
 		RemotePort:          443,
 		Protocol:            "vless",
 		UUID:                "00000000-0000-0000-0000-000000000000",
-		KcpHeaderType:       "srtp",
-		KcpSeed:             "legacy-seed",
+		KcpFinalMask:        `{"udp":[{"type":"header-srtp","settings":{}}]}`,
 		KcpMtu:              1350,
 		KcpTti:              20,
 		KcpUplinkCapacity:   5,
@@ -58,19 +57,44 @@ func TestGenXrayOutboundConfigOmitsRemovedMkcpHeaderAndSeed(t *testing.T) {
 		t.Fatalf("finalmask missing or invalid: %#v", streamSettings["finalmask"])
 	}
 	udp, ok := finalmask["udp"].([]interface{})
-	if !ok || len(udp) != 2 {
-		t.Fatalf("finalmask.udp = %#v, want two masks", finalmask["udp"])
+	if !ok || len(udp) != 1 {
+		t.Fatalf("finalmask.udp = %#v, want one mask", finalmask["udp"])
 	}
 	headerMask, ok := udp[0].(map[string]interface{})
 	if !ok || headerMask["type"] != "header-srtp" {
 		t.Fatalf("finalmask.udp[0] = %#v, want header-srtp", udp[0])
 	}
-	mkcpMask, ok := udp[1].(map[string]interface{})
-	if !ok || mkcpMask["type"] != "mkcp-aes128gcm" {
-		t.Fatalf("finalmask.udp[1] = %#v, want mkcp-aes128gcm", udp[1])
+}
+
+func TestGenXrayOutboundConfigOmitsFinalMaskForPlainMkcp(t *testing.T) {
+	tunnel := &model.Tunnel{
+		Id:                  1,
+		RemoteAddress:       "example.com",
+		RemotePort:          443,
+		Protocol:            "vless",
+		UUID:                "00000000-0000-0000-0000-000000000000",
+		KcpMtu:              1350,
+		KcpTti:              20,
+		KcpUplinkCapacity:   5,
+		KcpDownlinkCapacity: 20,
+		KcpReadBufferSize:   2,
+		KcpWriteBufferSize:  2,
 	}
-	settings, ok := mkcpMask["settings"].(map[string]interface{})
-	if !ok || settings["password"] != "legacy-seed" {
-		t.Fatalf("mkcp-aes128gcm settings = %#v, want password legacy-seed", mkcpMask["settings"])
+
+	outboundConfig, err := (&TunnelService{}).genXrayOutboundConfig(tunnel)
+	if err != nil {
+		t.Fatalf("genXrayOutboundConfig() error = %v", err)
+	}
+
+	var outbound map[string]interface{}
+	if err := json.Unmarshal(outboundConfig, &outbound); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	streamSettings, ok := outbound["streamSettings"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("streamSettings missing or invalid: %#v", outbound["streamSettings"])
+	}
+	if _, ok := streamSettings["finalmask"]; ok {
+		t.Fatalf("plain mkcp must not include finalmask: %#v", streamSettings["finalmask"])
 	}
 }

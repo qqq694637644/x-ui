@@ -63,17 +63,13 @@ func (s *TunnelService) checkListenPortExist(port int, ignoreId int) (bool, erro
 func (s *TunnelService) normalizeTunnel(tunnel *model.Tunnel) {
 	tunnel.Protocol = strings.ToLower(strings.TrimSpace(tunnel.Protocol))
 	tunnel.Network = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(tunnel.Network), " ", ""))
-	tunnel.KcpHeaderType = strings.ToLower(strings.TrimSpace(tunnel.KcpHeaderType))
-	tunnel.KcpSeed = strings.TrimSpace(tunnel.KcpSeed)
+	tunnel.KcpFinalMask = strings.TrimSpace(tunnel.KcpFinalMask)
 
 	if tunnel.Protocol == "" {
 		tunnel.Protocol = "vless"
 	}
 	if tunnel.Network == "" {
 		tunnel.Network = "tcp"
-	}
-	if tunnel.KcpHeaderType == "" {
-		tunnel.KcpHeaderType = "none"
 	}
 	if tunnel.KcpMtu == 0 {
 		tunnel.KcpMtu = 1350
@@ -126,19 +122,25 @@ func (s *TunnelService) checkTunnel(tunnel *model.Tunnel) error {
 	if tunnel.KcpMtu <= 0 || tunnel.KcpUplinkCapacity <= 0 || tunnel.KcpDownlinkCapacity <= 0 || tunnel.KcpReadBufferSize <= 0 || tunnel.KcpWriteBufferSize <= 0 {
 		return common.NewError("mKCP 参数必须大于 0")
 	}
-	if !isValidKcpHeaderType(tunnel.KcpHeaderType) {
-		return common.NewError("mKCP 伪装类型不支持:", tunnel.KcpHeaderType)
+	if _, err := parseFinalMask(tunnel.KcpFinalMask); err != nil {
+		return common.NewError("FinalMask JSON 不合法:", err)
 	}
 	return nil
 }
 
-func isValidKcpHeaderType(headerType string) bool {
-	switch headerType {
-	case "", "none", "srtp", "utp", "wechat-video", "dtls", "wireguard":
-		return true
-	default:
-		return false
+func parseFinalMask(raw string) (map[string]interface{}, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, nil
 	}
+	finalmask := map[string]interface{}{}
+	if err := json.Unmarshal([]byte(trimmed), &finalmask); err != nil {
+		return nil, err
+	}
+	if len(finalmask) == 0 {
+		return nil, nil
+	}
+	return finalmask, nil
 }
 
 func (s *TunnelService) AddTunnel(tunnel *model.Tunnel) error {
@@ -208,8 +210,7 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	oldTunnel.RemotePort = tunnel.RemotePort
 	oldTunnel.Protocol = tunnel.Protocol
 	oldTunnel.UUID = tunnel.UUID
-	oldTunnel.KcpHeaderType = tunnel.KcpHeaderType
-	oldTunnel.KcpSeed = tunnel.KcpSeed
+	oldTunnel.KcpFinalMask = tunnel.KcpFinalMask
 	oldTunnel.KcpMtu = tunnel.KcpMtu
 	oldTunnel.KcpTti = tunnel.KcpTti
 	oldTunnel.KcpUplinkCapacity = tunnel.KcpUplinkCapacity
@@ -269,7 +270,13 @@ func (s *TunnelService) genXrayOutboundConfig(tunnel *model.Tunnel) (json.RawMes
 			"readBufferSize":   tunnel.KcpReadBufferSize,
 			"writeBufferSize":  tunnel.KcpWriteBufferSize,
 		},
-		"finalmask": buildMkcpFinalMask(tunnel.KcpHeaderType, tunnel.KcpSeed),
+	}
+	finalmask, err := parseFinalMask(tunnel.KcpFinalMask)
+	if err != nil {
+		return nil, err
+	}
+	if finalmask != nil {
+		streamSettings["finalmask"] = finalmask
 	}
 
 	outbound := map[string]interface{}{
@@ -291,40 +298,6 @@ func (s *TunnelService) genXrayOutboundConfig(tunnel *model.Tunnel) (json.RawMes
 
 	data, err := json.Marshal(outbound)
 	return json.RawMessage(data), err
-}
-
-func buildMkcpFinalMask(headerType string, seed string) map[string]interface{} {
-	udp := make([]map[string]interface{}, 0, 2)
-	switch strings.ToLower(strings.TrimSpace(headerType)) {
-	case "srtp", "utp", "dtls", "wireguard":
-		udp = append(udp, map[string]interface{}{
-			"type":     "header-" + strings.ToLower(strings.TrimSpace(headerType)),
-			"settings": map[string]interface{}{},
-		})
-	case "wechat-video":
-		udp = append(udp, map[string]interface{}{
-			"type":     "header-wechat",
-			"settings": map[string]interface{}{},
-		})
-	}
-
-	if strings.TrimSpace(seed) == "" {
-		udp = append(udp, map[string]interface{}{
-			"type":     "mkcp-original",
-			"settings": map[string]interface{}{},
-		})
-	} else {
-		udp = append(udp, map[string]interface{}{
-			"type": "mkcp-aes128gcm",
-			"settings": map[string]interface{}{
-				"password": strings.TrimSpace(seed),
-			},
-		})
-	}
-
-	return map[string]interface{}{
-		"udp": udp,
-	}
 }
 
 func (s *TunnelService) genXrayRoutingRule(tunnel *model.Tunnel) (json.RawMessage, error) {

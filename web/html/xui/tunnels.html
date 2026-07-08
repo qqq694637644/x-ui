@@ -21,7 +21,7 @@
                 <transition name="list" appear>
                     <a-card hoverable style="margin-bottom: 20px;">
                         <a-alert type="info" show-icon message="A 端隧道说明"
-                                 description="这里仅生成本机 dokodemo-door inbound、mKCP outbound 和 routing 规则。伪装与密码会转换为 Xray 26 的 FinalMask 配置，不会写入已移除的 kcpSettings.header/seed。"></a-alert>
+                                 description="这里仅生成本机 dokodemo-door inbound、mKCP outbound 和 routing 规则。mKCP 只支持 Xray 26 FinalMask JSON，不再兼容旧版 header/seed。"></a-alert>
                     </a-card>
                 </transition>
                 <transition name="list" appear>
@@ -65,8 +65,7 @@
                             </template>
                             <template slot="kcp">
                                 <a-tag color="green">mkcp</a-tag>
-                                <a-tag color="purple">[[ tunnel.kcpHeaderType || 'none' ]]</a-tag>
-                                <a-tag v-if="tunnel.kcpSeed" color="orange">seed</a-tag>
+                                <a-tag :color="tunnel.kcpFinalMask ? 'purple' : 'orange'">[[ tunnel.kcpFinalMask ? 'FinalMask' : '无 FinalMask' ]]</a-tag>
                                 <a-tag color="blue">Xray 26</a-tag>
                             </template>
                         </a-table>
@@ -163,24 +162,14 @@
 
             <a-divider orientation="left">mKCP 参数</a-divider>
             <a-alert type="warning" show-icon style="margin-bottom: 16px;"
-                     message="mKCP 旧 UI 会自动生成 Xray 26 FinalMask 配置"
-                     description="伪装和密码只作为 UI 输入保存，会转换为 streamSettings.finalmask.udp；不会写入已移除的 kcpSettings.header/seed。"></a-alert>
+                     message="mKCP 仅支持 Xray 26 FinalMask 配置"
+                     description="不会写入旧版 kcpSettings.header/seed；需要混淆时填写 streamSettings.finalmask JSON，留空则不写 finalmask。"></a-alert>
             <a-row :gutter="16">
-                <a-col :xs="24" :md="12">
-                    <a-form-item label="伪装">
-                        <a-select v-model="modal.tunnel.kcpHeaderType">
-                            <a-select-option value="none">none（not camouflage）</a-select-option>
-                            <a-select-option value="srtp">srtp（camouflage video call）</a-select-option>
-                            <a-select-option value="utp">utp（camouflage BT download）</a-select-option>
-                            <a-select-option value="wechat-video">wechat-video（camouflage WeChat video）</a-select-option>
-                            <a-select-option value="dtls">dtls（camouflage DTLS 1.2 packages）</a-select-option>
-                            <a-select-option value="wireguard">wireguard（camouflage wireguard packages）</a-select-option>
-                        </a-select>
-                    </a-form-item>
-                </a-col>
-                <a-col :xs="24" :md="12">
-                    <a-form-item label="密码">
-                        <a-input v-model="modal.tunnel.kcpSeed"></a-input>
+                <a-col :xs="24" :md="24">
+                    <a-form-item label="FinalMask JSON">
+                        <a-textarea v-model="modal.tunnel.kcpFinalMask"
+                                    :auto-size="{ minRows: 3, maxRows: 8 }"
+                                    placeholder='{"udp":[{"type":"header-srtp","settings":{}}]}'></a-textarea>
                     </a-form-item>
                 </a-col>
             </a-row>
@@ -284,8 +273,7 @@
             remotePort: 0,
             protocol: 'vless',
             uuid: RandomUtil.randomUUID(),
-            kcpHeaderType: 'none',
-            kcpSeed: '',
+            kcpFinalMask: '',
             kcpMtu: 1350,
             kcpTti: 20,
             kcpUplinkCapacity: 5,
@@ -347,6 +335,18 @@
             async saveTunnel() {
                 this.modal.confirmLoading = true;
                 const tunnel = this.modal.tunnel;
+                if (tunnel.kcpFinalMask) {
+                    try {
+                        const finalMask = JSON.parse(tunnel.kcpFinalMask);
+                        if (!finalMask || Array.isArray(finalMask) || typeof finalMask !== 'object') {
+                            throw new Error('FinalMask JSON 必须是对象');
+                        }
+                    } catch (err) {
+                        this.$message.error(err.message || 'FinalMask JSON 不合法');
+                        this.modal.confirmLoading = false;
+                        return;
+                    }
+                }
                 let msg;
                 if (tunnel.id > 0) {
                     msg = await HttpUtil.post(`/xui/tunnel/update/${tunnel.id}`, tunnel);

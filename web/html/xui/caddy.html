@@ -75,7 +75,14 @@
                                 <a-button @click="reloadConfig">Reload 当前配置</a-button>
                             </a-space>
                         </div>
-                        <a-textarea class="caddy-editor" v-model="content"></a-textarea>
+                        <a-textarea
+                            ref="caddyEditor"
+                            class="caddy-editor"
+                            v-model="content"
+                            :style="{ height: caddyEditorHeight + 'px' }"
+                            @mouseup.native="saveEditorHeight"
+                            @touchend.native="saveEditorHeight"
+                        ></a-textarea>
                     </a-card>
                 </transition>
 
@@ -97,6 +104,18 @@
 </a-layout>
 {{template "js" .}}
 <script>
+    const caddyEditorHeightStorageKey = 'xuiCaddyEditorHeight';
+    const defaultCaddyEditorHeight = 520;
+
+    function getSavedCaddyEditorHeight() {
+        try {
+            const height = Number(localStorage.getItem(caddyEditorHeightStorageKey));
+            return Number.isFinite(height) && height > 0 ? height : defaultCaddyEditorHeight;
+        } catch (e) {
+            return defaultCaddyEditorHeight;
+        }
+    }
+
     const app = new Vue({
         delimiters: ['[[', ']]'],
         el: '#app',
@@ -107,6 +126,7 @@
             caddyBin: '',
             caddyfile: '',
             content: '',
+            caddyEditorHeight: getSavedCaddyEditorHeight(),
             stdout: '',
             stderr: '',
         },
@@ -125,6 +145,24 @@
                 this.caddyBin = config.caddyBin || '';
                 this.caddyfile = config.caddyfile || '';
                 this.content = config.content || '';
+            },
+            saveEditorHeight() {
+                this.$nextTick(() => {
+                    const editorRef = this.$refs.caddyEditor;
+                    const editor = editorRef && (editorRef.$el || editorRef);
+                    if (!editor) {
+                        return;
+                    }
+
+                    const height = editor.offsetHeight;
+                    if (height > 0) {
+                        this.caddyEditorHeight = height;
+                        try {
+                            localStorage.setItem(caddyEditorHeightStorageKey, String(height));
+                        } catch (e) {
+                        }
+                    }
+                });
             },
             async getConfig() {
                 this.loading(true);

@@ -63,16 +63,12 @@ func (s *TunnelService) checkListenPortExist(port int, ignoreId int) (bool, erro
 func (s *TunnelService) normalizeTunnel(tunnel *model.Tunnel) {
 	tunnel.Protocol = strings.ToLower(strings.TrimSpace(tunnel.Protocol))
 	tunnel.Network = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(tunnel.Network), " ", ""))
-	tunnel.KcpHeaderType = strings.ToLower(strings.TrimSpace(tunnel.KcpHeaderType))
 
 	if tunnel.Protocol == "" {
 		tunnel.Protocol = "vless"
 	}
 	if tunnel.Network == "" {
 		tunnel.Network = "tcp"
-	}
-	if tunnel.KcpHeaderType == "" {
-		tunnel.KcpHeaderType = "none"
 	}
 	if tunnel.KcpMtu == 0 {
 		tunnel.KcpMtu = 1350
@@ -118,9 +114,6 @@ func (s *TunnelService) checkTunnel(tunnel *model.Tunnel) error {
 	}
 	if tunnel.Network != "tcp" && tunnel.Network != "udp" && tunnel.Network != "tcp,udp" {
 		return common.NewError("本地入口网络仅支持 tcp、udp 或 tcp,udp:", tunnel.Network)
-	}
-	if tunnel.KcpHeaderType != "none" && tunnel.KcpHeaderType != "srtp" && tunnel.KcpHeaderType != "utp" && tunnel.KcpHeaderType != "wechat-video" && tunnel.KcpHeaderType != "dtls" && tunnel.KcpHeaderType != "wireguard" {
-		return common.NewError("mKCP 伪装类型不支持:", tunnel.KcpHeaderType)
 	}
 	if tunnel.KcpTti < 10 || tunnel.KcpTti > 5000 {
 		return common.NewError("mKCP tti 必须在 10 到 5000 之间")
@@ -198,8 +191,6 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	oldTunnel.RemotePort = tunnel.RemotePort
 	oldTunnel.Protocol = tunnel.Protocol
 	oldTunnel.UUID = tunnel.UUID
-	oldTunnel.KcpHeaderType = tunnel.KcpHeaderType
-	oldTunnel.KcpSeed = tunnel.KcpSeed
 	oldTunnel.KcpMtu = tunnel.KcpMtu
 	oldTunnel.KcpTti = tunnel.KcpTti
 	oldTunnel.KcpUplinkCapacity = tunnel.KcpUplinkCapacity

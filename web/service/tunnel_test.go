@@ -13,8 +13,6 @@ func TestGenXrayOutboundConfigOmitsRemovedMkcpHeaderAndSeed(t *testing.T) {
 		RemotePort:          443,
 		Protocol:            "vless",
 		UUID:                "00000000-0000-0000-0000-000000000000",
-		KcpHeaderType:       "srtp",
-		KcpSeed:             "legacy-seed",
 		KcpMtu:              1350,
 		KcpTti:              20,
 		KcpUplinkCapacity:   5,

@@ -6,6 +6,7 @@ import (
 	"x-ui/database"
 	"x-ui/database/model"
 	"x-ui/util/common"
+	"x-ui/util/xray_util"
 	"x-ui/xray"
 
 	"gorm.io/gorm"
@@ -49,6 +50,9 @@ func (s *InboundService) checkPortExist(port int, ignoreId int) (bool, error) {
 }
 
 func (s *InboundService) AddInbound(inbound *model.Inbound) error {
+	if err := xray_util.RejectDeprecatedKcpHeaderSeed(inbound.StreamSettings); err != nil {
+		return err
+	}
 	exist, err := s.checkPortExist(inbound.Port, 0)
 	if err != nil {
 		return err
@@ -62,6 +66,9 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) error {
 
 func (s *InboundService) AddInbounds(inbounds []*model.Inbound) error {
 	for _, inbound := range inbounds {
+		if err := xray_util.RejectDeprecatedKcpHeaderSeed(inbound.StreamSettings); err != nil {
+			return err
+		}
 		exist, err := s.checkPortExist(inbound.Port, 0)
 		if err != nil {
 			return err
@@ -108,6 +115,9 @@ func (s *InboundService) GetInbound(id int) (*model.Inbound, error) {
 }
 
 func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
+	if err := xray_util.RejectDeprecatedKcpHeaderSeed(inbound.StreamSettings); err != nil {
+		return err
+	}
 	exist, err := s.checkPortExist(inbound.Port, inbound.Id)
 	if err != nil {
 		return err

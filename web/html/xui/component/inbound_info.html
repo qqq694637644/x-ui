@@ -16,8 +16,8 @@
 </template>
 
 <template v-if="inbound.isKcp">
-    <p>kcp 加密: <a-tag color="green">[[ inbound.kcpType ]]</a-tag></p>
-    <p>kcp 密码: <a-tag color="green">[[ inbound.kcpSeed ]]</a-tag></p>
+    <p>mKCP: <a-tag color="blue">Xray 26</a-tag></p>
+    <p>header/seed: <a-tag color="orange">已移除</a-tag></p>
 </template>
 
 <template v-if="inbound.isGrpc">

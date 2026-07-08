@@ -9,6 +9,7 @@ import (
 	"path"
 	"x-ui/config"
 	"x-ui/database/model"
+	"x-ui/util/xray_util"
 )
 
 var db *gorm.DB
@@ -43,7 +44,30 @@ func initUser() error {
 }
 
 func initInbound() error {
-	return db.AutoMigrate(&model.Inbound{})
+	if err := db.AutoMigrate(&model.Inbound{}); err != nil {
+		return err
+	}
+	return migrateLegacyInboundKcpStreamSettings()
+}
+
+func migrateLegacyInboundKcpStreamSettings() error {
+	var inbounds []*model.Inbound
+	if err := db.Model(&model.Inbound{}).Find(&inbounds).Error; err != nil {
+		return err
+	}
+	for _, inbound := range inbounds {
+		streamSettings, changed, err := xray_util.StripDeprecatedKcpHeaderSeed(inbound.StreamSettings)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			continue
+		}
+		if err := db.Model(&model.Inbound{}).Where("id = ?", inbound.Id).Update("stream_settings", streamSettings).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func initTunnel() error {

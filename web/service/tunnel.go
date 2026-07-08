@@ -262,7 +262,7 @@ func (s *TunnelService) genXrayOutboundConfig(tunnel *model.Tunnel) (json.RawMes
 			},
 		},
 		"streamSettings": map[string]interface{}{
-			"network":  "kcp",
+			"network":  "mkcp",
 			"security": "none",
 			"kcpSettings": map[string]interface{}{
 				"mtu":              tunnel.KcpMtu,
@@ -272,10 +272,6 @@ func (s *TunnelService) genXrayOutboundConfig(tunnel *model.Tunnel) (json.RawMes
 				"congestion":       tunnel.KcpCongestion,
 				"readBufferSize":   tunnel.KcpReadBufferSize,
 				"writeBufferSize":  tunnel.KcpWriteBufferSize,
-				"header": map[string]interface{}{
-					"type": tunnel.KcpHeaderType,
-				},
-				"seed": tunnel.KcpSeed,
 			},
 		},
 	}

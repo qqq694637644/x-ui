@@ -21,7 +21,7 @@
                 <transition name="list" appear>
                     <a-card hoverable style="margin-bottom: 20px;">
                         <a-alert type="info" show-icon message="A 端隧道说明"
-                                 description="这里仅生成本机 dokodemo-door inbound、mKCP outbound 和 routing 规则。B 端 Xray 如何接收和落地由远端自行配置。"></a-alert>
+                                 description="这里仅生成本机 dokodemo-door inbound、mKCP outbound 和 routing 规则。Xray 26 已移除 mKCP header 与 seed 字段，本页面生成的新配置不会写入这些字段；B 端 Xray 如何接收和落地由远端自行配置。"></a-alert>
                     </a-card>
                 </transition>
                 <transition name="list" appear>
@@ -63,9 +63,9 @@
                                 <a-tag color="cyan">[[ tunnel.protocol ]]</a-tag>
                                 <a-tag color="orange">[[ tunnel.remoteAddress ]]:[[ tunnel.remotePort ]]</a-tag>
                             </template>
-                            <template slot="kcp" slot-scope="text, tunnel">
-                                <a-tag color="green">[[ tunnel.kcpHeaderType ]]</a-tag>
-                                <a-tag color="blue">[[ tunnel.kcpSeed || 'no seed' ]]</a-tag>
+                            <template slot="kcp">
+                                <a-tag color="green">mkcp</a-tag>
+                                <a-tag color="blue">Xray 26</a-tag>
                             </template>
                         </a-table>
                     </a-card>
@@ -160,30 +160,9 @@
             </a-row>
 
             <a-divider orientation="left">mKCP 参数</a-divider>
-            <a-row :gutter="16">
-                <a-col :xs="24" :md="8">
-                    <a-form-item label="伪装">
-                        <a-select v-model="modal.tunnel.kcpHeaderType">
-                            <a-select-option value="none">none</a-select-option>
-                            <a-select-option value="srtp">srtp</a-select-option>
-                            <a-select-option value="utp">utp</a-select-option>
-                            <a-select-option value="wechat-video">wechat-video</a-select-option>
-                            <a-select-option value="dtls">dtls</a-select-option>
-                            <a-select-option value="wireguard">wireguard</a-select-option>
-                        </a-select>
-                    </a-form-item>
-                </a-col>
-                <a-col :xs="24" :md="12">
-                    <a-form-item label="seed / 密码">
-                        <a-input v-model="modal.tunnel.kcpSeed"></a-input>
-                    </a-form-item>
-                </a-col>
-                <a-col :xs="24" :md="4">
-                    <a-form-item label=" ">
-                        <a-button block @click="modal.tunnel.kcpSeed = RandomUtil.randomSeq(10)">生成</a-button>
-                    </a-form-item>
-                </a-col>
-            </a-row>
+            <a-alert type="warning" show-icon style="margin-bottom: 16px;"
+                     message="Xray 26 已移除 mKCP header 与 seed"
+                     description="隧道配置生成时只写入 mtu、tti、capacity、congestion、buffer size 等仍受支持的 kcpSettings 字段。旧版 header/seed 混淆需要改用 Xray FinalMask，由 B 端与客户端配置自行保持一致。"></a-alert>
             <a-row :gutter="16">
                 <a-col :xs="24" :md="6">
                     <a-form-item label="mtu">

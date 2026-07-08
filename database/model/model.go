@@ -63,15 +63,13 @@ type Tunnel struct {
 	Protocol string `json:"protocol" form:"protocol"`
 	UUID     string `json:"uuid" form:"uuid"`
 
-	KcpHeaderType       string `json:"kcpHeaderType" form:"kcpHeaderType"`
-	KcpSeed             string `json:"kcpSeed" form:"kcpSeed"`
-	KcpMtu              int    `json:"kcpMtu" form:"kcpMtu"`
-	KcpTti              int    `json:"kcpTti" form:"kcpTti"`
-	KcpUplinkCapacity   int    `json:"kcpUplinkCapacity" form:"kcpUplinkCapacity"`
-	KcpDownlinkCapacity int    `json:"kcpDownlinkCapacity" form:"kcpDownlinkCapacity"`
-	KcpCongestion       bool   `json:"kcpCongestion" form:"kcpCongestion"`
-	KcpReadBufferSize   int    `json:"kcpReadBufferSize" form:"kcpReadBufferSize"`
-	KcpWriteBufferSize  int    `json:"kcpWriteBufferSize" form:"kcpWriteBufferSize"`
+	KcpMtu              int  `json:"kcpMtu" form:"kcpMtu"`
+	KcpTti              int  `json:"kcpTti" form:"kcpTti"`
+	KcpUplinkCapacity   int  `json:"kcpUplinkCapacity" form:"kcpUplinkCapacity"`
+	KcpDownlinkCapacity int  `json:"kcpDownlinkCapacity" form:"kcpDownlinkCapacity"`
+	KcpCongestion       bool `json:"kcpCongestion" form:"kcpCongestion"`
+	KcpReadBufferSize   int  `json:"kcpReadBufferSize" form:"kcpReadBufferSize"`
+	KcpWriteBufferSize  int  `json:"kcpWriteBufferSize" form:"kcpWriteBufferSize"`
 }
 
 func (t *Tunnel) InboundTag() string {

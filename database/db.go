@@ -13,6 +13,15 @@ import (
 
 var db *gorm.DB
 
+type legacyTunnelMkcpColumns struct {
+	KcpHeaderType string `gorm:"column:kcp_header_type"`
+	KcpSeed       string `gorm:"column:kcp_seed"`
+}
+
+func (legacyTunnelMkcpColumns) TableName() string {
+	return "tunnels"
+}
+
 func initUser() error {
 	err := db.AutoMigrate(&model.User{})
 	if err != nil {
@@ -38,7 +47,20 @@ func initInbound() error {
 }
 
 func initTunnel() error {
-	return db.AutoMigrate(&model.Tunnel{})
+	if err := db.AutoMigrate(&model.Tunnel{}); err != nil {
+		return err
+	}
+	if db.Migrator().HasColumn(&legacyTunnelMkcpColumns{}, "kcp_header_type") {
+		if err := db.Migrator().DropColumn(&legacyTunnelMkcpColumns{}, "kcp_header_type"); err != nil {
+			return err
+		}
+	}
+	if db.Migrator().HasColumn(&legacyTunnelMkcpColumns{}, "kcp_seed") {
+		if err := db.Migrator().DropColumn(&legacyTunnelMkcpColumns{}, "kcp_seed"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func initSetting() error {

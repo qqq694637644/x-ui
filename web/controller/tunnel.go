@@ -19,7 +19,7 @@ type TunnelController struct {
 	xrayService   service.XrayService
 }
 
-var deprecatedTunnelRequestFields = []string{}
+var deprecatedTunnelRequestFields = []string{"kcpHeaderType", "kcpSeed"}
 
 func firstDeprecatedTunnelField(values url.Values) string {
 	for _, field := range deprecatedTunnelRequestFields {

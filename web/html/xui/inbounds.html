@@ -258,6 +258,14 @@
                 });
             },
             async addInbound(inbound, dbInbound) {
+                let streamSettings;
+                try {
+                    streamSettings = inbound.stream.toString();
+                } catch (err) {
+                    this.$message.error(err.message || 'streamSettings 配置不合法');
+                    inModal.loading(false);
+                    return;
+                }
                 const data = {
                     up: dbInbound.up,
                     down: dbInbound.down,
@@ -270,12 +278,20 @@
                     port: inbound.port,
                     protocol: inbound.protocol,
                     settings: inbound.settings.toString(),
-                    streamSettings: inbound.stream.toString(),
+                    streamSettings: streamSettings,
                     sniffing: inbound.canSniffing() ? inbound.sniffing.toString() : '{}',
                 };
                 await this.submit('/xui/inbound/add', data, inModal);
             },
             async updateInbound(inbound, dbInbound) {
+                let streamSettings;
+                try {
+                    streamSettings = inbound.stream.toString();
+                } catch (err) {
+                    this.$message.error(err.message || 'streamSettings 配置不合法');
+                    inModal.loading(false);
+                    return;
+                }
                 const data = {
                     up: dbInbound.up,
                     down: dbInbound.down,
@@ -288,7 +304,7 @@
                     port: inbound.port,
                     protocol: inbound.protocol,
                     settings: inbound.settings.toString(),
-                    streamSettings: inbound.stream.toString(),
+                    streamSettings: streamSettings,
                     sniffing: inbound.canSniffing() ? inbound.sniffing.toString() : '{}',
                 };
                 await this.submit(`/xui/inbound/update/${dbInbound.id}`, data, inModal);

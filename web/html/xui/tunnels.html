@@ -21,7 +21,7 @@
                 <transition name="list" appear>
                     <a-card hoverable style="margin-bottom: 20px;">
                         <a-alert type="info" show-icon message="A 端隧道说明"
-                                 description="这里仅生成本机 dokodemo-door inbound、mKCP outbound 和 routing 规则。伪装与密码会转换为 Xray 26 的 FinalMask 配置，不会写入已移除的 kcpSettings.header/seed。"></a-alert>
+                                 description="这里仅生成本机 dokodemo-door inbound、mKCP outbound 和 routing 规则。mKCP UI 会生成 kcpSettings 和 finalmask.udp，不再兼容旧版 header/seed。"></a-alert>
                     </a-card>
                 </transition>
                 <transition name="list" appear>
@@ -65,8 +65,7 @@
                             </template>
                             <template slot="kcp">
                                 <a-tag color="green">mkcp</a-tag>
-                                <a-tag color="purple">[[ tunnel.kcpHeaderType || 'none' ]]</a-tag>
-                                <a-tag v-if="tunnel.kcpSeed" color="orange">seed</a-tag>
+                                <a-tag :color="tunnel.kcpFinalMaskType && tunnel.kcpFinalMaskType !== 'none' ? 'purple' : 'orange'">[[ tunnel.kcpFinalMaskType || 'none' ]]</a-tag>
                                 <a-tag color="blue">Xray 26</a-tag>
                             </template>
                         </a-table>
@@ -163,24 +162,19 @@
 
             <a-divider orientation="left">mKCP 参数</a-divider>
             <a-alert type="warning" show-icon style="margin-bottom: 16px;"
-                     message="mKCP 旧 UI 会自动生成 Xray 26 FinalMask 配置"
-                     description="伪装和密码只作为 UI 输入保存，会转换为 streamSettings.finalmask.udp；不会写入已移除的 kcpSettings.header/seed。"></a-alert>
+                     message="mKCP 参数会生成 Xray 26 配置"
+                     description="这里只生成 kcpSettings 和 finalmask.udp；不会写入旧版 kcpSettings.header/seed。"></a-alert>
             <a-row :gutter="16">
-                <a-col :xs="24" :md="12">
-                    <a-form-item label="伪装">
-                        <a-select v-model="modal.tunnel.kcpHeaderType">
-                            <a-select-option value="none">none（not camouflage）</a-select-option>
-                            <a-select-option value="srtp">srtp（camouflage video call）</a-select-option>
-                            <a-select-option value="utp">utp（camouflage BT download）</a-select-option>
-                            <a-select-option value="wechat-video">wechat-video（camouflage WeChat video）</a-select-option>
-                            <a-select-option value="dtls">dtls（camouflage DTLS 1.2 packages）</a-select-option>
-                            <a-select-option value="wireguard">wireguard（camouflage wireguard packages）</a-select-option>
+                <a-col :xs="24" :md="24">
+                    <a-form-item label="FinalMask UDP header">
+                        <a-select v-model="modal.tunnel.kcpFinalMaskType">
+                            <a-select-option value="none">none</a-select-option>
+                            <a-select-option value="header-srtp">header-srtp</a-select-option>
+                            <a-select-option value="header-utp">header-utp</a-select-option>
+                            <a-select-option value="header-wechat">header-wechat</a-select-option>
+                            <a-select-option value="header-dtls">header-dtls</a-select-option>
+                            <a-select-option value="header-wireguard">header-wireguard</a-select-option>
                         </a-select>
-                    </a-form-item>
-                </a-col>
-                <a-col :xs="24" :md="12">
-                    <a-form-item label="密码">
-                        <a-input v-model="modal.tunnel.kcpSeed"></a-input>
                     </a-form-item>
                 </a-col>
             </a-row>
@@ -284,8 +278,7 @@
             remotePort: 0,
             protocol: 'vless',
             uuid: RandomUtil.randomUUID(),
-            kcpHeaderType: 'none',
-            kcpSeed: '',
+            kcpFinalMaskType: 'none',
             kcpMtu: 1350,
             kcpTti: 20,
             kcpUplinkCapacity: 5,

@@ -249,8 +249,7 @@ class KcpStreamSettings extends XrayCommonClass {
                 congestion=false,
                 readBufferSize=2,
                 writeBufferSize=2,
-                type='none',
-                seed='',
+                finalMaskType='none',
                 ) {
         super();
         this.mtu = mtu;
@@ -260,12 +259,10 @@ class KcpStreamSettings extends XrayCommonClass {
         this.congestion = congestion;
         this.readBuffer = readBufferSize;
         this.writeBuffer = writeBufferSize;
-        this.type = type;
-        this.seed = seed;
+        this.finalMaskType = finalMaskType;
     }
 
     static fromJson(json={}, finalmask={}) {
-        const parsedFinalMask = KcpStreamSettings.parseFinalMask(finalmask);
         return new KcpStreamSettings(
             json.mtu,
             json.tti,
@@ -274,50 +271,28 @@ class KcpStreamSettings extends XrayCommonClass {
             json.congestion,
             json.readBufferSize,
             json.writeBufferSize,
-            parsedFinalMask.type,
-            parsedFinalMask.seed,
+            KcpStreamSettings.parseFinalMaskType(finalmask),
         );
     }
 
-    static parseFinalMask(finalmask={}) {
-        const parsed = { type: 'none', seed: '' };
+    static parseFinalMaskType(finalmask={}) {
+        const allowed = ['header-srtp', 'header-utp', 'header-wechat', 'header-dtls', 'header-wireguard'];
         if (ObjectUtil.isEmpty(finalmask) || !Array.isArray(finalmask.udp)) {
-            return parsed;
+            return 'none';
         }
         for (const mask of finalmask.udp) {
-            switch (mask.type) {
-                case 'header-srtp': parsed.type = 'srtp'; break;
-                case 'header-utp': parsed.type = 'utp'; break;
-                case 'header-wechat': parsed.type = 'wechat-video'; break;
-                case 'header-dtls': parsed.type = 'dtls'; break;
-                case 'header-wireguard': parsed.type = 'wireguard'; break;
-                case 'mkcp-aes128gcm':
-                    parsed.seed = mask.settings && mask.settings.password ? mask.settings.password : '';
-                    break;
+            if (mask && allowed.includes(mask.type)) {
+                return mask.type;
             }
         }
-        return parsed;
+        return 'none';
     }
 
     toFinalMask() {
-        const udp = [];
-        const headerMap = {
-            'srtp': 'header-srtp',
-            'utp': 'header-utp',
-            'wechat-video': 'header-wechat',
-            'dtls': 'header-dtls',
-            'wireguard': 'header-wireguard',
-        };
-        if (headerMap[this.type]) {
-            udp.push({ type: headerMap[this.type], settings: {} });
+        if (ObjectUtil.isEmpty(this.finalMaskType) || this.finalMaskType === 'none') {
+            return undefined;
         }
-        const seed = (this.seed || '').trim();
-        if (ObjectUtil.isEmpty(seed)) {
-            udp.push({ type: 'mkcp-original', settings: {} });
-        } else {
-            udp.push({ type: 'mkcp-aes128gcm', settings: { password: seed } });
-        }
-        return { udp: udp };
+        return { udp: [{ type: this.finalMaskType, settings: {} }] };
     }
 
     toJson() {
@@ -543,6 +518,7 @@ class StreamSettings extends XrayCommonClass {
                 httpSettings=new HttpStreamSettings(),
                 quicSettings=new QuicStreamSettings(),
                 grpcSettings=new GrpcStreamSettings(),
+                finalMask='',
                 ) {
         super();
         this.network = network;
@@ -554,6 +530,7 @@ class StreamSettings extends XrayCommonClass {
         this.http = httpSettings;
         this.quic = quicSettings;
         this.grpc = grpcSettings;
+        this.finalMask = finalMask;
     }
 
     get isTls() {
@@ -600,7 +577,27 @@ class StreamSettings extends XrayCommonClass {
             HttpStreamSettings.fromJson(json.httpSettings),
             QuicStreamSettings.fromJson(json.quicSettings),
             GrpcStreamSettings.fromJson(json.grpcSettings),
+            StreamSettings.finalMaskToString(json.finalmask),
         );
+    }
+
+    static finalMaskToString(finalmask={}) {
+        if (ObjectUtil.isEmpty(finalmask)) {
+            return '';
+        }
+        return JSON.stringify(finalmask, null, 2);
+    }
+
+    finalMaskToJson() {
+        const value = (this.finalMask || '').trim();
+        if (ObjectUtil.isEmpty(value)) {
+            return undefined;
+        }
+        const json = JSON.parse(value);
+        if (json === null || Array.isArray(json) || typeof json !== 'object') {
+            throw new Error('FinalMask JSON 必须是对象');
+        }
+        return json;
     }
 
     toJson() {
@@ -616,7 +613,7 @@ class StreamSettings extends XrayCommonClass {
             httpSettings: network === 'http' ? this.http.toJson() : undefined,
             quicSettings: network === 'quic' ? this.quic.toJson() : undefined,
             grpcSettings: network === 'grpc' ? this.grpc.toJson() : undefined,
-            finalmask: network === 'mkcp' ? this.kcp.toFinalMask() : undefined,
+            finalmask: network === 'mkcp' ? this.kcp.toFinalMask() : this.finalMaskToJson(),
         };
     }
 }
@@ -1021,12 +1018,9 @@ class Inbound extends XrayCommonClass {
                 params.set("headerType", quic.type);
                 break;
             case "mkcp":
-                const kcp = this.stream.kcp;
-                if (!ObjectUtil.isEmpty(kcp.type) && kcp.type !== 'none') {
-                    params.set("headerType", kcp.type);
-                }
-                if (!ObjectUtil.isEmpty(kcp.seed)) {
-                    params.set("seed", kcp.seed);
+                const finalmask = this.stream.kcp.toFinalMask();
+                if (!ObjectUtil.isEmpty(finalmask)) {
+                    params.set("fm", JSON.stringify(finalmask));
                 }
                 break;
             case "grpc":

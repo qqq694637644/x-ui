@@ -63,7 +63,7 @@
                                 <a-tag color="cyan">[[ tunnel.protocol ]]</a-tag>
                                 <a-tag color="orange">[[ tunnel.remoteAddress ]]:[[ tunnel.remotePort ]]</a-tag>
                             </template>
-                            <template slot="kcp">
+                            <template slot="kcp" slot-scope="text, tunnel">
                                 <a-tag color="green">mkcp</a-tag>
                                 <a-tag :color="tunnel.kcpFinalMaskType && tunnel.kcpFinalMaskType !== 'none' ? 'purple' : 'orange'">[[ tunnel.kcpFinalMaskType || 'none' ]]</a-tag>
                                 <a-tag color="blue">Xray 26</a-tag>

@@ -312,6 +312,9 @@ class KcpStreamSettings extends XrayCommonClass {
             udp.push({ type: headerMap[this.type], settings: {} });
         }
         const seed = (this.seed || '').trim();
+        if (udp.length === 0 && ObjectUtil.isEmpty(seed)) {
+            return undefined;
+        }
         if (ObjectUtil.isEmpty(seed)) {
             udp.push({ type: 'mkcp-original', settings: {} });
         } else {

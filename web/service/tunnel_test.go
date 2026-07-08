@@ -74,3 +74,37 @@ func TestGenXrayOutboundConfigOmitsRemovedMkcpHeaderAndSeed(t *testing.T) {
 		t.Fatalf("mkcp-aes128gcm settings = %#v, want password legacy-seed", mkcpMask["settings"])
 	}
 }
+
+func TestGenXrayOutboundConfigOmitsFinalMaskForPlainMkcp(t *testing.T) {
+	tunnel := &model.Tunnel{
+		Id:                  1,
+		RemoteAddress:       "example.com",
+		RemotePort:          443,
+		Protocol:            "vless",
+		UUID:                "00000000-0000-0000-0000-000000000000",
+		KcpHeaderType:       "none",
+		KcpMtu:              1350,
+		KcpTti:              20,
+		KcpUplinkCapacity:   5,
+		KcpDownlinkCapacity: 20,
+		KcpReadBufferSize:   2,
+		KcpWriteBufferSize:  2,
+	}
+
+	outboundConfig, err := (&TunnelService{}).genXrayOutboundConfig(tunnel)
+	if err != nil {
+		t.Fatalf("genXrayOutboundConfig() error = %v", err)
+	}
+
+	var outbound map[string]interface{}
+	if err := json.Unmarshal(outboundConfig, &outbound); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	streamSettings, ok := outbound["streamSettings"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("streamSettings missing or invalid: %#v", outbound["streamSettings"])
+	}
+	if _, ok := streamSettings["finalmask"]; ok {
+		t.Fatalf("plain mkcp must not include finalmask: %#v", streamSettings["finalmask"])
+	}
+}

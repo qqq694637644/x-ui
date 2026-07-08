@@ -269,7 +269,9 @@ func (s *TunnelService) genXrayOutboundConfig(tunnel *model.Tunnel) (json.RawMes
 			"readBufferSize":   tunnel.KcpReadBufferSize,
 			"writeBufferSize":  tunnel.KcpWriteBufferSize,
 		},
-		"finalmask": buildMkcpFinalMask(tunnel.KcpHeaderType, tunnel.KcpSeed),
+	}
+	if finalmask := buildMkcpFinalMask(tunnel.KcpHeaderType, tunnel.KcpSeed); finalmask != nil {
+		streamSettings["finalmask"] = finalmask
 	}
 
 	outbound := map[string]interface{}{
@@ -306,6 +308,10 @@ func buildMkcpFinalMask(headerType string, seed string) map[string]interface{} {
 			"type":     "header-wechat",
 			"settings": map[string]interface{}{},
 		})
+	}
+
+	if len(udp) == 0 && strings.TrimSpace(seed) == "" {
+		return nil
 	}
 
 	if strings.TrimSpace(seed) == "" {

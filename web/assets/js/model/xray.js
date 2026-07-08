@@ -249,8 +249,6 @@ class KcpStreamSettings extends XrayCommonClass {
                 congestion=false,
                 readBufferSize=2,
                 writeBufferSize=2,
-                type='none',
-                seed=RandomUtil.randomSeq(10),
                 ) {
         super();
         this.mtu = mtu;
@@ -260,8 +258,6 @@ class KcpStreamSettings extends XrayCommonClass {
         this.congestion = congestion;
         this.readBuffer = readBufferSize;
         this.writeBuffer = writeBufferSize;
-        this.type = type;
-        this.seed = seed;
     }
 
     static fromJson(json={}) {
@@ -273,8 +269,6 @@ class KcpStreamSettings extends XrayCommonClass {
             json.congestion,
             json.readBufferSize,
             json.writeBufferSize,
-            ObjectUtil.isEmpty(json.header) ? 'none' : json.header.type,
-            json.seed,
         );
     }
 
@@ -287,10 +281,6 @@ class KcpStreamSettings extends XrayCommonClass {
             congestion: this.congestion,
             readBufferSize: this.readBuffer,
             writeBufferSize: this.writeBuffer,
-            header: {
-                type: this.type,
-            },
-            seed: this.seed,
         };
     }
 }
@@ -543,6 +533,9 @@ class StreamSettings extends XrayCommonClass {
     }
 
     static fromJson(json={}) {
+        if (json.network === 'kcp') {
+            throw new Error('Xray-core 26.3.27 requires streamSettings.network mkcp; legacy kcp is not supported');
+        }
         let tls;
         if (json.security === "xtls") {
             tls = TlsStreamSettings.fromJson(json.xtlsSettings);
@@ -570,7 +563,7 @@ class StreamSettings extends XrayCommonClass {
             tlsSettings: this.isTls ? this.tls.toJson() : undefined,
             xtlsSettings: this.isXTls ? this.tls.toJson() : undefined,
             tcpSettings: network === 'tcp' ? this.tcp.toJson() : undefined,
-            kcpSettings: network === 'kcp' ? this.kcp.toJson() : undefined,
+            kcpSettings: network === 'mkcp' ? this.kcp.toJson() : undefined,
             wsSettings: network === 'ws' ? this.ws.toJson() : undefined,
             httpSettings: network === 'http' ? this.http.toJson() : undefined,
             quicSettings: network === 'quic' ? this.quic.toJson() : undefined,
@@ -672,7 +665,7 @@ class Inbound extends XrayCommonClass {
     }
 
     get isKcp() {
-        return this.network === "kcp";
+        return this.network === "mkcp";
     }
 
     get isQuic() {
@@ -798,14 +791,6 @@ class Inbound extends XrayCommonClass {
         return this.stream.quic.type;
     }
 
-    get kcpType() {
-        return this.stream.kcp.type;
-    }
-
-    get kcpSeed() {
-        return this.stream.kcp.seed;
-    }
-
     get serviceName() {
         return this.stream.grpc.serviceName;
     }
@@ -900,10 +885,6 @@ class Inbound extends XrayCommonClass {
                     host = request.headers[index].value;
                 }
             }
-        } else if (network === 'kcp') {
-            let kcp = this.stream.kcp;
-            type = kcp.type;
-            path = kcp.seed;
         } else if (network === 'ws') {
             let ws = this.stream.ws;
             path = ws.path;
@@ -969,11 +950,6 @@ class Inbound extends XrayCommonClass {
                         params.set("host", host);
                     }
                 }
-                break;
-            case "kcp":
-                const kcp = this.stream.kcp;
-                params.set("headerType", kcp.type);
-                params.set("seed", kcp.seed);
                 break;
             case "ws":
                 const ws = this.stream.ws;

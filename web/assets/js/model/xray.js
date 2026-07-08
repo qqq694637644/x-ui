@@ -533,6 +533,9 @@ class StreamSettings extends XrayCommonClass {
     }
 
     static fromJson(json={}) {
+        if (json.network === 'kcp') {
+            throw new Error('Xray-core 26.3.27 requires streamSettings.network mkcp; legacy kcp is not supported');
+        }
         let tls;
         if (json.security === "xtls") {
             tls = TlsStreamSettings.fromJson(json.xtlsSettings);
@@ -560,7 +563,7 @@ class StreamSettings extends XrayCommonClass {
             tlsSettings: this.isTls ? this.tls.toJson() : undefined,
             xtlsSettings: this.isXTls ? this.tls.toJson() : undefined,
             tcpSettings: network === 'tcp' ? this.tcp.toJson() : undefined,
-            kcpSettings: network === 'kcp' ? this.kcp.toJson() : undefined,
+            kcpSettings: network === 'mkcp' ? this.kcp.toJson() : undefined,
             wsSettings: network === 'ws' ? this.ws.toJson() : undefined,
             httpSettings: network === 'http' ? this.http.toJson() : undefined,
             quicSettings: network === 'quic' ? this.quic.toJson() : undefined,
@@ -662,7 +665,7 @@ class Inbound extends XrayCommonClass {
     }
 
     get isKcp() {
-        return this.network === "kcp";
+        return this.network === "mkcp";
     }
 
     get isQuic() {

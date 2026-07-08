@@ -2,36 +2,30 @@ package xray_util
 
 import "testing"
 
-func TestStripDeprecatedKcpHeaderSeedRemovesHeaderAndSeed(t *testing.T) {
-	input := "{\"network\":\"kcp\",\"kcpSettings\":{\"mtu\":1350,\"header\":{\"type\":\"srtp\"},\"seed\":\"legacy-seed\"}}"
-	got, changed, err := StripDeprecatedKcpHeaderSeed(input)
-	if err != nil {
-		t.Fatalf("StripDeprecatedKcpHeaderSeed() error = %v", err)
-	}
-	if !changed {
-		t.Fatal("StripDeprecatedKcpHeaderSeed() changed = false, want true")
-	}
-	if got == input {
-		t.Fatal("StripDeprecatedKcpHeaderSeed() did not rewrite stream settings")
-	}
-	if err := RejectDeprecatedKcpHeaderSeed(input); err == nil {
-		t.Fatal("RejectDeprecatedKcpHeaderSeed() accepted removed mKCP header/seed fields")
+func TestValidateXray26327StreamSettingsRejectsLegacyKcpNetwork(t *testing.T) {
+	input := "{\"network\":\"kcp\",\"kcpSettings\":{\"mtu\":1350,\"tti\":20}}"
+	if err := ValidateXray26327StreamSettings(input); err == nil {
+		t.Fatal("ValidateXray26327StreamSettings() accepted legacy network kcp")
 	}
 }
 
-func TestStripDeprecatedKcpHeaderSeedLeavesCurrentSettings(t *testing.T) {
-	input := "{\"network\":\"kcp\",\"kcpSettings\":{\"mtu\":1350,\"tti\":20}}"
-	got, changed, err := StripDeprecatedKcpHeaderSeed(input)
-	if err != nil {
-		t.Fatalf("StripDeprecatedKcpHeaderSeed() error = %v", err)
+func TestValidateXray26327StreamSettingsRejectsLegacyKcpHeader(t *testing.T) {
+	input := "{\"network\":\"mkcp\",\"kcpSettings\":{\"mtu\":1350,\"header\":{\"type\":\"srtp\"}}}"
+	if err := ValidateXray26327StreamSettings(input); err == nil {
+		t.Fatal("ValidateXray26327StreamSettings() accepted removed kcpSettings.header")
 	}
-	if changed {
-		t.Fatal("StripDeprecatedKcpHeaderSeed() changed = true, want false")
+}
+
+func TestValidateXray26327StreamSettingsRejectsLegacyKcpSeed(t *testing.T) {
+	input := "{\"network\":\"mkcp\",\"kcpSettings\":{\"mtu\":1350,\"seed\":\"legacy-seed\"}}"
+	if err := ValidateXray26327StreamSettings(input); err == nil {
+		t.Fatal("ValidateXray26327StreamSettings() accepted removed kcpSettings.seed")
 	}
-	if got != input {
-		t.Fatalf("StripDeprecatedKcpHeaderSeed() = %s, want original", got)
-	}
-	if err := RejectDeprecatedKcpHeaderSeed(input); err != nil {
-		t.Fatalf("RejectDeprecatedKcpHeaderSeed() error = %v, want nil", err)
+}
+
+func TestValidateXray26327StreamSettingsAllowsMkcpBaseSettings(t *testing.T) {
+	input := "{\"network\":\"mkcp\",\"kcpSettings\":{\"mtu\":1350,\"tti\":20,\"uplinkCapacity\":5,\"downlinkCapacity\":20,\"congestion\":false,\"readBufferSize\":1,\"writeBufferSize\":1}}"
+	if err := ValidateXray26327StreamSettings(input); err != nil {
+		t.Fatalf("ValidateXray26327StreamSettings() error = %v, want nil", err)
 	}
 }

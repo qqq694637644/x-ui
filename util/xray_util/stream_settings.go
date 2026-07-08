@@ -2,53 +2,42 @@ package xray_util
 
 import (
 	"encoding/json"
-	"errors"
+	"fmt"
 )
 
-var ErrDeprecatedKcpHeaderSeed = errors.New("Xray 26 已移除 mKCP header/seed")
-
-func StripDeprecatedKcpHeaderSeed(streamSettings string) (string, bool, error) {
+func ValidateXray26327StreamSettings(streamSettings string) error {
 	if streamSettings == "" {
-		return streamSettings, false, nil
+		return nil
 	}
 
-	settings := map[string]interface{}{}
+	settings := map[string]json.RawMessage{}
 	if err := json.Unmarshal([]byte(streamSettings), &settings); err != nil {
-		return streamSettings, false, err
-	}
-
-	kcpSettings, ok := settings["kcpSettings"].(map[string]interface{})
-	if !ok {
-		return streamSettings, false, nil
-	}
-
-	changed := false
-	if _, ok := kcpSettings["header"]; ok {
-		delete(kcpSettings, "header")
-		changed = true
-	}
-	if _, ok := kcpSettings["seed"]; ok {
-		delete(kcpSettings, "seed")
-		changed = true
-	}
-	if !changed {
-		return streamSettings, false, nil
-	}
-
-	data, err := json.Marshal(settings)
-	if err != nil {
-		return streamSettings, false, err
-	}
-	return string(data), true, nil
-}
-
-func RejectDeprecatedKcpHeaderSeed(streamSettings string) error {
-	_, changed, err := StripDeprecatedKcpHeaderSeed(streamSettings)
-	if err != nil {
 		return err
 	}
-	if changed {
-		return ErrDeprecatedKcpHeaderSeed
+
+	if rawNetwork, ok := settings["network"]; ok {
+		var network string
+		if err := json.Unmarshal(rawNetwork, &network); err != nil {
+			return err
+		}
+		if network == "kcp" {
+			return fmt.Errorf("Xray-core 26.3.27 不支持旧 streamSettings.network=kcp，请改为 mkcp")
+		}
+	}
+
+	rawKcpSettings, ok := settings["kcpSettings"]
+	if !ok {
+		return nil
+	}
+	kcpSettings := map[string]json.RawMessage{}
+	if err := json.Unmarshal(rawKcpSettings, &kcpSettings); err != nil {
+		return err
+	}
+	if _, ok := kcpSettings["header"]; ok {
+		return fmt.Errorf("Xray-core 26.3.27 不支持 kcpSettings.header，请迁移到 FinalMask")
+	}
+	if _, ok := kcpSettings["seed"]; ok {
+		return fmt.Errorf("Xray-core 26.3.27 不支持 kcpSettings.seed，请迁移到 FinalMask")
 	}
 	return nil
 }

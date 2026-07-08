@@ -50,7 +50,7 @@ func (s *InboundService) checkPortExist(port int, ignoreId int) (bool, error) {
 }
 
 func (s *InboundService) AddInbound(inbound *model.Inbound) error {
-	if err := xray_util.RejectDeprecatedKcpHeaderSeed(inbound.StreamSettings); err != nil {
+	if err := xray_util.ValidateXray26327StreamSettings(inbound.StreamSettings); err != nil {
 		return err
 	}
 	exist, err := s.checkPortExist(inbound.Port, 0)
@@ -66,7 +66,7 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) error {
 
 func (s *InboundService) AddInbounds(inbounds []*model.Inbound) error {
 	for _, inbound := range inbounds {
-		if err := xray_util.RejectDeprecatedKcpHeaderSeed(inbound.StreamSettings); err != nil {
+		if err := xray_util.ValidateXray26327StreamSettings(inbound.StreamSettings); err != nil {
 			return err
 		}
 		exist, err := s.checkPortExist(inbound.Port, 0)
@@ -115,7 +115,7 @@ func (s *InboundService) GetInbound(id int) (*model.Inbound, error) {
 }
 
 func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
-	if err := xray_util.RejectDeprecatedKcpHeaderSeed(inbound.StreamSettings); err != nil {
+	if err := xray_util.ValidateXray26327StreamSettings(inbound.StreamSettings); err != nil {
 		return err
 	}
 	exist, err := s.checkPortExist(inbound.Port, inbound.Id)

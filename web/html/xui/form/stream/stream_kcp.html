@@ -1,8 +1,8 @@
 {{define "form/streamKCP"}}
 <a-form layout="inline">
     <a-alert type="warning" show-icon style="margin-bottom: 16px;"
-             message="Xray 26 已移除 mKCP header 与 seed"
-             description="普通入站配置不再写入 kcpSettings.header 或 kcpSettings.seed；旧版 mKCP 混淆请迁移到 Xray FinalMask。"></a-alert>
+             message="当前只支持 Xray-core 26.3.27 的 mkcp 基础配置"
+             description="普通入站只写入 network=mkcp 以及 mtu、tti、capacity、congestion、buffer size；旧版 kcp、header、seed 均不兼容，混淆请迁移到 FinalMask。"></a-alert>
     <a-form-item label="mtu">
         <a-input type="number" v-model.number="inbound.stream.kcp.mtu"></a-input>
     </a-form-item>

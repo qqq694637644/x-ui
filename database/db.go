@@ -1,6 +1,7 @@
 package database
 
 import (
+	"fmt"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -47,24 +48,17 @@ func initInbound() error {
 	if err := db.AutoMigrate(&model.Inbound{}); err != nil {
 		return err
 	}
-	return migrateLegacyInboundKcpStreamSettings()
+	return validateInboundStreamSettingsForXray26327()
 }
 
-func migrateLegacyInboundKcpStreamSettings() error {
+func validateInboundStreamSettingsForXray26327() error {
 	var inbounds []*model.Inbound
 	if err := db.Model(&model.Inbound{}).Find(&inbounds).Error; err != nil {
 		return err
 	}
 	for _, inbound := range inbounds {
-		streamSettings, changed, err := xray_util.StripDeprecatedKcpHeaderSeed(inbound.StreamSettings)
-		if err != nil {
-			return err
-		}
-		if !changed {
-			continue
-		}
-		if err := db.Model(&model.Inbound{}).Where("id = ?", inbound.Id).Update("stream_settings", streamSettings).Error; err != nil {
-			return err
+		if err := xray_util.ValidateXray26327StreamSettings(inbound.StreamSettings); err != nil {
+			return fmt.Errorf("inbound id=%d tag=%s port=%d stream_settings 不兼容 Xray-core 26.3.27: %w", inbound.Id, inbound.Tag, inbound.Port, err)
 		}
 	}
 	return nil

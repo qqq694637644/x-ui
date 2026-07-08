@@ -249,6 +249,8 @@ class KcpStreamSettings extends XrayCommonClass {
                 congestion=false,
                 readBufferSize=2,
                 writeBufferSize=2,
+                type='none',
+                seed='',
                 ) {
         super();
         this.mtu = mtu;
@@ -258,9 +260,12 @@ class KcpStreamSettings extends XrayCommonClass {
         this.congestion = congestion;
         this.readBuffer = readBufferSize;
         this.writeBuffer = writeBufferSize;
+        this.type = type;
+        this.seed = seed;
     }
 
-    static fromJson(json={}) {
+    static fromJson(json={}, finalmask={}) {
+        const parsedFinalMask = KcpStreamSettings.parseFinalMask(finalmask);
         return new KcpStreamSettings(
             json.mtu,
             json.tti,
@@ -269,7 +274,50 @@ class KcpStreamSettings extends XrayCommonClass {
             json.congestion,
             json.readBufferSize,
             json.writeBufferSize,
+            parsedFinalMask.type,
+            parsedFinalMask.seed,
         );
+    }
+
+    static parseFinalMask(finalmask={}) {
+        const parsed = { type: 'none', seed: '' };
+        if (ObjectUtil.isEmpty(finalmask) || !Array.isArray(finalmask.udp)) {
+            return parsed;
+        }
+        for (const mask of finalmask.udp) {
+            switch (mask.type) {
+                case 'header-srtp': parsed.type = 'srtp'; break;
+                case 'header-utp': parsed.type = 'utp'; break;
+                case 'header-wechat': parsed.type = 'wechat-video'; break;
+                case 'header-dtls': parsed.type = 'dtls'; break;
+                case 'header-wireguard': parsed.type = 'wireguard'; break;
+                case 'mkcp-aes128gcm':
+                    parsed.seed = mask.settings && mask.settings.password ? mask.settings.password : '';
+                    break;
+            }
+        }
+        return parsed;
+    }
+
+    toFinalMask() {
+        const udp = [];
+        const headerMap = {
+            'srtp': 'header-srtp',
+            'utp': 'header-utp',
+            'wechat-video': 'header-wechat',
+            'dtls': 'header-dtls',
+            'wireguard': 'header-wireguard',
+        };
+        if (headerMap[this.type]) {
+            udp.push({ type: headerMap[this.type], settings: {} });
+        }
+        const seed = (this.seed || '').trim();
+        if (ObjectUtil.isEmpty(seed)) {
+            udp.push({ type: 'mkcp-original', settings: {} });
+        } else {
+            udp.push({ type: 'mkcp-aes128gcm', settings: { password: seed } });
+        }
+        return { udp: udp };
     }
 
     toJson() {
@@ -547,7 +595,7 @@ class StreamSettings extends XrayCommonClass {
             json.security,
             tls,
             TcpStreamSettings.fromJson(json.tcpSettings),
-            KcpStreamSettings.fromJson(json.kcpSettings),
+            KcpStreamSettings.fromJson(json.kcpSettings, json.finalmask),
             WsStreamSettings.fromJson(json.wsSettings),
             HttpStreamSettings.fromJson(json.httpSettings),
             QuicStreamSettings.fromJson(json.quicSettings),
@@ -568,6 +616,7 @@ class StreamSettings extends XrayCommonClass {
             httpSettings: network === 'http' ? this.http.toJson() : undefined,
             quicSettings: network === 'quic' ? this.quic.toJson() : undefined,
             grpcSettings: network === 'grpc' ? this.grpc.toJson() : undefined,
+            finalmask: network === 'mkcp' ? this.kcp.toFinalMask() : undefined,
         };
     }
 }
@@ -970,6 +1019,15 @@ class Inbound extends XrayCommonClass {
                 params.set("quicSecurity", quic.security);
                 params.set("key", quic.key);
                 params.set("headerType", quic.type);
+                break;
+            case "mkcp":
+                const kcp = this.stream.kcp;
+                if (!ObjectUtil.isEmpty(kcp.type) && kcp.type !== 'none') {
+                    params.set("headerType", kcp.type);
+                }
+                if (!ObjectUtil.isEmpty(kcp.seed)) {
+                    params.set("seed", kcp.seed);
+                }
                 break;
             case "grpc":
                 const grpc = this.stream.grpc;

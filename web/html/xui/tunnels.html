@@ -21,7 +21,7 @@
                 <transition name="list" appear>
                     <a-card hoverable style="margin-bottom: 20px;">
                         <a-alert type="info" show-icon message="A 端隧道说明"
-                                 description="这里仅生成本机 dokodemo-door inbound、mKCP outbound 和 routing 规则。Xray 26 已移除 mKCP header 与 seed 字段，本页面生成的新配置不会写入这些字段；B 端 Xray 如何接收和落地由远端自行配置。"></a-alert>
+                                 description="这里仅生成本机 dokodemo-door inbound、mKCP outbound 和 routing 规则。伪装与密码会转换为 Xray 26 的 FinalMask 配置，不会写入已移除的 kcpSettings.header/seed。"></a-alert>
                     </a-card>
                 </transition>
                 <transition name="list" appear>
@@ -65,6 +65,8 @@
                             </template>
                             <template slot="kcp">
                                 <a-tag color="green">mkcp</a-tag>
+                                <a-tag color="purple">[[ tunnel.kcpHeaderType || 'none' ]]</a-tag>
+                                <a-tag v-if="tunnel.kcpSeed" color="orange">seed</a-tag>
                                 <a-tag color="blue">Xray 26</a-tag>
                             </template>
                         </a-table>
@@ -161,8 +163,27 @@
 
             <a-divider orientation="left">mKCP 参数</a-divider>
             <a-alert type="warning" show-icon style="margin-bottom: 16px;"
-                     message="Xray 26 已移除 mKCP header 与 seed"
-                     description="隧道配置生成时只写入 mtu、tti、capacity、congestion、buffer size 等仍受支持的 kcpSettings 字段。旧版 header/seed 混淆需要改用 Xray FinalMask，由 B 端与客户端配置自行保持一致。"></a-alert>
+                     message="mKCP 旧 UI 会自动生成 Xray 26 FinalMask 配置"
+                     description="伪装和密码只作为 UI 输入保存，会转换为 streamSettings.finalmask.udp；不会写入已移除的 kcpSettings.header/seed。"></a-alert>
+            <a-row :gutter="16">
+                <a-col :xs="24" :md="12">
+                    <a-form-item label="伪装">
+                        <a-select v-model="modal.tunnel.kcpHeaderType">
+                            <a-select-option value="none">none（not camouflage）</a-select-option>
+                            <a-select-option value="srtp">srtp（camouflage video call）</a-select-option>
+                            <a-select-option value="utp">utp（camouflage BT download）</a-select-option>
+                            <a-select-option value="wechat-video">wechat-video（camouflage WeChat video）</a-select-option>
+                            <a-select-option value="dtls">dtls（camouflage DTLS 1.2 packages）</a-select-option>
+                            <a-select-option value="wireguard">wireguard（camouflage wireguard packages）</a-select-option>
+                        </a-select>
+                    </a-form-item>
+                </a-col>
+                <a-col :xs="24" :md="12">
+                    <a-form-item label="密码">
+                        <a-input v-model="modal.tunnel.kcpSeed"></a-input>
+                    </a-form-item>
+                </a-col>
+            </a-row>
             <a-row :gutter="16">
                 <a-col :xs="24" :md="6">
                     <a-form-item label="mtu">
@@ -263,6 +284,8 @@
             remotePort: 0,
             protocol: 'vless',
             uuid: RandomUtil.randomUUID(),
+            kcpHeaderType: 'none',
+            kcpSeed: '',
             kcpMtu: 1350,
             kcpTti: 20,
             kcpUplinkCapacity: 5,

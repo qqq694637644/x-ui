@@ -17,7 +17,8 @@
 
 <template v-if="inbound.isKcp">
     <p>mKCP: <a-tag color="blue">Xray 26</a-tag></p>
-    <p>header/seed: <a-tag color="orange">已移除</a-tag></p>
+    <p>伪装: <a-tag color="green">[[ inbound.stream.kcp.type || 'none' ]]</a-tag></p>
+    <p>密码: <a-tag :color="inbound.stream.kcp.seed ? 'green' : 'orange'">[[ inbound.stream.kcp.seed ? '已设置' : '无' ]]</a-tag></p>
 </template>
 
 <template v-if="inbound.isGrpc">

@@ -2,24 +2,24 @@ package controller
 
 import "testing"
 
-func TestRejectDeprecatedTunnelFieldsRejectsLegacyJSON(t *testing.T) {
+func TestRejectDeprecatedTunnelFieldsAllowsKcpHeaderTypeJSON(t *testing.T) {
 	err := rejectDeprecatedTunnelFields([]byte("{\"kcpHeaderType\":\"srtp\"}"), "")
-	if err == nil {
-		t.Fatal("rejectDeprecatedTunnelFields() accepted removed kcpHeaderType JSON field")
+	if err != nil {
+		t.Fatalf("rejectDeprecatedTunnelFields() error = %v, want nil", err)
 	}
 }
 
-func TestRejectDeprecatedTunnelFieldsRejectsLegacyForm(t *testing.T) {
+func TestRejectDeprecatedTunnelFieldsAllowsKcpSeedForm(t *testing.T) {
 	err := rejectDeprecatedTunnelFields([]byte("kcpSeed=legacy-seed"), "")
-	if err == nil {
-		t.Fatal("rejectDeprecatedTunnelFields() accepted removed kcpSeed form field")
+	if err != nil {
+		t.Fatalf("rejectDeprecatedTunnelFields() error = %v, want nil", err)
 	}
 }
 
-func TestRejectDeprecatedTunnelFieldsRejectsLegacyQuery(t *testing.T) {
+func TestRejectDeprecatedTunnelFieldsAllowsKcpSeedQuery(t *testing.T) {
 	err := rejectDeprecatedTunnelFields(nil, "kcpSeed=legacy-seed")
-	if err == nil {
-		t.Fatal("rejectDeprecatedTunnelFields() accepted removed kcpSeed query field")
+	if err != nil {
+		t.Fatalf("rejectDeprecatedTunnelFields() error = %v, want nil", err)
 	}
 }
 

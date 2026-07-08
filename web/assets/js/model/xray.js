@@ -276,13 +276,23 @@ class KcpStreamSettings extends XrayCommonClass {
     }
 
     static parseFinalMaskType(finalmask={}) {
-        const allowed = ['header-srtp', 'header-utp', 'header-wechat', 'header-dtls', 'header-wireguard'];
+        const allowed = ['srtp', 'utp', 'wechat', 'dtls', 'wireguard'];
         if (ObjectUtil.isEmpty(finalmask) || !Array.isArray(finalmask.udp)) {
             return 'none';
         }
         for (const mask of finalmask.udp) {
-            if (mask && allowed.includes(mask.type)) {
-                return mask.type;
+            if (!mask) {
+                continue;
+            }
+            if (mask.type === 'mkcp-legacy') {
+                const header = mask.settings && mask.settings.header;
+                if (allowed.includes(header)) {
+                    return header;
+                }
+            }
+            const legacyHeader = mask.type && mask.type.startsWith('header-') ? mask.type.substring(7) : mask.type;
+            if (allowed.includes(legacyHeader)) {
+                return legacyHeader;
             }
         }
         return 'none';
@@ -292,7 +302,7 @@ class KcpStreamSettings extends XrayCommonClass {
         if (ObjectUtil.isEmpty(this.finalMaskType) || this.finalMaskType === 'none') {
             return undefined;
         }
-        return { udp: [{ type: this.finalMaskType, settings: {} }] };
+        return { udp: [{ type: 'mkcp-legacy', settings: { header: this.finalMaskType, value: '' } }] };
     }
 
     toJson() {

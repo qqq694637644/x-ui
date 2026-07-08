@@ -6,11 +6,11 @@
     <a-form-item label="FinalMask UDP header">
         <a-select v-model="inbound.stream.kcp.finalMaskType" style="width: 240px;">
             <a-select-option value="none">none</a-select-option>
-            <a-select-option value="header-srtp">header-srtp</a-select-option>
-            <a-select-option value="header-utp">header-utp</a-select-option>
-            <a-select-option value="header-wechat">header-wechat</a-select-option>
-            <a-select-option value="header-dtls">header-dtls</a-select-option>
-            <a-select-option value="header-wireguard">header-wireguard</a-select-option>
+            <a-select-option value="srtp">srtp</a-select-option>
+            <a-select-option value="utp">utp</a-select-option>
+            <a-select-option value="wechat">wechat</a-select-option>
+            <a-select-option value="dtls">dtls</a-select-option>
+            <a-select-option value="wireguard">wireguard</a-select-option>
         </a-select>
     </a-form-item>
     <a-form-item label="mtu">

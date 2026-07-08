@@ -64,6 +64,9 @@ func (s *TunnelService) normalizeTunnel(tunnel *model.Tunnel) {
 	tunnel.Protocol = strings.ToLower(strings.TrimSpace(tunnel.Protocol))
 	tunnel.Network = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(tunnel.Network), " ", ""))
 	tunnel.KcpFinalMaskType = strings.TrimSpace(tunnel.KcpFinalMaskType)
+	if strings.HasPrefix(tunnel.KcpFinalMaskType, "header-") {
+		tunnel.KcpFinalMaskType = strings.TrimPrefix(tunnel.KcpFinalMaskType, "header-")
+	}
 
 	if tunnel.Protocol == "" {
 		tunnel.Protocol = "vless"
@@ -133,7 +136,7 @@ func (s *TunnelService) checkTunnel(tunnel *model.Tunnel) error {
 
 func isValidKcpFinalMaskType(maskType string) bool {
 	switch strings.TrimSpace(maskType) {
-	case "", "none", "header-srtp", "header-utp", "header-wechat", "header-dtls", "header-wireguard":
+	case "", "none", "srtp", "utp", "wechat", "dtls", "wireguard":
 		return true
 	default:
 		return false
@@ -301,8 +304,11 @@ func buildKcpFinalMask(maskType string) map[string]interface{} {
 	return map[string]interface{}{
 		"udp": []map[string]interface{}{
 			{
-				"type":     maskType,
-				"settings": map[string]interface{}{},
+				"type": "mkcp-legacy",
+				"settings": map[string]interface{}{
+					"header": maskType,
+					"value":  "",
+				},
 			},
 		},
 	}

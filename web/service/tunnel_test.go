@@ -13,7 +13,7 @@ func TestGenXrayOutboundConfigBuildsFinalMaskFromUIType(t *testing.T) {
 		RemotePort:          443,
 		Protocol:            "vless",
 		UUID:                "00000000-0000-0000-0000-000000000000",
-		KcpFinalMaskType:    "header-srtp",
+		KcpFinalMaskType:    "srtp",
 		KcpMtu:              1350,
 		KcpTti:              20,
 		KcpUplinkCapacity:   5,
@@ -60,9 +60,13 @@ func TestGenXrayOutboundConfigBuildsFinalMaskFromUIType(t *testing.T) {
 	if !ok || len(udp) != 1 {
 		t.Fatalf("finalmask.udp = %#v, want one mask", finalmask["udp"])
 	}
-	headerMask, ok := udp[0].(map[string]interface{})
-	if !ok || headerMask["type"] != "header-srtp" {
-		t.Fatalf("finalmask.udp[0] = %#v, want header-srtp", udp[0])
+	legacyMask, ok := udp[0].(map[string]interface{})
+	if !ok || legacyMask["type"] != "mkcp-legacy" {
+		t.Fatalf("finalmask.udp[0] = %#v, want mkcp-legacy", udp[0])
+	}
+	settings, ok := legacyMask["settings"].(map[string]interface{})
+	if !ok || settings["header"] != "srtp" || settings["value"] != "" {
+		t.Fatalf("finalmask.udp[0].settings = %#v, want header=srtp value empty", legacyMask["settings"])
 	}
 }
 

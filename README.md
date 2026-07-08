@@ -16,28 +16,40 @@
 
 # 安装&升级
 
+目前 Release 只提供 Linux amd64 编译包，文件名为 `x-ui-linux-amd64.tar.gz`。
+
+## 一键安装&升级
+
 ```
-bash <(curl -Ls https://raw.githubusercontent.com/vaxilu/x-ui/master/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/qqq694637644/x-ui/main/install.sh)
+```
+
+安装指定版本，例如 `test`：
+
+```
+bash <(curl -Ls https://raw.githubusercontent.com/qqq694637644/x-ui/main/install.sh) test
 ```
 
 ## 手动安装&升级
 
-1. 首先从 https://github.com/vaxilu/x-ui/releases 下载最新的压缩包，一般选择 `amd64`架构
-2. 然后将这个压缩包上传到服务器的 `/root/`目录下，并使用 `root`用户登录服务器
+1. 从 https://github.com/qqq694637644/x-ui/releases 下载 `x-ui-linux-amd64.tar.gz`
+2. 将压缩包上传到服务器的 `/root/` 目录，并使用 `root` 用户登录服务器
 
-> 如果你的服务器 cpu 架构不是 `amd64`，自行将命令中的 `amd64`替换为其他架构
+也可以直接在服务器下载最新 Release 的 amd64 编译包：
 
 ```
 cd /root/
+curl -fL -o x-ui-linux-amd64.tar.gz https://github.com/qqq694637644/x-ui/releases/latest/download/x-ui-linux-amd64.tar.gz
 rm x-ui/ /usr/local/x-ui/ /usr/bin/x-ui -rf
 tar zxvf x-ui-linux-amd64.tar.gz
-chmod +x x-ui/x-ui x-ui/bin/xray-linux-* x-ui/x-ui.sh
+chmod +x x-ui/x-ui x-ui/bin/xray-linux-amd64 x-ui/x-ui.sh
 cp x-ui/x-ui.sh /usr/bin/x-ui
 cp -f x-ui/x-ui.service /etc/systemd/system/
 mv x-ui/ /usr/local/
 systemctl daemon-reload
 systemctl enable x-ui
 systemctl restart x-ui
+x-ui status
 ```
 
 ## 使用docker安装
@@ -140,4 +152,4 @@ x-ui v2-ui
 
 ## Stargazers over time
 
-[![Stargazers over time](https://starchart.cc/vaxilu/x-ui.svg)](https://starchart.cc/vaxilu/x-ui)
+[![Stargazers over time](https://starchart.cc/qqq694637644/x-ui.svg)](https://starchart.cc/qqq694637644/x-ui)

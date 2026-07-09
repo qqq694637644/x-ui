@@ -956,6 +956,46 @@ class Inbound extends XrayCommonClass {
             }
         }
 
+        if (network === 'mkcp') {
+            const settings = this.settings;
+            const params = new Map();
+            const kcp = this.stream.kcp;
+            params.set('type', network);
+            params.set('security', this.stream.security);
+            params.set('mtu', kcp.mtu);
+            params.set('tti', kcp.tti);
+            params.set('uplinkCapacity', kcp.upCap);
+            params.set('downlinkCapacity', kcp.downCap);
+            if (kcp.congestion) {
+                params.set('congestion', '1');
+            }
+            params.set('readBufferSize', kcp.readBuffer);
+            params.set('writeBufferSize', kcp.writeBuffer);
+            const finalmask = kcp.toFinalMask();
+            if (!ObjectUtil.isEmpty(finalmask)) {
+                params.set('fm', JSON.stringify(finalmask));
+            }
+            if (this.stream.security === 'tls') {
+                if (!ObjectUtil.isEmpty(this.stream.tls.server)) {
+                    params.set('sni', this.stream.tls.server);
+                }
+                if (!ObjectUtil.isEmpty(this.stream.tls.alpn)) {
+                    params.set('alpn', this.stream.tls.alpn.join(','));
+                }
+            }
+
+            const host = address.includes(':') && !address.startsWith('[') ? `[${address}]` : address;
+            const link = `vmess://${settings.vmesses[0].id}@${host}:${this.port}`;
+            const url = new URL(link);
+            for (const [key, value] of params) {
+                if (!ObjectUtil.isEmpty(value)) {
+                    url.searchParams.set(key, value);
+                }
+            }
+            url.hash = encodeURIComponent(remark);
+            return url.toString();
+        }
+
         let obj = {
             v: '2',
             ps: remark,

@@ -381,7 +381,10 @@ func appendRoutingRule(raw *json_util.RawMessage, rule json.RawMessage) error {
 			return common.NewError("routing.rules 配置不是数组:", err)
 		}
 	}
-	rules = append(rules, rule)
+	// Tunnel routing rules must take precedence over generic rules such as
+	// geoip:private -> blocked. Otherwise dokodemo-door targets like
+	// 127.0.0.1 can be blackholed before the tunnel outbound is selected.
+	rules = append([]json.RawMessage{rule}, rules...)
 	rulesData, err := json.Marshal(rules)
 	if err != nil {
 		return err

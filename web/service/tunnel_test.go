@@ -1,9 +1,11 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 	"x-ui/database/model"
+	"x-ui/util/json_util"
 )
 
 func TestGenXrayOutboundConfigBuildsFinalMaskFromUIType(t *testing.T) {
@@ -97,5 +99,47 @@ func TestGenXrayOutboundConfigOmitsFinalMaskForPlainMkcp(t *testing.T) {
 	}
 	if _, ok := streamSettings["finalmask"]; ok {
 		t.Fatalf("plain mkcp must not include finalmask: %#v", streamSettings["finalmask"])
+	}
+}
+
+func TestAppendRoutingRulePrependsTunnelRule(t *testing.T) {
+	routing := json_util.RawMessage(`{
+  "rules": [
+    {
+      "ip": ["geoip:private"],
+      "outboundTag": "blocked",
+      "type": "field"
+    }
+  ]
+}`)
+	tunnelRule := json.RawMessage(`{
+  "inboundTag": ["tunnel-in-1"],
+  "outboundTag": "tunnel-out-1",
+  "type": "field"
+}`)
+
+	if err := appendRoutingRule(&routing, tunnelRule); err != nil {
+		t.Fatalf("appendRoutingRule() error = %v", err)
+	}
+
+	var parsed struct {
+		Rules []json.RawMessage `json:"rules"`
+	}
+	if err := json.Unmarshal([]byte(routing), &parsed); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if len(parsed.Rules) != 2 {
+		t.Fatalf("rules length = %d, want 2", len(parsed.Rules))
+	}
+	if !bytes.Equal(bytes.TrimSpace(parsed.Rules[0]), bytes.TrimSpace(tunnelRule)) {
+		t.Fatalf("first rule = %s, want tunnel rule %s", parsed.Rules[0], tunnelRule)
+	}
+
+	var secondRule map[string]interface{}
+	if err := json.Unmarshal(parsed.Rules[1], &secondRule); err != nil {
+		t.Fatalf("json.Unmarshal(second rule) error = %v", err)
+	}
+	if secondRule["outboundTag"] != "blocked" {
+		t.Fatalf("second rule outboundTag = %v, want blocked", secondRule["outboundTag"])
 	}
 }

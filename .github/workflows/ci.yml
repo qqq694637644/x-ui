@@ -43,3 +43,63 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+  portal-smoke:
+    name: Actual x-ui A + b_client_xray B smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout x-ui
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned b_client_xray generator
+        uses: actions/checkout@v4
+        with:
+          repository: qqq694637644/b_client_xray
+          ref: 1c33864eeeffc2c5305aab4ca8f0796586b571ae
+          path: .build/b_client_xray
+
+      - name: Checkout pinned Xray-core
+        uses: actions/checkout@v4
+        with:
+          repository: qqq694637644/Xray-core
+          ref: d2758a023cd7f4174a5a5fa4ff66e487d4342ba0
+          path: .build/xray-core-v26.3.27
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: .build/b_client_xray/requirements.txt
+
+      - name: Install B generator dependencies
+        run: python -m pip install -r .build/b_client_xray/requirements.txt
+
+      - name: Build pinned Xray
+        run: |
+          cd .build/xray-core-v26.3.27
+          go build -trimpath -o "$RUNNER_TEMP/xray-v26.3.27" ./main
+
+      - name: Generate A config with x-ui production generator
+        run: |
+          go run ./cmd/portal-fixture \
+            --output "$RUNNER_TEMP/xui-a.json" \
+            --business-port 18081 \
+            --portal-port 40000 \
+            --target-port 19090 \
+            --uuid my-home-xray
+
+      - name: Run actual A/B TCP/UDP Portal smoke
+        working-directory: .build/b_client_xray
+        run: |
+          python scripts/smoke_portal.py \
+            --xray "$RUNNER_TEMP/xray-v26.3.27" \
+            --a-config "$RUNNER_TEMP/xui-a.json" \
+            --uuid my-home-xray

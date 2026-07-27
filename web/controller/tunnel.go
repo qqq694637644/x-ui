@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"net/url"
 	"strconv"
 	"x-ui/database/model"
@@ -82,6 +83,29 @@ func (a *TunnelController) initRouter(g *gin.RouterGroup) {
 	g.POST("/add", a.addTunnel)
 	g.POST("/del/:id", a.delTunnel)
 	g.POST("/update/:id", a.updateTunnel)
+	g.POST("/test/:id", a.testTunnel)
+	g.POST("/apply", a.applyTunnels)
+}
+
+func (a *TunnelController) applySavedChange(c *gin.Context, action string, err error) {
+	if err != nil {
+		jsonMsg(c, action, err)
+		return
+	}
+	applyErr := a.xrayService.RestartXray(false)
+	if applyErr != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"msg":     action + "成功，但 Xray 应用失败: " + applyErr.Error(),
+			"obj":     gin.H{"saved": true, "applied": false, "error": applyErr.Error()},
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"msg":     action + "并应用成功",
+		"obj":     gin.H{"saved": true, "applied": true},
+	})
 }
 
 func (a *TunnelController) getTunnels(c *gin.Context) {
@@ -108,10 +132,7 @@ func (a *TunnelController) addTunnel(c *gin.Context) {
 	user := session.GetLoginUser(c)
 	tunnel.UserId = user.Id
 	err = a.tunnelService.AddTunnel(tunnel)
-	jsonMsg(c, "添加", err)
-	if err == nil {
-		a.xrayService.SetToNeedRestart()
-	}
+	a.applySavedChange(c, "添加", err)
 }
 
 func (a *TunnelController) delTunnel(c *gin.Context) {
@@ -122,10 +143,7 @@ func (a *TunnelController) delTunnel(c *gin.Context) {
 	}
 	user := session.GetLoginUser(c)
 	err = a.tunnelService.DelTunnel(id, user.Id)
-	jsonMsg(c, "删除", err)
-	if err == nil {
-		a.xrayService.SetToNeedRestart()
-	}
+	a.applySavedChange(c, "删除", err)
 }
 
 func (a *TunnelController) updateTunnel(c *gin.Context) {
@@ -148,8 +166,21 @@ func (a *TunnelController) updateTunnel(c *gin.Context) {
 	}
 	user := session.GetLoginUser(c)
 	err = a.tunnelService.UpdateTunnel(tunnel, user.Id)
-	jsonMsg(c, "修改", err)
-	if err == nil {
-		a.xrayService.SetToNeedRestart()
+	a.applySavedChange(c, "修改", err)
+}
+
+func (a *TunnelController) testTunnel(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		jsonMsg(c, "测试", err)
+		return
 	}
+	user := session.GetLoginUser(c)
+	tunnel, err := a.tunnelService.ProbeTunnel(id, user.Id)
+	jsonMsgObj(c, "测试", tunnel, err)
+}
+
+func (a *TunnelController) applyTunnels(c *gin.Context) {
+	err := a.xrayService.RestartXray(false)
+	jsonMsg(c, "应用隧道配置", err)
 }

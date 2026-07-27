@@ -13,6 +13,17 @@
 - 支持 https 访问面板（自备域名 + ssl 证书）
 - 支持一键SSL证书申请且自动续签
 - 更多高级配置项，详见面板
+- 隧道支持公网直连和 VMess/mKCP Portal 反向模式；无公网 IP 的 B 端可主动连接 A
+
+## 隧道模式
+
+- `direct`：A 端主动连接 B 端的 VMess/VLESS mKCP 监听端口，兼容现有配置。
+- `portal`：A 端提供 VMess/mKCP Portal UDP 入口，B 端通过 Xray `reverse.bridges` 主动连接 A；A 的业务入口可选择 TCP、UDP 或 TCP+UDP，目标地址表示 B 端可访问的地址。
+- Portal 模式固定使用 VMess，`alterId=0`，两端 UUID、mKCP 和 FinalMask 参数必须一致。
+- Release 工作流固定从 `qqq694637644/Xray-core` 的提交 `d2758a023cd7f4174a5a5fa4ff66e487d4342ba0` 构建 Xray v26.3.27。
+- Xray 兼容的 1–30 字节旧 ID 会按 v26.3.27 的 SHA-1 version 5 算法转换为规范 UUID；旧 direct 隧道无需手工更换 ID。
+- 数据库启动迁移会移除 `inbounds.port` 和 `tunnels.listen_port` 的旧单列唯一约束，端口是否冲突改由监听 IP、TCP/UDP 协议和端口共同判断。
+- CI 通过 `cmd/portal-fixture` 调用 x-ui 实际隧道生成器，再与固定提交的 `b_client_xray` 生成器运行双实例 TCP/UDP 与重连 smoke test。
 
 # 安装&升级
 

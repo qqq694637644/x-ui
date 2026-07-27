@@ -131,7 +131,15 @@ func TestAppendRoutingRulePrependsTunnelRule(t *testing.T) {
 	if len(parsed.Rules) != 2 {
 		t.Fatalf("rules length = %d, want 2", len(parsed.Rules))
 	}
-	if !bytes.Equal(bytes.TrimSpace(parsed.Rules[0]), bytes.TrimSpace(tunnelRule)) {
+	var compactActual bytes.Buffer
+	var compactExpected bytes.Buffer
+	if err := json.Compact(&compactActual, parsed.Rules[0]); err != nil {
+		t.Fatalf("json.Compact(actual rule) error = %v", err)
+	}
+	if err := json.Compact(&compactExpected, tunnelRule); err != nil {
+		t.Fatalf("json.Compact(expected rule) error = %v", err)
+	}
+	if !bytes.Equal(compactActual.Bytes(), compactExpected.Bytes()) {
 		t.Fatalf("first rule = %s, want tunnel rule %s", parsed.Rules[0], tunnelRule)
 	}
 
@@ -141,5 +149,129 @@ func TestAppendRoutingRulePrependsTunnelRule(t *testing.T) {
 	}
 	if secondRule["outboundTag"] != "blocked" {
 		t.Fatalf("second rule outboundTag = %v, want blocked", secondRule["outboundTag"])
+	}
+}
+
+func TestNormalizeTunnelDefaultsLegacyRecordToDirect(t *testing.T) {
+	tunnel := &model.Tunnel{}
+	(&TunnelService{}).normalizeTunnel(tunnel)
+	if tunnel.Mode != TunnelModeDirect {
+		t.Fatalf("mode = %q, want %q", tunnel.Mode, TunnelModeDirect)
+	}
+}
+
+func TestLegacyDirectTunnelShortIDCanStillBeEdited(t *testing.T) {
+	tunnel := &model.Tunnel{
+		Mode:                TunnelModeDirect,
+		ListenPort:          18081,
+		Network:             "tcp",
+		TargetAddress:       "127.0.0.1",
+		TargetPort:          18081,
+		RemoteAddress:       "198.51.100.20",
+		RemotePort:          40000,
+		Protocol:            "vmess",
+		UUID:                "my-home-xray",
+		KcpFinalMaskType:    "none",
+		KcpMtu:              1350,
+		KcpTti:              20,
+		KcpUplinkCapacity:   20,
+		KcpDownlinkCapacity: 100,
+		KcpReadBufferSize:   2,
+		KcpWriteBufferSize:  2,
+	}
+	service := &TunnelService{}
+	service.normalizeTunnel(tunnel)
+	if err := service.checkTunnel(tunnel); err != nil {
+		t.Fatalf("legacy short ID was rejected: %v", err)
+	}
+	if got, want := tunnel.UUID, "717ca3f3-97cd-589b-b805-3acd24b97366"; got != want {
+		t.Fatalf("normalized UUID = %q, want %q", got, want)
+	}
+}
+
+func TestPortalConfigUsesVMessMkcpAndReversePortal(t *testing.T) {
+	tunnel := &model.Tunnel{
+		Id:                  7,
+		Mode:                TunnelModePortal,
+		Listen:              "0.0.0.0",
+		ListenPort:          18081,
+		Network:             "tcp,udp",
+		TargetAddress:       "127.0.0.1",
+		TargetPort:          18081,
+		RemotePort:          40000,
+		Protocol:            "vmess",
+		UUID:                "11111111-1111-1111-1111-111111111111",
+		KcpFinalMaskType:    "header-srtp",
+		KcpMtu:              1350,
+		KcpTti:              20,
+		KcpUplinkCapacity:   5,
+		KcpDownlinkCapacity: 20,
+		KcpReadBufferSize:   2,
+		KcpWriteBufferSize:  2,
+	}
+
+	portalInbound, err := (&TunnelService{}).genXrayPortalInboundConfig(tunnel)
+	if err != nil {
+		t.Fatalf("genXrayPortalInboundConfig() error = %v", err)
+	}
+	if portalInbound.Protocol != "vmess" || portalInbound.Port != 40000 {
+		t.Fatalf("portal inbound = %#v", portalInbound)
+	}
+	var settings map[string]interface{}
+	if err := json.Unmarshal(portalInbound.Settings, &settings); err != nil {
+		t.Fatal(err)
+	}
+	clients := settings["clients"].([]interface{})
+	client := clients[0].(map[string]interface{})
+	if client["alterId"] != float64(0) {
+		t.Fatalf("alterId = %#v", client["alterId"])
+	}
+	var stream map[string]interface{}
+	if err := json.Unmarshal(portalInbound.StreamSettings, &stream); err != nil {
+		t.Fatal(err)
+	}
+	if stream["network"] != "mkcp" {
+		t.Fatalf("network = %#v", stream["network"])
+	}
+	if _, ok := stream["finalmask"]; !ok {
+		t.Fatal("finalmask missing")
+	}
+
+	reverse := json_util.RawMessage(`{"bridges":[{"tag":"existing","domain":"existing.example"}]}`)
+	if err := appendReversePortal(&reverse, tunnel); err != nil {
+		t.Fatalf("appendReversePortal() error = %v", err)
+	}
+	var parsed map[string][]map[string]interface{}
+	if err := json.Unmarshal(reverse, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed["portals"]) != 1 || parsed["portals"][0]["tag"] != tunnel.PortalTag() {
+		t.Fatalf("portals = %#v", parsed["portals"])
+	}
+	if len(parsed["bridges"]) != 1 {
+		t.Fatalf("existing reverse config was not preserved: %#v", parsed)
+	}
+}
+
+func TestPortalModeRejectsVless(t *testing.T) {
+	tunnel := &model.Tunnel{
+		Mode:                TunnelModePortal,
+		ListenPort:          18081,
+		Network:             "tcp",
+		TargetAddress:       "127.0.0.1",
+		TargetPort:          18081,
+		RemotePort:          40000,
+		Protocol:            "vless",
+		UUID:                "11111111-1111-1111-1111-111111111111",
+		KcpFinalMaskType:    "none",
+		KcpMtu:              1350,
+		KcpTti:              20,
+		KcpUplinkCapacity:   5,
+		KcpDownlinkCapacity: 20,
+		KcpReadBufferSize:   2,
+		KcpWriteBufferSize:  2,
+	}
+	if err := (&TunnelService{}).checkTunnel(tunnel); err == nil {
+		t.Fatal("portal mode accepted vless")
 	}
 }

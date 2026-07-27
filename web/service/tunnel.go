@@ -4,7 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 	"x-ui/database"
 	"x-ui/database/model"
 	"x-ui/util/common"
@@ -13,6 +18,19 @@ import (
 
 	"gorm.io/gorm"
 )
+
+const (
+	TunnelModeDirect = "direct"
+	TunnelModePortal = "portal"
+)
+
+type tunnelProbeStatus struct {
+	Status    string
+	Message   string
+	Timestamp time.Time
+}
+
+var tunnelProbeStatuses sync.Map
 
 type TunnelService struct {
 }
@@ -24,6 +42,10 @@ func (s *TunnelService) GetTunnels(userId int) ([]*model.Tunnel, error) {
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return nil, err
 	}
+	for _, tunnel := range tunnels {
+		s.normalizeTunnel(tunnel)
+		s.applyProbeStatus(tunnel)
+	}
 	return tunnels, nil
 }
 
@@ -34,39 +56,56 @@ func (s *TunnelService) GetAllEnabledTunnels() ([]*model.Tunnel, error) {
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return nil, err
 	}
+	for _, tunnel := range tunnels {
+		s.normalizeTunnel(tunnel)
+	}
 	return tunnels, nil
 }
 
-func (s *TunnelService) checkListenPortExist(port int, ignoreId int) (bool, error) {
+func (s *TunnelService) checkPortalUUIDExist(tunnel *model.Tunnel, ignoreId int) (bool, error) {
+	if tunnel.Mode != TunnelModePortal {
+		return false, nil
+	}
 	db := database.GetDB()
-	var inboundCount int64
-	err := db.Model(model.Inbound{}).Where("port = ?", port).Count(&inboundCount).Error
-	if err != nil {
-		return false, err
-	}
-	if inboundCount > 0 {
-		return true, nil
-	}
-
-	tunnelDB := db.Model(model.Tunnel{}).Where("listen_port = ?", port)
+	query := db.Model(model.Tunnel{}).Where("mode = ?", TunnelModePortal)
 	if ignoreId > 0 {
-		tunnelDB = tunnelDB.Where("id != ?", ignoreId)
+		query = query.Where("id != ?", ignoreId)
 	}
-	var tunnelCount int64
-	err = tunnelDB.Count(&tunnelCount).Error
-	if err != nil {
+	var tunnels []*model.Tunnel
+	if err := query.Find(&tunnels).Error; err != nil {
 		return false, err
 	}
-	return tunnelCount > 0, nil
+	for _, existing := range tunnels {
+		normalized, err := model.NormalizeUUID(existing.UUID)
+		if err == nil && normalized == tunnel.UUID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *TunnelService) normalizeTunnel(tunnel *model.Tunnel) {
+	tunnel.Mode = strings.ToLower(strings.TrimSpace(tunnel.Mode))
 	tunnel.Protocol = strings.ToLower(strings.TrimSpace(tunnel.Protocol))
 	tunnel.Network = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(tunnel.Network), " ", ""))
+	tunnel.Listen = strings.TrimSpace(tunnel.Listen)
+	tunnel.TargetAddress = strings.TrimSpace(tunnel.TargetAddress)
+	tunnel.RemoteAddress = strings.TrimSpace(tunnel.RemoteAddress)
+	tunnel.UUID = strings.TrimSpace(tunnel.UUID)
+	if normalizedUUID, err := model.NormalizeUUID(tunnel.UUID); err == nil {
+		tunnel.UUID = normalizedUUID
+	}
 	tunnel.KcpFinalMaskType = strings.TrimSpace(tunnel.KcpFinalMaskType)
 
+	if tunnel.Mode == "" {
+		tunnel.Mode = TunnelModeDirect
+	}
 	if tunnel.Protocol == "" {
-		tunnel.Protocol = "vless"
+		if tunnel.Mode == TunnelModePortal {
+			tunnel.Protocol = "vmess"
+		} else {
+			tunnel.Protocol = "vless"
+		}
 	}
 	if tunnel.Network == "" {
 		tunnel.Network = "tcp"
@@ -95,30 +134,46 @@ func (s *TunnelService) normalizeTunnel(tunnel *model.Tunnel) {
 }
 
 func (s *TunnelService) checkTunnel(tunnel *model.Tunnel) error {
+	if tunnel.Mode != TunnelModeDirect && tunnel.Mode != TunnelModePortal {
+		return common.NewError("隧道模式仅支持 direct 或 portal:", tunnel.Mode)
+	}
 	if tunnel.ListenPort <= 0 || tunnel.ListenPort > 65535 {
 		return common.NewError("本地监听端口不合法:", tunnel.ListenPort)
 	}
 	if tunnel.TargetPort <= 0 || tunnel.TargetPort > 65535 {
 		return common.NewError("目标端口不合法:", tunnel.TargetPort)
 	}
-	if tunnel.RemotePort <= 0 || tunnel.RemotePort > 65535 {
-		return common.NewError("远端端口不合法:", tunnel.RemotePort)
-	}
 	if tunnel.TargetAddress == "" {
 		return common.NewError("目标地址不能为空")
 	}
-	if tunnel.RemoteAddress == "" {
-		return common.NewError("远端地址不能为空")
+	normalizedUUID, err := model.NormalizeUUID(tunnel.UUID)
+	if err != nil {
+		return common.NewError("UUID 不合法: ", err)
 	}
-	if tunnel.UUID == "" {
-		return common.NewError("UUID 不能为空")
-	}
-	if tunnel.Protocol != "vless" && tunnel.Protocol != "vmess" {
-		return common.NewError("隧道协议仅支持 vless 或 vmess:", tunnel.Protocol)
-	}
+	tunnel.UUID = normalizedUUID
 	if tunnel.Network != "tcp" && tunnel.Network != "udp" && tunnel.Network != "tcp,udp" {
 		return common.NewError("本地入口网络仅支持 tcp、udp 或 tcp,udp:", tunnel.Network)
 	}
+
+	if tunnel.Mode == TunnelModePortal {
+		if tunnel.Protocol != "vmess" {
+			return common.NewError("Portal 模式只支持 VMess")
+		}
+		if tunnel.RemotePort <= 0 || tunnel.RemotePort > 65535 {
+			return common.NewError("Portal mKCP 端口不合法:", tunnel.RemotePort)
+		}
+	} else {
+		if tunnel.RemotePort <= 0 || tunnel.RemotePort > 65535 {
+			return common.NewError("远端端口不合法:", tunnel.RemotePort)
+		}
+		if tunnel.RemoteAddress == "" {
+			return common.NewError("远端地址不能为空")
+		}
+		if tunnel.Protocol != "vless" && tunnel.Protocol != "vmess" {
+			return common.NewError("隧道协议仅支持 vless 或 vmess:", tunnel.Protocol)
+		}
+	}
+
 	if tunnel.KcpTti < 10 || tunnel.KcpTti > 5000 {
 		return common.NewError("mKCP tti 必须在 10 到 5000 之间")
 	}
@@ -145,12 +200,15 @@ func (s *TunnelService) AddTunnel(tunnel *model.Tunnel) error {
 	if err := s.checkTunnel(tunnel); err != nil {
 		return err
 	}
-	exist, err := s.checkListenPortExist(tunnel.ListenPort, 0)
+	if err := checkTunnelListenerConflicts(tunnel, 0); err != nil {
+		return err
+	}
+	exist, err := s.checkPortalUUIDExist(tunnel, 0)
 	if err != nil {
 		return err
 	}
 	if exist {
-		return common.NewError("本地监听端口已存在:", tunnel.ListenPort)
+		return common.NewError("Portal UUID 已被其他隧道使用:", tunnel.UUID)
 	}
 	db := database.GetDB()
 	return db.Save(tunnel).Error
@@ -165,6 +223,7 @@ func (s *TunnelService) DelTunnel(id int, userId int) error {
 	if result.RowsAffected == 0 {
 		return common.NewError("隧道不存在或无权限:", id)
 	}
+	tunnelProbeStatuses.Delete(id)
 	return nil
 }
 
@@ -175,6 +234,8 @@ func (s *TunnelService) GetTunnel(id int, userId int) (*model.Tunnel, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.normalizeTunnel(tunnel)
+	s.applyProbeStatus(tunnel)
 	return tunnel, nil
 }
 
@@ -183,12 +244,15 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	if err := s.checkTunnel(tunnel); err != nil {
 		return err
 	}
-	exist, err := s.checkListenPortExist(tunnel.ListenPort, tunnel.Id)
+	if err := checkTunnelListenerConflicts(tunnel, tunnel.Id); err != nil {
+		return err
+	}
+	exist, err := s.checkPortalUUIDExist(tunnel, tunnel.Id)
 	if err != nil {
 		return err
 	}
 	if exist {
-		return common.NewError("本地监听端口已存在:", tunnel.ListenPort)
+		return common.NewError("Portal UUID 已被其他隧道使用:", tunnel.UUID)
 	}
 
 	oldTunnel, err := s.GetTunnel(tunnel.Id, userId)
@@ -197,6 +261,7 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	}
 
 	oldTunnel.Enable = tunnel.Enable
+	oldTunnel.Mode = tunnel.Mode
 	oldTunnel.Remark = tunnel.Remark
 	oldTunnel.Listen = tunnel.Listen
 	oldTunnel.ListenPort = tunnel.ListenPort
@@ -217,7 +282,71 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	oldTunnel.KcpWriteBufferSize = tunnel.KcpWriteBufferSize
 
 	db := database.GetDB()
+	tunnelProbeStatuses.Delete(tunnel.Id)
 	return db.Save(oldTunnel).Error
+}
+
+func (s *TunnelService) applyProbeStatus(tunnel *model.Tunnel) {
+	tunnel.Status = "not_tested"
+	tunnel.StatusMessage = "尚未进行 TCP 探测"
+	tunnel.ProbeTime = ""
+	if status, ok := tunnelProbeStatuses.Load(tunnel.Id); ok {
+		probe := status.(tunnelProbeStatus)
+		tunnel.Status = probe.Status
+		tunnel.StatusMessage = probe.Message
+		tunnel.ProbeTime = probe.Timestamp.Local().Format("2006-01-02 15:04:05")
+	}
+}
+
+func (s *TunnelService) ProbeTunnel(id int, userId int) (*model.Tunnel, error) {
+	tunnel, err := s.GetTunnel(id, userId)
+	if err != nil {
+		return nil, err
+	}
+	if !tunnel.Enable {
+		probe := tunnelProbeStatus{Status: "not_tested", Message: "隧道未启用", Timestamp: time.Now()}
+		tunnelProbeStatuses.Store(tunnel.Id, probe)
+		s.applyProbeStatus(tunnel)
+		return tunnel, nil
+	}
+	if tunnel.Network == "udp" {
+		probe := tunnelProbeStatus{Status: "not_tested", Message: "纯 UDP 隧道未执行 TCP 探测", Timestamp: time.Now()}
+		tunnelProbeStatuses.Store(tunnel.Id, probe)
+		s.applyProbeStatus(tunnel)
+		return tunnel, nil
+	}
+
+	host := tunnel.Listen
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		host = "127.0.0.1"
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(tunnel.ListenPort)), 2*time.Second)
+	if err != nil {
+		probe := tunnelProbeStatus{Status: "failed", Message: "TCP 入口连接失败: " + err.Error(), Timestamp: time.Now()}
+		tunnelProbeStatuses.Store(tunnel.Id, probe)
+		s.applyProbeStatus(tunnel)
+		return tunnel, nil
+	}
+	defer conn.Close()
+
+	_ = conn.SetReadDeadline(time.Now().Add(1200 * time.Millisecond))
+	buf := make([]byte, 1)
+	_, readErr := conn.Read(buf)
+	probe := tunnelProbeStatus{Status: "success", Message: "TCP 连接探测成功；该结果不是实时在线状态", Timestamp: time.Now()}
+	if readErr != nil {
+		if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
+			// A listener with no reverse worker is closed immediately by Xray. A
+			// connection that remains open through the deadline is useful evidence
+			// that the reverse path and the B-side target accepted the stream.
+		} else if readErr == io.EOF {
+			probe = tunnelProbeStatus{Status: "failed", Message: "TCP 连接被远端立即关闭", Timestamp: time.Now()}
+		} else {
+			probe = tunnelProbeStatus{Status: "failed", Message: "TCP 连接异常: " + readErr.Error(), Timestamp: time.Now()}
+		}
+	}
+	tunnelProbeStatuses.Store(tunnel.Id, probe)
+	s.applyProbeStatus(tunnel)
+	return tunnel, nil
 }
 
 func (s *TunnelService) genXrayInboundConfig(tunnel *model.Tunnel) (*xray.InboundConfig, error) {
@@ -244,17 +373,7 @@ func (s *TunnelService) genXrayInboundConfig(tunnel *model.Tunnel) (*xray.Inboun
 	}, nil
 }
 
-func (s *TunnelService) genXrayOutboundConfig(tunnel *model.Tunnel) (json.RawMessage, error) {
-	user := map[string]interface{}{
-		"id": tunnel.UUID,
-	}
-	if tunnel.Protocol == "vmess" {
-		user["alterId"] = 0
-		user["security"] = "auto"
-	} else {
-		user["encryption"] = "none"
-	}
-
+func buildKcpStreamSettings(tunnel *model.Tunnel) map[string]interface{} {
 	streamSettings := map[string]interface{}{
 		"network":  "mkcp",
 		"security": "none",
@@ -271,6 +390,19 @@ func (s *TunnelService) genXrayOutboundConfig(tunnel *model.Tunnel) (json.RawMes
 	if finalmask := buildKcpFinalMask(tunnel.KcpFinalMaskType); finalmask != nil {
 		streamSettings["finalmask"] = finalmask
 	}
+	return streamSettings
+}
+
+func (s *TunnelService) genXrayOutboundConfig(tunnel *model.Tunnel) (json.RawMessage, error) {
+	user := map[string]interface{}{
+		"id": tunnel.UUID,
+	}
+	if tunnel.Protocol == "vmess" {
+		user["alterId"] = 0
+		user["security"] = "auto"
+	} else {
+		user["encryption"] = "none"
+	}
 
 	outbound := map[string]interface{}{
 		"tag":      tunnel.OutboundTag(),
@@ -286,11 +418,38 @@ func (s *TunnelService) genXrayOutboundConfig(tunnel *model.Tunnel) (json.RawMes
 				},
 			},
 		},
-		"streamSettings": streamSettings,
+		"streamSettings": buildKcpStreamSettings(tunnel),
 	}
 
 	data, err := json.Marshal(outbound)
 	return json.RawMessage(data), err
+}
+
+func (s *TunnelService) genXrayPortalInboundConfig(tunnel *model.Tunnel) (*xray.InboundConfig, error) {
+	settings, err := json.Marshal(map[string]interface{}{
+		"clients": []map[string]interface{}{
+			{
+				"id":      tunnel.UUID,
+				"alterId": 0,
+				"email":   fmt.Sprintf("portal-%d", tunnel.Id),
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	streamSettings, err := json.Marshal(buildKcpStreamSettings(tunnel))
+	if err != nil {
+		return nil, err
+	}
+	return &xray.InboundConfig{
+		Listen:         json_util.RawMessage(`"0.0.0.0"`),
+		Port:           tunnel.RemotePort,
+		Protocol:       "vmess",
+		Settings:       json_util.RawMessage(settings),
+		StreamSettings: json_util.RawMessage(streamSettings),
+		Tag:            tunnel.PortalInboundTag(),
+	}, nil
 }
 
 func buildKcpFinalMask(maskType string) map[string]interface{} {
@@ -318,35 +477,104 @@ func (s *TunnelService) genXrayRoutingRule(tunnel *model.Tunnel) (json.RawMessag
 	return json.RawMessage(data), err
 }
 
+func (s *TunnelService) genXrayPortalRoutingRules(tunnel *model.Tunnel) ([]json.RawMessage, error) {
+	rules := []map[string]interface{}{
+		{
+			"type":        "field",
+			"domain":      []string{"full:" + tunnel.ReverseDomain()},
+			"outboundTag": tunnel.PortalTag(),
+		},
+		{
+			"type":        "field",
+			"inboundTag":  []string{tunnel.InboundTag()},
+			"outboundTag": tunnel.PortalTag(),
+		},
+	}
+	result := make([]json.RawMessage, 0, len(rules))
+	for _, rule := range rules {
+		data, err := json.Marshal(rule)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, json.RawMessage(data))
+	}
+	return result, nil
+}
+
 func (s *TunnelService) ApplyToXrayConfig(xrayConfig *xray.Config) error {
 	tunnels, err := s.GetAllEnabledTunnels()
 	if err != nil {
 		return err
 	}
 	for _, tunnel := range tunnels {
-		inboundConfig, err := s.genXrayInboundConfig(tunnel)
-		if err != nil {
-			return err
-		}
-		xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *inboundConfig)
-
-		outboundConfig, err := s.genXrayOutboundConfig(tunnel)
-		if err != nil {
-			return err
-		}
-		if err := appendRawJSONArray(&xrayConfig.OutboundConfigs, outboundConfig); err != nil {
-			return err
-		}
-
-		routingRule, err := s.genXrayRoutingRule(tunnel)
-		if err != nil {
-			return err
-		}
-		if err := appendRoutingRule(&xrayConfig.RouterConfig, routingRule); err != nil {
+		if err := s.applyTunnelToXrayConfig(xrayConfig, tunnel); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (s *TunnelService) applyTunnelToXrayConfig(xrayConfig *xray.Config, tunnel *model.Tunnel) error {
+	inboundConfig, err := s.genXrayInboundConfig(tunnel)
+	if err != nil {
+		return err
+	}
+	xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *inboundConfig)
+
+	if tunnel.Mode == TunnelModePortal {
+		portalInbound, err := s.genXrayPortalInboundConfig(tunnel)
+		if err != nil {
+			return err
+		}
+		xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *portalInbound)
+		if err := appendReversePortal(&xrayConfig.Reverse, tunnel); err != nil {
+			return err
+		}
+		rules, err := s.genXrayPortalRoutingRules(tunnel)
+		if err != nil {
+			return err
+		}
+		for _, rule := range rules {
+			if err := appendRoutingRule(&xrayConfig.RouterConfig, rule); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	outboundConfig, err := s.genXrayOutboundConfig(tunnel)
+	if err != nil {
+		return err
+	}
+	if err := appendRawJSONArray(&xrayConfig.OutboundConfigs, outboundConfig); err != nil {
+		return err
+	}
+
+	routingRule, err := s.genXrayRoutingRule(tunnel)
+	if err != nil {
+		return err
+	}
+	return appendRoutingRule(&xrayConfig.RouterConfig, routingRule)
+}
+
+// BuildTunnelFixtureConfig uses the same tunnel generator as the running
+// panel without reading the database. It is intended for reproducible
+// cross-repository Portal smoke tests.
+func BuildTunnelFixtureConfig(tunnel *model.Tunnel) (*xray.Config, error) {
+	service := &TunnelService{}
+	service.normalizeTunnel(tunnel)
+	if err := service.checkTunnel(tunnel); err != nil {
+		return nil, err
+	}
+	config := &xray.Config{
+		LogConfig:       json_util.RawMessage(`{"loglevel":"warning"}`),
+		RouterConfig:    json_util.RawMessage(`{"rules":[]}`),
+		OutboundConfigs: json_util.RawMessage(`[{"tag":"direct","protocol":"freedom","settings":{}},{"tag":"blocked","protocol":"blackhole","settings":{}}]`),
+	}
+	if err := service.applyTunnelToXrayConfig(config, tunnel); err != nil {
+		return nil, err
+	}
+	return config, nil
 }
 
 func appendRawJSONArray(raw *json_util.RawMessage, item json.RawMessage) error {
@@ -359,6 +587,41 @@ func appendRawJSONArray(raw *json_util.RawMessage, item json.RawMessage) error {
 	}
 	items = append(items, item)
 	data, err := json.Marshal(items)
+	if err != nil {
+		return err
+	}
+	*raw = json_util.RawMessage(data)
+	return nil
+}
+
+func appendReversePortal(raw *json_util.RawMessage, tunnel *model.Tunnel) error {
+	reverse := map[string]json.RawMessage{}
+	trimmed := bytes.TrimSpace([]byte(*raw))
+	if len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
+		if err := json.Unmarshal(trimmed, &reverse); err != nil {
+			return common.NewError("reverse 配置不是对象:", err)
+		}
+	}
+	portals := make([]json.RawMessage, 0)
+	if rawPortals, ok := reverse["portals"]; ok && len(bytes.TrimSpace(rawPortals)) > 0 {
+		if err := json.Unmarshal(rawPortals, &portals); err != nil {
+			return common.NewError("reverse.portals 配置不是数组:", err)
+		}
+	}
+	portal, err := json.Marshal(map[string]interface{}{
+		"tag":    tunnel.PortalTag(),
+		"domain": tunnel.ReverseDomain(),
+	})
+	if err != nil {
+		return err
+	}
+	portals = append(portals, json.RawMessage(portal))
+	portalData, err := json.Marshal(portals)
+	if err != nil {
+		return err
+	}
+	reverse["portals"] = json.RawMessage(portalData)
+	data, err := json.Marshal(reverse)
 	if err != nil {
 		return err
 	}

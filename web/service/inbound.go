@@ -2,10 +2,10 @@ package service
 
 import (
 	"fmt"
+	"strings"
 	"time"
 	"x-ui/database"
 	"x-ui/database/model"
-	"x-ui/util/common"
 	"x-ui/util/xray_util"
 	"x-ui/xray"
 
@@ -35,11 +35,11 @@ func (s *InboundService) GetAllInbounds() ([]*model.Inbound, error) {
 	return inbounds, nil
 }
 
-func (s *InboundService) checkPortExist(port int, ignoreId int) (bool, error) {
+func (s *InboundService) inboundTagExists(tag string, ignoreID int) (bool, error) {
 	db := database.GetDB()
-	db = db.Model(model.Inbound{}).Where("port = ?", port)
-	if ignoreId > 0 {
-		db = db.Where("id != ?", ignoreId)
+	db = db.Model(model.Inbound{}).Where("tag = ?", tag)
+	if ignoreID > 0 {
+		db = db.Where("id != ?", ignoreID)
 	}
 	var count int64
 	err := db.Count(&count).Error
@@ -49,32 +49,71 @@ func (s *InboundService) checkPortExist(port int, ignoreId int) (bool, error) {
 	return count > 0, nil
 }
 
+func (s *InboundService) assignUniqueInboundTag(inbound *model.Inbound, ignoreID int, reserved map[string]struct{}) error {
+	base := strings.TrimSpace(inbound.Tag)
+	if base == "" {
+		base = fmt.Sprintf("inbound-%v", inbound.Port)
+	}
+	for suffix := 1; suffix <= 10000; suffix++ {
+		candidate := base
+		if suffix > 1 {
+			candidate = fmt.Sprintf("%s-%d", base, suffix)
+		}
+		if _, exists := reserved[candidate]; exists {
+			continue
+		}
+		exists, err := s.inboundTagExists(candidate, ignoreID)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		inbound.Tag = candidate
+		if reserved != nil {
+			reserved[candidate] = struct{}{}
+		}
+		return nil
+	}
+	return fmt.Errorf("无法为入站端口 %d 分配唯一 tag", inbound.Port)
+}
+
 func (s *InboundService) AddInbound(inbound *model.Inbound) error {
 	if err := xray_util.ValidateXray26327StreamSettings(inbound.StreamSettings); err != nil {
 		return err
 	}
-	exist, err := s.checkPortExist(inbound.Port, 0)
-	if err != nil {
+	if err := checkInboundListenerConflicts(inbound, 0); err != nil {
 		return err
 	}
-	if exist {
-		return common.NewError("端口已存在:", inbound.Port)
+	if err := s.assignUniqueInboundTag(inbound, 0, nil); err != nil {
+		return err
 	}
 	db := database.GetDB()
 	return db.Save(inbound).Error
 }
 
 func (s *InboundService) AddInbounds(inbounds []*model.Inbound) error {
+	reservedTags := make(map[string]struct{}, len(inbounds))
+	endpoints := make([]listenerEndpoint, 0, len(inbounds))
 	for _, inbound := range inbounds {
 		if err := xray_util.ValidateXray26327StreamSettings(inbound.StreamSettings); err != nil {
 			return err
 		}
-		exist, err := s.checkPortExist(inbound.Port, 0)
+		if err := checkInboundListenerConflicts(inbound, 0); err != nil {
+			return err
+		}
+		endpoint, err := inboundListenerEndpoint(inbound)
 		if err != nil {
 			return err
 		}
-		if exist {
-			return common.NewError("端口已存在:", inbound.Port)
+		for _, existing := range endpoints {
+			if endpointsConflict(endpoint, existing) {
+				return endpointConflictError(endpoint, existing)
+			}
+		}
+		endpoints = append(endpoints, endpoint)
+		if err := s.assignUniqueInboundTag(inbound, 0, reservedTags); err != nil {
+			return err
 		}
 	}
 
@@ -118,16 +157,11 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
 	if err := xray_util.ValidateXray26327StreamSettings(inbound.StreamSettings); err != nil {
 		return err
 	}
-	exist, err := s.checkPortExist(inbound.Port, inbound.Id)
+	oldInbound, err := s.GetInbound(inbound.Id)
 	if err != nil {
 		return err
 	}
-	if exist {
-		return common.NewError("端口已存在:", inbound.Port)
-	}
-
-	oldInbound, err := s.GetInbound(inbound.Id)
-	if err != nil {
+	if err := checkInboundListenerConflicts(inbound, inbound.Id); err != nil {
 		return err
 	}
 	oldInbound.Up = inbound.Up
@@ -142,7 +176,9 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
 	oldInbound.Settings = inbound.Settings
 	oldInbound.StreamSettings = inbound.StreamSettings
 	oldInbound.Sniffing = inbound.Sniffing
-	oldInbound.Tag = fmt.Sprintf("inbound-%v", inbound.Port)
+	// Preserve the existing unique tag when the listen port changes. Multiple
+	// inbounds may now share a numeric port when their address/protocols do not
+	// overlap, so a port-only tag is no longer unique.
 
 	db := database.GetDB()
 	return db.Save(oldInbound).Error

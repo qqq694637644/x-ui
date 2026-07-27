@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"x-ui/util/common"
 
@@ -22,6 +23,9 @@ import (
 )
 
 var trafficRegex = regexp.MustCompile("(inbound|outbound)>>>([^>]+)>>>traffic>>>(downlink|uplink)")
+
+var processStartupGrace = 2 * time.Second
+var processStopTimeout = 5 * time.Second
 
 func GetBinaryName() string {
 	return fmt.Sprintf("xray-%s-%s", runtime.GOOS, runtime.GOARCH)
@@ -57,14 +61,47 @@ func NewProcess(xrayConfig *Config) *Process {
 	return p
 }
 
+func ValidateConfig(xrayConfig *Config) error {
+	data, err := json.MarshalIndent(xrayConfig, "", "  ")
+	if err != nil {
+		return common.NewErrorf("生成 xray 配置文件失败: %v", err)
+	}
+	tempFile, err := os.CreateTemp("bin", ".config-test-*.json")
+	if err != nil {
+		return common.NewErrorf("创建 xray 临时配置失败: %v", err)
+	}
+	tempPath := tempFile.Name()
+	defer os.Remove(tempPath)
+	if _, err := tempFile.Write(data); err != nil {
+		tempFile.Close()
+		return common.NewErrorf("写入 xray 临时配置失败: %v", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return common.NewErrorf("关闭 xray 临时配置失败: %v", err)
+	}
+
+	cmd := exec.Command(GetBinaryPath(), "run", "-test", "-config", tempPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return common.NewError("xray 配置校验失败: ", message)
+	}
+	return nil
+}
+
 type process struct {
-	cmd *exec.Cmd
+	cmd  *exec.Cmd
+	done chan struct{}
 
 	version string
 	apiPort int
 
 	config  *Config
 	lines   *queue.Queue
+	exitMu  sync.RWMutex
 	exitErr error
 }
 
@@ -73,6 +110,7 @@ func newProcess(config *Config) *process {
 		version: "Unknown",
 		config:  config,
 		lines:   queue.New(100),
+		done:    make(chan struct{}),
 	}
 }
 
@@ -80,19 +118,29 @@ func (p *process) IsRunning() bool {
 	if p.cmd == nil || p.cmd.Process == nil {
 		return false
 	}
-	if p.cmd.ProcessState == nil {
+	select {
+	case <-p.done:
+		return false
+	default:
 		return true
 	}
-	return false
 }
 
 func (p *process) GetErr() error {
+	p.exitMu.RLock()
+	defer p.exitMu.RUnlock()
 	return p.exitErr
 }
 
+func (p *process) setExitErr(err error) {
+	p.exitMu.Lock()
+	p.exitErr = err
+	p.exitMu.Unlock()
+}
+
 func (p *process) GetResult() string {
-	if p.lines.Empty() && p.exitErr != nil {
-		return p.exitErr.Error()
+	if err := p.GetErr(); p.lines.Empty() && err != nil {
+		return err.Error()
 	}
 	items, _ := p.lines.TakeUntil(func(item interface{}) bool {
 		return true
@@ -147,7 +195,7 @@ func (p *process) Start() (err error) {
 
 	defer func() {
 		if err != nil {
-			p.exitErr = err
+			p.setExitErr(err)
 		}
 	}()
 
@@ -209,12 +257,33 @@ func (p *process) Start() (err error) {
 		}
 	}()
 
+	if err := cmd.Start(); err != nil {
+		stdReader.Close()
+		errReader.Close()
+		return err
+	}
+
 	go func() {
-		err := cmd.Run()
-		if err != nil {
-			p.exitErr = err
+		waitErr := cmd.Wait()
+		if waitErr != nil {
+			p.setExitErr(waitErr)
 		}
+		close(p.done)
 	}()
+
+	select {
+	case <-p.done:
+		startupErr := p.GetErr()
+		if startupErr == nil {
+			startupErr = errors.New("xray exited during startup")
+		}
+		output := strings.TrimSpace(p.GetResult())
+		if output != "" {
+			return common.NewError("xray 启动后立即退出: ", startupErr, "; output: ", output)
+		}
+		return common.NewError("xray 启动后立即退出: ", startupErr)
+	case <-time.After(processStartupGrace):
+	}
 
 	p.refreshVersion()
 	p.refreshAPIPort()
@@ -226,7 +295,15 @@ func (p *process) Stop() error {
 	if !p.IsRunning() {
 		return errors.New("xray is not running")
 	}
-	return p.cmd.Process.Kill()
+	if err := p.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
+	}
+	select {
+	case <-p.done:
+		return nil
+	case <-time.After(processStopTimeout):
+		return errors.New("timed out waiting for xray to stop")
+	}
 }
 
 func (p *process) GetTraffic(reset bool) ([]*Traffic, error) {

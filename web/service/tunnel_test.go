@@ -131,7 +131,15 @@ func TestAppendRoutingRulePrependsTunnelRule(t *testing.T) {
 	if len(parsed.Rules) != 2 {
 		t.Fatalf("rules length = %d, want 2", len(parsed.Rules))
 	}
-	if !bytes.Equal(bytes.TrimSpace(parsed.Rules[0]), bytes.TrimSpace(tunnelRule)) {
+	var compactActual bytes.Buffer
+	var compactExpected bytes.Buffer
+	if err := json.Compact(&compactActual, parsed.Rules[0]); err != nil {
+		t.Fatalf("json.Compact(actual rule) error = %v", err)
+	}
+	if err := json.Compact(&compactExpected, tunnelRule); err != nil {
+		t.Fatalf("json.Compact(expected rule) error = %v", err)
+	}
+	if !bytes.Equal(compactActual.Bytes(), compactExpected.Bytes()) {
 		t.Fatalf("first rule = %s, want tunnel rule %s", parsed.Rules[0], tunnelRule)
 	}
 

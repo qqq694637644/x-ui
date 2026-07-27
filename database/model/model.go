@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"strings"
 	"x-ui/util/json_util"
 	"x-ui/xray"
 )
@@ -75,6 +76,29 @@ type Tunnel struct {
 
 	Status        string `json:"status" form:"-" gorm:"-"`
 	StatusMessage string `json:"statusMessage" form:"-" gorm:"-"`
+	ProbeTime     string `json:"probeTime" form:"-" gorm:"-"`
+}
+
+func NormalizeUUID(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	compact := value
+	if len(value) == 36 {
+		for _, index := range []int{8, 13, 18, 23} {
+			if value[index] != '-' {
+				return "", fmt.Errorf("UUID 必须是标准 36 位格式或 32 位十六进制格式")
+			}
+		}
+		compact = strings.ReplaceAll(value, "-", "")
+	}
+	if len(compact) != 32 {
+		return "", fmt.Errorf("UUID 必须是标准 36 位格式或 32 位十六进制格式")
+	}
+	for _, ch := range compact {
+		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
+			return "", fmt.Errorf("UUID 包含非十六进制字符")
+		}
+	}
+	return fmt.Sprintf("%s-%s-%s-%s-%s", compact[0:8], compact[8:12], compact[12:16], compact[16:20], compact[20:32]), nil
 }
 
 func (t *Tunnel) InboundTag() string {
@@ -94,7 +118,11 @@ func (t *Tunnel) PortalTag() string {
 }
 
 func (t *Tunnel) ReverseDomain() string {
-	return fmt.Sprintf("reverse-%s.xui.internal", t.UUID)
+	normalized, err := NormalizeUUID(t.UUID)
+	if err == nil {
+		return fmt.Sprintf("reverse-%s.xui.internal", normalized)
+	}
+	return fmt.Sprintf("reverse-%s.xui.internal", strings.ToLower(strings.TrimSpace(t.UUID)))
 }
 
 func (i *Inbound) GenXrayInboundConfig() *xray.InboundConfig {

@@ -25,8 +25,9 @@ const (
 )
 
 type tunnelProbeStatus struct {
-	Status  string
-	Message string
+	Status    string
+	Message   string
+	Timestamp time.Time
 }
 
 var tunnelProbeStatuses sync.Map
@@ -61,100 +62,26 @@ func (s *TunnelService) GetAllEnabledTunnels() ([]*model.Tunnel, error) {
 	return tunnels, nil
 }
 
-func (s *TunnelService) checkListenPortExist(port int, ignoreId int) (bool, error) {
-	db := database.GetDB()
-	var inboundCount int64
-	err := db.Model(model.Inbound{}).Where("port = ?", port).Count(&inboundCount).Error
-	if err != nil {
-		return false, err
-	}
-	if inboundCount > 0 {
-		return true, nil
-	}
-
-	tunnelDB := db.Model(model.Tunnel{}).Where("listen_port = ?", port)
-	if ignoreId > 0 {
-		tunnelDB = tunnelDB.Where("id != ?", ignoreId)
-	}
-	var tunnelCount int64
-	err = tunnelDB.Count(&tunnelCount).Error
-	if err != nil {
-		return false, err
-	}
-	return tunnelCount > 0, nil
-}
-
-func (s *TunnelService) checkPortalPortExist(tunnel *model.Tunnel, ignoreId int) (bool, error) {
-	if tunnel.Mode != TunnelModePortal {
-		return false, nil
-	}
-	if tunnel.ListenPort == tunnel.RemotePort && (tunnel.Network == "udp" || tunnel.Network == "tcp,udp") {
-		return true, nil
-	}
-
-	db := database.GetDB()
-	portalDB := db.Model(model.Tunnel{}).
-		Where("mode = ? AND remote_port = ?", TunnelModePortal, tunnel.RemotePort)
-	if ignoreId > 0 {
-		portalDB = portalDB.Where("id != ?", ignoreId)
-	}
-	var portalCount int64
-	if err := portalDB.Count(&portalCount).Error; err != nil {
-		return false, err
-	}
-	if portalCount > 0 {
-		return true, nil
-	}
-
-	udpTunnelDB := db.Model(model.Tunnel{}).
-		Where("listen_port = ? AND network IN ?", tunnel.RemotePort, []string{"udp", "tcp,udp"})
-	if ignoreId > 0 {
-		udpTunnelDB = udpTunnelDB.Where("id != ?", ignoreId)
-	}
-	var udpTunnelCount int64
-	if err := udpTunnelDB.Count(&udpTunnelCount).Error; err != nil {
-		return false, err
-	}
-	if udpTunnelCount > 0 {
-		return true, nil
-	}
-
-	var inbounds []*model.Inbound
-	if err := db.Model(model.Inbound{}).Where("port = ?", tunnel.RemotePort).Find(&inbounds).Error; err != nil {
-		return false, err
-	}
-	for _, inbound := range inbounds {
-		stream := map[string]interface{}{}
-		if strings.TrimSpace(inbound.StreamSettings) == "" {
-			continue
-		}
-		if err := json.Unmarshal([]byte(inbound.StreamSettings), &stream); err != nil {
-			return false, common.NewError("无法判断入站端口协议:", err)
-		}
-		network, _ := stream["network"].(string)
-		switch strings.ToLower(network) {
-		case "mkcp", "kcp", "udp":
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 func (s *TunnelService) checkPortalUUIDExist(tunnel *model.Tunnel, ignoreId int) (bool, error) {
 	if tunnel.Mode != TunnelModePortal {
 		return false, nil
 	}
 	db := database.GetDB()
-	query := db.Model(model.Tunnel{}).
-		Where("mode = ? AND uuid = ?", TunnelModePortal, tunnel.UUID)
+	query := db.Model(model.Tunnel{}).Where("mode = ?", TunnelModePortal)
 	if ignoreId > 0 {
 		query = query.Where("id != ?", ignoreId)
 	}
-	var count int64
-	if err := query.Count(&count).Error; err != nil {
+	var tunnels []*model.Tunnel
+	if err := query.Find(&tunnels).Error; err != nil {
 		return false, err
 	}
-	return count > 0, nil
+	for _, existing := range tunnels {
+		normalized, err := model.NormalizeUUID(existing.UUID)
+		if err == nil && normalized == tunnel.UUID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *TunnelService) normalizeTunnel(tunnel *model.Tunnel) {
@@ -165,6 +92,9 @@ func (s *TunnelService) normalizeTunnel(tunnel *model.Tunnel) {
 	tunnel.TargetAddress = strings.TrimSpace(tunnel.TargetAddress)
 	tunnel.RemoteAddress = strings.TrimSpace(tunnel.RemoteAddress)
 	tunnel.UUID = strings.TrimSpace(tunnel.UUID)
+	if normalizedUUID, err := model.NormalizeUUID(tunnel.UUID); err == nil {
+		tunnel.UUID = normalizedUUID
+	}
 	tunnel.KcpFinalMaskType = strings.TrimSpace(tunnel.KcpFinalMaskType)
 
 	if tunnel.Mode == "" {
@@ -216,9 +146,11 @@ func (s *TunnelService) checkTunnel(tunnel *model.Tunnel) error {
 	if tunnel.TargetAddress == "" {
 		return common.NewError("目标地址不能为空")
 	}
-	if tunnel.UUID == "" {
-		return common.NewError("UUID 不能为空")
+	normalizedUUID, err := model.NormalizeUUID(tunnel.UUID)
+	if err != nil {
+		return common.NewError("UUID 不合法: ", err)
 	}
+	tunnel.UUID = normalizedUUID
 	if tunnel.Network != "tcp" && tunnel.Network != "udp" && tunnel.Network != "tcp,udp" {
 		return common.NewError("本地入口网络仅支持 tcp、udp 或 tcp,udp:", tunnel.Network)
 	}
@@ -268,21 +200,10 @@ func (s *TunnelService) AddTunnel(tunnel *model.Tunnel) error {
 	if err := s.checkTunnel(tunnel); err != nil {
 		return err
 	}
-	exist, err := s.checkListenPortExist(tunnel.ListenPort, 0)
-	if err != nil {
+	if err := checkTunnelListenerConflicts(tunnel, 0); err != nil {
 		return err
 	}
-	if exist {
-		return common.NewError("本地监听端口已存在:", tunnel.ListenPort)
-	}
-	exist, err = s.checkPortalPortExist(tunnel, 0)
-	if err != nil {
-		return err
-	}
-	if exist {
-		return common.NewError("Portal UDP 监听端口已存在:", tunnel.RemotePort)
-	}
-	exist, err = s.checkPortalUUIDExist(tunnel, 0)
+	exist, err := s.checkPortalUUIDExist(tunnel, 0)
 	if err != nil {
 		return err
 	}
@@ -323,21 +244,10 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	if err := s.checkTunnel(tunnel); err != nil {
 		return err
 	}
-	exist, err := s.checkListenPortExist(tunnel.ListenPort, tunnel.Id)
-	if err != nil {
+	if err := checkTunnelListenerConflicts(tunnel, tunnel.Id); err != nil {
 		return err
 	}
-	if exist {
-		return common.NewError("本地监听端口已存在:", tunnel.ListenPort)
-	}
-	exist, err = s.checkPortalPortExist(tunnel, tunnel.Id)
-	if err != nil {
-		return err
-	}
-	if exist {
-		return common.NewError("Portal UDP 监听端口已存在:", tunnel.RemotePort)
-	}
-	exist, err = s.checkPortalUUIDExist(tunnel, tunnel.Id)
+	exist, err := s.checkPortalUUIDExist(tunnel, tunnel.Id)
 	if err != nil {
 		return err
 	}
@@ -377,12 +287,14 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 }
 
 func (s *TunnelService) applyProbeStatus(tunnel *model.Tunnel) {
-	tunnel.Status = "unknown"
-	tunnel.StatusMessage = "尚未探测"
+	tunnel.Status = "not_tested"
+	tunnel.StatusMessage = "尚未进行 TCP 探测"
+	tunnel.ProbeTime = ""
 	if status, ok := tunnelProbeStatuses.Load(tunnel.Id); ok {
 		probe := status.(tunnelProbeStatus)
 		tunnel.Status = probe.Status
 		tunnel.StatusMessage = probe.Message
+		tunnel.ProbeTime = probe.Timestamp.Local().Format("2006-01-02 15:04:05")
 	}
 }
 
@@ -392,13 +304,13 @@ func (s *TunnelService) ProbeTunnel(id int, userId int) (*model.Tunnel, error) {
 		return nil, err
 	}
 	if !tunnel.Enable {
-		probe := tunnelProbeStatus{Status: "unknown", Message: "隧道未启用"}
+		probe := tunnelProbeStatus{Status: "not_tested", Message: "隧道未启用", Timestamp: time.Now()}
 		tunnelProbeStatuses.Store(tunnel.Id, probe)
 		s.applyProbeStatus(tunnel)
 		return tunnel, nil
 	}
 	if tunnel.Network == "udp" {
-		probe := tunnelProbeStatus{Status: "unknown", Message: "UDP 无通用握手，无法可靠探测"}
+		probe := tunnelProbeStatus{Status: "not_tested", Message: "纯 UDP 隧道未执行 TCP 探测", Timestamp: time.Now()}
 		tunnelProbeStatuses.Store(tunnel.Id, probe)
 		s.applyProbeStatus(tunnel)
 		return tunnel, nil
@@ -410,7 +322,7 @@ func (s *TunnelService) ProbeTunnel(id int, userId int) (*model.Tunnel, error) {
 	}
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(tunnel.ListenPort)), 2*time.Second)
 	if err != nil {
-		probe := tunnelProbeStatus{Status: "disconnected", Message: "入口连接失败: " + err.Error()}
+		probe := tunnelProbeStatus{Status: "failed", Message: "TCP 入口连接失败: " + err.Error(), Timestamp: time.Now()}
 		tunnelProbeStatuses.Store(tunnel.Id, probe)
 		s.applyProbeStatus(tunnel)
 		return tunnel, nil
@@ -420,16 +332,16 @@ func (s *TunnelService) ProbeTunnel(id int, userId int) (*model.Tunnel, error) {
 	_ = conn.SetReadDeadline(time.Now().Add(1200 * time.Millisecond))
 	buf := make([]byte, 1)
 	_, readErr := conn.Read(buf)
-	probe := tunnelProbeStatus{Status: "connected", Message: "TCP 连接已建立并保持"}
+	probe := tunnelProbeStatus{Status: "success", Message: "TCP 连接探测成功；该结果不是实时在线状态", Timestamp: time.Now()}
 	if readErr != nil {
 		if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
 			// A listener with no reverse worker is closed immediately by Xray. A
 			// connection that remains open through the deadline is useful evidence
 			// that the reverse path and the B-side target accepted the stream.
 		} else if readErr == io.EOF {
-			probe = tunnelProbeStatus{Status: "disconnected", Message: "连接被远端立即关闭"}
+			probe = tunnelProbeStatus{Status: "failed", Message: "TCP 连接被远端立即关闭", Timestamp: time.Now()}
 		} else {
-			probe = tunnelProbeStatus{Status: "disconnected", Message: "连接异常: " + readErr.Error()}
+			probe = tunnelProbeStatus{Status: "failed", Message: "TCP 连接异常: " + readErr.Error(), Timestamp: time.Now()}
 		}
 	}
 	tunnelProbeStatuses.Store(tunnel.Id, probe)

@@ -78,10 +78,11 @@
                             </template>
                             <template slot="status" slot-scope="text, tunnel">
                                 <a-tooltip :title="tunnel.statusMessage || ''">
-                                    <a-tag :color="tunnel.status === 'connected' ? 'green' : (tunnel.status === 'disconnected' ? 'red' : 'default')">
-                                        [[ tunnel.status === 'connected' ? '已连接' : (tunnel.status === 'disconnected' ? '未连接' : '未知') ]]
+                                    <a-tag :color="tunnel.status === 'success' ? 'green' : (tunnel.status === 'failed' ? 'red' : 'default')">
+                                        [[ tunnel.status === 'success' ? '成功' : (tunnel.status === 'failed' ? '失败' : '未测试') ]]
                                     </a-tag>
                                 </a-tooltip>
+                                <div v-if="tunnel.probeTime" style="font-size: 12px; color: #999; margin-top: 4px;">[[ tunnel.probeTime ]]</div>
                             </template>
                         </a-table>
                     </a-card>
@@ -294,9 +295,9 @@
         width: 180,
         scopedSlots: { customRender: 'kcp' },
     }, {
-        title: "状态",
+        title: "最近一次 TCP 探测",
         align: 'center',
-        width: 90,
+        width: 170,
         scopedSlots: { customRender: 'status' },
     }];
 
@@ -323,8 +324,9 @@
             kcpCongestion: false,
             kcpReadBufferSize: 2,
             kcpWriteBufferSize: 2,
-            status: 'unknown',
-            statusMessage: '尚未探测',
+            status: 'not_tested',
+            statusMessage: '尚未进行 TCP 探测',
+            probeTime: '',
         }, data || {});
         if (!tunnel.mode) tunnel.mode = 'direct';
         return tunnel;

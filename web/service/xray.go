@@ -112,7 +112,9 @@ func (s *XrayService) RestartXray(isForce bool) error {
 			return nil
 		}
 		previousConfig = p.GetConfig()
-		p.Stop()
+		if err := p.Stop(); err != nil {
+			return common.NewError("停止旧 Xray 失败，未应用新配置: ", err)
+		}
 	}
 
 	p = xray.NewProcess(xrayConfig)

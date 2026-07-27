@@ -57,6 +57,37 @@ func NewProcess(xrayConfig *Config) *Process {
 	return p
 }
 
+func ValidateConfig(xrayConfig *Config) error {
+	data, err := json.MarshalIndent(xrayConfig, "", "  ")
+	if err != nil {
+		return common.NewErrorf("生成 xray 配置文件失败: %v", err)
+	}
+	tempFile, err := os.CreateTemp("bin", ".config-test-*.json")
+	if err != nil {
+		return common.NewErrorf("创建 xray 临时配置失败: %v", err)
+	}
+	tempPath := tempFile.Name()
+	defer os.Remove(tempPath)
+	if _, err := tempFile.Write(data); err != nil {
+		tempFile.Close()
+		return common.NewErrorf("写入 xray 临时配置失败: %v", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return common.NewErrorf("关闭 xray 临时配置失败: %v", err)
+	}
+
+	cmd := exec.Command(GetBinaryPath(), "run", "-test", "-config", tempPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		message := strings.TrimSpace(string(output))
+		if message == "" {
+			message = err.Error()
+		}
+		return common.NewError("xray 配置校验失败: ", message)
+	}
+	return nil
+}
+
 type process struct {
 	cmd *exec.Cmd
 

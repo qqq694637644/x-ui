@@ -35,10 +35,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout pinned Xray-core v26.3.27
+        uses: actions/checkout@v4
+        with:
+          repository: qqq694637644/Xray-core
+          ref: d2758a023cd7f4174a5a5fa4ff66e487d4342ba0
+          path: .build/xray-core-v26.3.27
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.20.x'
+          go-version: '1.26.x'
           cache: true
 
       - name: Build Linux amd64 package
@@ -50,12 +57,13 @@ jobs:
 
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/x-ui/x-ui main.go
 
+          (
+            cd .build/xray-core-v26.3.27
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o "$GITHUB_WORKSPACE/dist/x-ui/bin/xray-linux-amd64" ./main
+          )
+
           cp x-ui.service dist/x-ui/x-ui.service
           cp x-ui.sh dist/x-ui/x-ui.sh
-
-          curl -fL -o /tmp/Xray-linux-64.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip -q /tmp/Xray-linux-64.zip -d /tmp/xray-linux-amd64
-          install -m 0755 /tmp/xray-linux-amd64/xray dist/x-ui/bin/xray-linux-amd64
 
           curl -fL -o dist/x-ui/bin/geoip.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
           curl -fL -o dist/x-ui/bin/geosite.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat

@@ -44,9 +44,10 @@ type Inbound struct {
 }
 
 type Tunnel struct {
-	Id     int  `json:"id" form:"id" gorm:"primaryKey;autoIncrement"`
-	UserId int  `json:"-"`
-	Enable bool `json:"enable" form:"enable"`
+	Id     int    `json:"id" form:"id" gorm:"primaryKey;autoIncrement"`
+	UserId int    `json:"-"`
+	Enable bool   `json:"enable" form:"enable"`
+	Mode   string `json:"mode" form:"mode"`
 
 	Remark string `json:"remark" form:"remark"`
 
@@ -71,6 +72,9 @@ type Tunnel struct {
 	KcpCongestion       bool   `json:"kcpCongestion" form:"kcpCongestion"`
 	KcpReadBufferSize   int    `json:"kcpReadBufferSize" form:"kcpReadBufferSize"`
 	KcpWriteBufferSize  int    `json:"kcpWriteBufferSize" form:"kcpWriteBufferSize"`
+
+	Status        string `json:"status" form:"-" gorm:"-"`
+	StatusMessage string `json:"statusMessage" form:"-" gorm:"-"`
 }
 
 func (t *Tunnel) InboundTag() string {
@@ -79,6 +83,18 @@ func (t *Tunnel) InboundTag() string {
 
 func (t *Tunnel) OutboundTag() string {
 	return fmt.Sprintf("tunnel-out-%v", t.Id)
+}
+
+func (t *Tunnel) PortalInboundTag() string {
+	return fmt.Sprintf("tunnel-portal-in-%v", t.Id)
+}
+
+func (t *Tunnel) PortalTag() string {
+	return fmt.Sprintf("tunnel-portal-%v", t.Id)
+}
+
+func (t *Tunnel) ReverseDomain() string {
+	return fmt.Sprintf("reverse-%s.xui.internal", t.UUID)
 }
 
 func (i *Inbound) GenXrayInboundConfig() *xray.InboundConfig {

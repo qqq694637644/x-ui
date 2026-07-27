@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"x-ui/logger"
+	"x-ui/util/common"
 	"x-ui/xray"
 
 	"go.uber.org/atomic"
@@ -99,18 +100,36 @@ func (s *XrayService) RestartXray(isForce bool) error {
 	if err != nil {
 		return err
 	}
+	if err := xray.ValidateConfig(xrayConfig); err != nil {
+		return err
+	}
 
-	if p != nil && p.IsRunning() {
+	var previousConfig *xray.Config
+	previousRunning := p != nil && p.IsRunning()
+	if previousRunning {
 		if !isForce && p.GetConfig().Equals(xrayConfig) {
 			logger.Debug("not need to restart xray")
 			return nil
 		}
+		previousConfig = p.GetConfig()
 		p.Stop()
 	}
 
 	p = xray.NewProcess(xrayConfig)
 	result = ""
-	return p.Start()
+	if err := p.Start(); err != nil {
+		if previousRunning && previousConfig != nil {
+			rollback := xray.NewProcess(previousConfig)
+			if rollbackErr := rollback.Start(); rollbackErr != nil {
+				p = rollback
+				return common.NewError("启动新配置失败，且恢复旧配置失败: ", err, "; rollback: ", rollbackErr)
+			}
+			p = rollback
+			return common.NewError("启动新配置失败，已恢复旧配置: ", err)
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *XrayService) StopXray() error {

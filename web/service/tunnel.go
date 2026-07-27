@@ -507,50 +507,74 @@ func (s *TunnelService) ApplyToXrayConfig(xrayConfig *xray.Config) error {
 		return err
 	}
 	for _, tunnel := range tunnels {
-		inboundConfig, err := s.genXrayInboundConfig(tunnel)
-		if err != nil {
-			return err
-		}
-		xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *inboundConfig)
-
-		if tunnel.Mode == TunnelModePortal {
-			portalInbound, err := s.genXrayPortalInboundConfig(tunnel)
-			if err != nil {
-				return err
-			}
-			xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *portalInbound)
-			if err := appendReversePortal(&xrayConfig.Reverse, tunnel); err != nil {
-				return err
-			}
-			rules, err := s.genXrayPortalRoutingRules(tunnel)
-			if err != nil {
-				return err
-			}
-			for _, rule := range rules {
-				if err := appendRoutingRule(&xrayConfig.RouterConfig, rule); err != nil {
-					return err
-				}
-			}
-			continue
-		}
-
-		outboundConfig, err := s.genXrayOutboundConfig(tunnel)
-		if err != nil {
-			return err
-		}
-		if err := appendRawJSONArray(&xrayConfig.OutboundConfigs, outboundConfig); err != nil {
-			return err
-		}
-
-		routingRule, err := s.genXrayRoutingRule(tunnel)
-		if err != nil {
-			return err
-		}
-		if err := appendRoutingRule(&xrayConfig.RouterConfig, routingRule); err != nil {
+		if err := s.applyTunnelToXrayConfig(xrayConfig, tunnel); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (s *TunnelService) applyTunnelToXrayConfig(xrayConfig *xray.Config, tunnel *model.Tunnel) error {
+	inboundConfig, err := s.genXrayInboundConfig(tunnel)
+	if err != nil {
+		return err
+	}
+	xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *inboundConfig)
+
+	if tunnel.Mode == TunnelModePortal {
+		portalInbound, err := s.genXrayPortalInboundConfig(tunnel)
+		if err != nil {
+			return err
+		}
+		xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *portalInbound)
+		if err := appendReversePortal(&xrayConfig.Reverse, tunnel); err != nil {
+			return err
+		}
+		rules, err := s.genXrayPortalRoutingRules(tunnel)
+		if err != nil {
+			return err
+		}
+		for _, rule := range rules {
+			if err := appendRoutingRule(&xrayConfig.RouterConfig, rule); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	outboundConfig, err := s.genXrayOutboundConfig(tunnel)
+	if err != nil {
+		return err
+	}
+	if err := appendRawJSONArray(&xrayConfig.OutboundConfigs, outboundConfig); err != nil {
+		return err
+	}
+
+	routingRule, err := s.genXrayRoutingRule(tunnel)
+	if err != nil {
+		return err
+	}
+	return appendRoutingRule(&xrayConfig.RouterConfig, routingRule)
+}
+
+// BuildTunnelFixtureConfig uses the same tunnel generator as the running
+// panel without reading the database. It is intended for reproducible
+// cross-repository Portal smoke tests.
+func BuildTunnelFixtureConfig(tunnel *model.Tunnel) (*xray.Config, error) {
+	service := &TunnelService{}
+	service.normalizeTunnel(tunnel)
+	if err := service.checkTunnel(tunnel); err != nil {
+		return nil, err
+	}
+	config := &xray.Config{
+		LogConfig:       json_util.RawMessage(`{"loglevel":"warning"}`),
+		RouterConfig:    json_util.RawMessage(`{"rules":[]}`),
+		OutboundConfigs: json_util.RawMessage(`[{"tag":"direct","protocol":"freedom","settings":{}},{"tag":"blocked","protocol":"blackhole","settings":{}}]`),
+	}
+	if err := service.applyTunnelToXrayConfig(config, tunnel); err != nil {
+		return nil, err
+	}
+	return config, nil
 }
 
 func appendRawJSONArray(raw *json_util.RawMessage, item json.RawMessage) error {

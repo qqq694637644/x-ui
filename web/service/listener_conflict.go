@@ -118,9 +118,9 @@ func inboundListenerEndpoint(inbound *model.Inbound) (listenerEndpoint, error) {
 			return listenerEndpoint{}, common.NewError("无法判断入站业务协议: ", err)
 		}
 	}
-	if strings.EqualFold(string(inbound.Protocol), "dokodemo-door") {
-		if network, ok := settings["network"].(string); ok && strings.TrimSpace(network) != "" {
-			protocols = protocolsFromNetwork(network)
+	if network, ok := settings["network"].(string); ok && strings.TrimSpace(network) != "" {
+		if parsed := protocolsFromNetwork(network); parsed != 0 {
+			protocols = parsed
 		}
 	}
 	if udp, ok := settings["udp"].(bool); ok && udp {
@@ -196,11 +196,29 @@ func checkTunnelListenerConflicts(tunnel *model.Tunnel, ignoreID int) error {
 	return nil
 }
 
-func checkInboundTunnelConflicts(inbound *model.Inbound) error {
+func checkInboundListenerConflicts(inbound *model.Inbound, ignoreID int) error {
 	requested, err := inboundListenerEndpoint(inbound)
 	if err != nil {
 		return err
 	}
+	var inbounds []*model.Inbound
+	query := database.GetDB().Model(model.Inbound{})
+	if ignoreID > 0 {
+		query = query.Where("id != ?", ignoreID)
+	}
+	if err := query.Find(&inbounds).Error; err != nil {
+		return err
+	}
+	for _, existingInbound := range inbounds {
+		existing, err := inboundListenerEndpoint(existingInbound)
+		if err != nil {
+			return err
+		}
+		if endpointsConflict(requested, existing) {
+			return endpointConflictError(requested, existing)
+		}
+	}
+
 	var tunnels []*model.Tunnel
 	if err := database.GetDB().Model(model.Tunnel{}).Find(&tunnels).Error; err != nil {
 		return err

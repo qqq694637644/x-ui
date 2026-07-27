@@ -39,6 +39,9 @@ func initInbound() error {
 	if err := db.AutoMigrate(&model.Inbound{}); err != nil {
 		return err
 	}
+	if err := migrateLegacyInboundPortUnique(); err != nil {
+		return err
+	}
 	return validateInboundStreamSettingsForXray26327()
 }
 
@@ -56,7 +59,10 @@ func validateInboundStreamSettingsForXray26327() error {
 }
 
 func initTunnel() error {
-	return db.AutoMigrate(&model.Tunnel{})
+	if err := db.AutoMigrate(&model.Tunnel{}); err != nil {
+		return err
+	}
+	return migrateLegacyTunnelPortUnique()
 }
 
 func initSetting() error {

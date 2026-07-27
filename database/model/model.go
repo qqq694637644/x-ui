@@ -1,6 +1,8 @@
 package model
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"x-ui/util/json_util"
@@ -36,7 +38,7 @@ type Inbound struct {
 
 	// config part
 	Listen         string   `json:"listen" form:"listen"`
-	Port           int      `json:"port" form:"port" gorm:"unique"`
+	Port           int      `json:"port" form:"port"`
 	Protocol       Protocol `json:"protocol" form:"protocol"`
 	Settings       string   `json:"settings" form:"settings"`
 	StreamSettings string   `json:"streamSettings" form:"streamSettings"`
@@ -53,7 +55,7 @@ type Tunnel struct {
 	Remark string `json:"remark" form:"remark"`
 
 	Listen     string `json:"listen" form:"listen"`
-	ListenPort int    `json:"listenPort" form:"listenPort" gorm:"unique"`
+	ListenPort int    `json:"listenPort" form:"listenPort"`
 	Network    string `json:"network" form:"network"`
 
 	TargetAddress string `json:"targetAddress" form:"targetAddress"`
@@ -80,25 +82,40 @@ type Tunnel struct {
 }
 
 func NormalizeUUID(value string) (string, error) {
-	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.TrimSpace(value)
+	if length := len([]byte(value)); length >= 1 && length <= 30 {
+		hash := sha1.New()
+		_, _ = hash.Write(make([]byte, 16))
+		_, _ = hash.Write([]byte(value))
+		bytes := hash.Sum(nil)[:16]
+		bytes[6] = (bytes[6] & 0x0f) | (5 << 4)
+		bytes[8] = (bytes[8] & (0xff >> 2)) | (0x02 << 6)
+		return formatUUIDBytes(bytes), nil
+	}
+
+	value = strings.ToLower(value)
 	compact := value
 	if len(value) == 36 {
 		for _, index := range []int{8, 13, 18, 23} {
 			if value[index] != '-' {
-				return "", fmt.Errorf("UUID 必须是标准 36 位格式或 32 位十六进制格式")
+				return "", fmt.Errorf("UUID 必须是 1-30 字节旧 ID、32 位十六进制或标准 36 位格式")
 			}
 		}
 		compact = strings.ReplaceAll(value, "-", "")
 	}
 	if len(compact) != 32 {
-		return "", fmt.Errorf("UUID 必须是标准 36 位格式或 32 位十六进制格式")
+		return "", fmt.Errorf("UUID 必须是 1-30 字节旧 ID、32 位十六进制或标准 36 位格式")
 	}
-	for _, ch := range compact {
-		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
-			return "", fmt.Errorf("UUID 包含非十六进制字符")
-		}
+	decoded := make([]byte, 16)
+	if _, err := hex.Decode(decoded, []byte(compact)); err != nil {
+		return "", fmt.Errorf("UUID 包含非十六进制字符: %w", err)
 	}
-	return fmt.Sprintf("%s-%s-%s-%s-%s", compact[0:8], compact[8:12], compact[12:16], compact[16:20], compact[20:32]), nil
+	return formatUUIDBytes(decoded), nil
+}
+
+func formatUUIDBytes(value []byte) string {
+	encoded := hex.EncodeToString(value)
+	return fmt.Sprintf("%s-%s-%s-%s-%s", encoded[0:8], encoded[8:12], encoded[12:16], encoded[16:20], encoded[20:32])
 }
 
 func (t *Tunnel) InboundTag() string {

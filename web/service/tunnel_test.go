@@ -160,6 +160,35 @@ func TestNormalizeTunnelDefaultsLegacyRecordToDirect(t *testing.T) {
 	}
 }
 
+func TestLegacyDirectTunnelShortIDCanStillBeEdited(t *testing.T) {
+	tunnel := &model.Tunnel{
+		Mode:                TunnelModeDirect,
+		ListenPort:          18081,
+		Network:             "tcp",
+		TargetAddress:       "127.0.0.1",
+		TargetPort:          18081,
+		RemoteAddress:       "198.51.100.20",
+		RemotePort:          40000,
+		Protocol:            "vmess",
+		UUID:                "my-home-xray",
+		KcpFinalMaskType:    "none",
+		KcpMtu:              1350,
+		KcpTti:              20,
+		KcpUplinkCapacity:   20,
+		KcpDownlinkCapacity: 100,
+		KcpReadBufferSize:   2,
+		KcpWriteBufferSize:  2,
+	}
+	service := &TunnelService{}
+	service.normalizeTunnel(tunnel)
+	if err := service.checkTunnel(tunnel); err != nil {
+		t.Fatalf("legacy short ID was rejected: %v", err)
+	}
+	if got, want := tunnel.UUID, "717ca3f3-97cd-589b-b805-3acd24b97366"; got != want {
+		t.Fatalf("normalized UUID = %q, want %q", got, want)
+	}
+}
+
 func TestPortalConfigUsesVMessMkcpAndReversePortal(t *testing.T) {
 	tunnel := &model.Tunnel{
 		Id:                  7,

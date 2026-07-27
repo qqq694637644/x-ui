@@ -73,3 +73,34 @@ func TestMkcpInboundIsDetectedAsUDP(t *testing.T) {
 		t.Fatalf("protocols = %v, want UDP", endpoint.Protocols)
 	}
 }
+
+func TestShadowsocksSettingsNetworkConflictsWithPortalUDPBothDirections(t *testing.T) {
+	inbound := &model.Inbound{
+		Id:             9,
+		Listen:         "0.0.0.0",
+		Port:           40000,
+		Protocol:       model.Shadowsocks,
+		Settings:       `{"method":"aes-128-gcm","password":"secret","network":"tcp,udp"}`,
+		StreamSettings: `{}`,
+		Tag:            "shadowsocks-40000",
+	}
+	shadowsocks, err := inboundListenerEndpoint(inbound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shadowsocks.Protocols != listenerTCP|listenerUDP {
+		t.Fatalf("Shadowsocks protocols = %v, want TCP/UDP", shadowsocks.Protocols)
+	}
+	portal := listenerEndpoint{
+		Address:     "0.0.0.0",
+		Port:        40000,
+		Protocols:   listenerUDP,
+		Description: "Portal",
+	}
+	if !endpointsConflict(shadowsocks, portal) {
+		t.Fatal("existing Shadowsocks TCP/UDP must block a new Portal UDP listener")
+	}
+	if !endpointsConflict(portal, shadowsocks) {
+		t.Fatal("existing Portal UDP must block a new Shadowsocks TCP/UDP listener")
+	}
+}

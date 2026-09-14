@@ -60,12 +60,21 @@ func xhttpUsesHTTP3(stream map[string]interface{}) bool {
 	if !ok {
 		return false
 	}
-	alpn, ok := tlsSettings["alpn"].([]interface{})
-	if !ok || len(alpn) != 1 {
+	switch alpn := tlsSettings["alpn"].(type) {
+	case string:
+		values := strings.Split(alpn, ",")
+		return len(values) == 1 && values[0] == "h3"
+	case []interface{}:
+		if len(alpn) != 1 {
+			return false
+		}
+		value, ok := alpn[0].(string)
+		return ok && value == "h3"
+	case []string:
+		return len(alpn) == 1 && alpn[0] == "h3"
+	default:
 		return false
 	}
-	value, ok := alpn[0].(string)
-	return ok && value == "h3"
 }
 
 func normalizeListenAddress(address string) string {

@@ -75,18 +75,25 @@ func TestMkcpInboundIsDetectedAsUDP(t *testing.T) {
 }
 
 func TestXHTTPH3InboundIsDetectedAsUDP(t *testing.T) {
-	inbound := &model.Inbound{
-		Port:           40000,
-		Protocol:       model.VLESS,
-		Settings:       `{}`,
-		StreamSettings: `{"network":"xhttp","security":"tls","tlsSettings":{"alpn":["h3"]},"xhttpSettings":{"path":"/xhttp","mode":"auto"}}`,
-	}
-	endpoint, err := inboundListenerEndpoint(inbound)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if endpoint.Protocols != listenerUDP {
-		t.Fatalf("protocols = %v, want UDP for XHTTP H3", endpoint.Protocols)
+	for name, streamSettings := range map[string]string{
+		"array alpn":  `{"network":"xhttp","security":"tls","tlsSettings":{"alpn":["h3"]},"xhttpSettings":{"path":"/xhttp","mode":"auto"}}`,
+		"string alpn": `{"network":"xhttp","security":"tls","tlsSettings":{"alpn":"h3"},"xhttpSettings":{"path":"/xhttp","mode":"auto"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			inbound := &model.Inbound{
+				Port:           40000,
+				Protocol:       model.VLESS,
+				Settings:       `{}`,
+				StreamSettings: streamSettings,
+			}
+			endpoint, err := inboundListenerEndpoint(inbound)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if endpoint.Protocols != listenerUDP {
+				t.Fatalf("protocols = %v, want UDP for XHTTP H3", endpoint.Protocols)
+			}
+		})
 	}
 }
 

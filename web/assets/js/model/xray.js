@@ -700,6 +700,10 @@ class Inbound extends XrayCommonClass {
     set protocol(protocol) {
         this._protocol = protocol;
         this.settings = Inbound.Settings.getSettings(protocol);
+        if (protocol !== Protocols.VLESS && this.stream.network === 'xhttp') {
+            this.stream.network = 'tcp';
+            this.stream.tls.alpn = [];
+        }
         if (protocol === Protocols.TROJAN) {
             this.tls = true;
         }
@@ -1160,8 +1164,7 @@ class Inbound extends XrayCommonClass {
 
         if (this.stream.security === 'tls') {
             if (!ObjectUtil.isEmpty(this.stream.tls.server)) {
-                address = this.stream.tls.server;
-                params.set("sni", address);
+                params.set("sni", this.stream.tls.server);
             }
             const alpn = TlsStreamSettings.normalizeAlpn(this.stream.tls.alpn);
             if (alpn.length > 0) {

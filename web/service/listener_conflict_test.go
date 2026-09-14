@@ -39,6 +39,28 @@ func TestPortalTunnelOwnEndpointsDetectUDPConflict(t *testing.T) {
 	}
 }
 
+func TestPortalXHTTPEndpointIsLocalTCP(t *testing.T) {
+	tunnel := &model.Tunnel{
+		Id:               2,
+		Mode:             TunnelModePortal,
+		Listen:           "0.0.0.0",
+		ListenPort:       18081,
+		Network:          "tcp",
+		PortalTransport:  PortalTransportXHTTP,
+		PortalListenPort: 26418,
+		RemoteAddress:    "cdn.example.com",
+		RemotePort:       443,
+	}
+	endpoints := tunnelListenerEndpoints(tunnel)
+	if len(endpoints) != 2 {
+		t.Fatalf("endpoints = %#v", endpoints)
+	}
+	portal := endpoints[1]
+	if portal.Address != "127.0.0.1" || portal.Port != 26418 || portal.Protocols != listenerTCP {
+		t.Fatalf("Portal XHTTP endpoint = %#v, want local TCP 127.0.0.1:26418", portal)
+	}
+}
+
 func TestDokodemoInboundUsesSettingsNetworkForConflictDetection(t *testing.T) {
 	inbound := &model.Inbound{
 		Id:             3,

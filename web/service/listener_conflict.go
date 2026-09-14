@@ -120,12 +120,21 @@ func tunnelListenerEndpoints(tunnel *model.Tunnel) []listenerEndpoint {
 		},
 	}
 	if strings.EqualFold(strings.TrimSpace(tunnel.Mode), TunnelModePortal) {
-		endpoints = append(endpoints, listenerEndpoint{
-			Address:     "0.0.0.0",
-			Port:        tunnel.RemotePort,
-			Protocols:   listenerUDP,
-			Description: fmt.Sprintf("隧道 %d Portal mKCP", tunnel.Id),
-		})
+		if strings.EqualFold(strings.TrimSpace(tunnel.PortalTransport), PortalTransportXHTTP) {
+			endpoints = append(endpoints, listenerEndpoint{
+				Address:     "127.0.0.1",
+				Port:        tunnel.PortalListenPort,
+				Protocols:   listenerTCP,
+				Description: fmt.Sprintf("隧道 %d Portal XHTTP", tunnel.Id),
+			})
+		} else {
+			endpoints = append(endpoints, listenerEndpoint{
+				Address:     "0.0.0.0",
+				Port:        tunnel.RemotePort,
+				Protocols:   listenerUDP,
+				Description: fmt.Sprintf("隧道 %d Portal mKCP", tunnel.Id),
+			})
+		}
 	}
 	return endpoints
 }

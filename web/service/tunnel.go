@@ -22,6 +22,9 @@ import (
 const (
 	TunnelModeDirect = "direct"
 	TunnelModePortal = "portal"
+
+	PortalTransportMkcp  = "mkcp"
+	PortalTransportXHTTP = "xhttp"
 )
 
 type tunnelProbeStatus struct {
@@ -92,6 +95,8 @@ func (s *TunnelService) normalizeTunnel(tunnel *model.Tunnel) {
 	tunnel.TargetAddress = strings.TrimSpace(tunnel.TargetAddress)
 	tunnel.RemoteAddress = strings.TrimSpace(tunnel.RemoteAddress)
 	tunnel.UUID = strings.TrimSpace(tunnel.UUID)
+	tunnel.PortalTransport = strings.ToLower(strings.TrimSpace(tunnel.PortalTransport))
+	tunnel.XHttpPath = strings.TrimSpace(tunnel.XHttpPath)
 	if normalizedUUID, err := model.NormalizeUUID(tunnel.UUID); err == nil {
 		tunnel.UUID = normalizedUUID
 	}
@@ -100,12 +105,27 @@ func (s *TunnelService) normalizeTunnel(tunnel *model.Tunnel) {
 	if tunnel.Mode == "" {
 		tunnel.Mode = TunnelModeDirect
 	}
+	if tunnel.PortalTransport == "" {
+		tunnel.PortalTransport = PortalTransportMkcp
+	}
 	if tunnel.Protocol == "" {
 		if tunnel.Mode == TunnelModePortal {
-			tunnel.Protocol = "vmess"
+			if tunnel.PortalTransport == PortalTransportXHTTP {
+				tunnel.Protocol = "vless"
+			} else {
+				tunnel.Protocol = "vmess"
+			}
 		} else {
 			tunnel.Protocol = "vless"
 		}
+	}
+	if tunnel.PortalListenPort == 0 {
+		if tunnel.PortalTransport == PortalTransportMkcp {
+			tunnel.PortalListenPort = tunnel.RemotePort
+		}
+	}
+	if tunnel.XHttpPath == "" {
+		tunnel.XHttpPath = "/portal-xhttp"
 	}
 	if tunnel.Network == "" {
 		tunnel.Network = "tcp"
@@ -156,11 +176,32 @@ func (s *TunnelService) checkTunnel(tunnel *model.Tunnel) error {
 	}
 
 	if tunnel.Mode == TunnelModePortal {
-		if tunnel.Protocol != "vmess" {
-			return common.NewError("Portal 模式只支持 VMess")
-		}
-		if tunnel.RemotePort <= 0 || tunnel.RemotePort > 65535 {
-			return common.NewError("Portal mKCP 端口不合法:", tunnel.RemotePort)
+		switch tunnel.PortalTransport {
+		case PortalTransportMkcp:
+			if tunnel.Protocol != "vmess" {
+				return common.NewError("Portal mKCP 模式只支持 VMess")
+			}
+			if tunnel.RemotePort <= 0 || tunnel.RemotePort > 65535 {
+				return common.NewError("Portal mKCP 端口不合法:", tunnel.RemotePort)
+			}
+		case PortalTransportXHTTP:
+			if tunnel.Protocol != "vless" {
+				return common.NewError("Portal XHTTP 模式只支持 VLESS")
+			}
+			if tunnel.RemoteAddress == "" {
+				return common.NewError("Portal XHTTP CDN 域名不能为空")
+			}
+			if tunnel.RemotePort <= 0 || tunnel.RemotePort > 65535 {
+				return common.NewError("Portal XHTTP 公网端口不合法:", tunnel.RemotePort)
+			}
+			if tunnel.PortalListenPort <= 0 || tunnel.PortalListenPort > 65535 {
+				return common.NewError("Portal XHTTP 本地监听端口不合法:", tunnel.PortalListenPort)
+			}
+			if !strings.HasPrefix(tunnel.XHttpPath, "/") {
+				return common.NewError("Portal XHTTP 路径必须以 / 开头")
+			}
+		default:
+			return common.NewError("Portal 传输仅支持 mkcp 或 xhttp:", tunnel.PortalTransport)
 		}
 	} else {
 		if tunnel.RemotePort <= 0 || tunnel.RemotePort > 65535 {
@@ -174,14 +215,16 @@ func (s *TunnelService) checkTunnel(tunnel *model.Tunnel) error {
 		}
 	}
 
-	if tunnel.KcpTti < 10 || tunnel.KcpTti > 5000 {
-		return common.NewError("mKCP tti 必须在 10 到 5000 之间")
-	}
-	if tunnel.KcpMtu <= 0 || tunnel.KcpUplinkCapacity <= 0 || tunnel.KcpDownlinkCapacity <= 0 || tunnel.KcpReadBufferSize <= 0 || tunnel.KcpWriteBufferSize <= 0 {
-		return common.NewError("mKCP 参数必须大于 0")
-	}
-	if !isValidKcpFinalMaskType(tunnel.KcpFinalMaskType) {
-		return common.NewError("FinalMask UDP header 不支持:", tunnel.KcpFinalMaskType)
+	if tunnel.Mode != TunnelModePortal || tunnel.PortalTransport == PortalTransportMkcp {
+		if tunnel.KcpTti < 10 || tunnel.KcpTti > 5000 {
+			return common.NewError("mKCP tti 必须在 10 到 5000 之间")
+		}
+		if tunnel.KcpMtu <= 0 || tunnel.KcpUplinkCapacity <= 0 || tunnel.KcpDownlinkCapacity <= 0 || tunnel.KcpReadBufferSize <= 0 || tunnel.KcpWriteBufferSize <= 0 {
+			return common.NewError("mKCP 参数必须大于 0")
+		}
+		if !isValidKcpFinalMaskType(tunnel.KcpFinalMaskType) {
+			return common.NewError("FinalMask UDP header 不支持:", tunnel.KcpFinalMaskType)
+		}
 	}
 	return nil
 }
@@ -272,6 +315,9 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	oldTunnel.RemotePort = tunnel.RemotePort
 	oldTunnel.Protocol = tunnel.Protocol
 	oldTunnel.UUID = tunnel.UUID
+	oldTunnel.PortalTransport = tunnel.PortalTransport
+	oldTunnel.PortalListenPort = tunnel.PortalListenPort
+	oldTunnel.XHttpPath = tunnel.XHttpPath
 	oldTunnel.KcpFinalMaskType = tunnel.KcpFinalMaskType
 	oldTunnel.KcpMtu = tunnel.KcpMtu
 	oldTunnel.KcpTti = tunnel.KcpTti
@@ -426,6 +472,41 @@ func (s *TunnelService) genXrayOutboundConfig(tunnel *model.Tunnel) (json.RawMes
 }
 
 func (s *TunnelService) genXrayPortalInboundConfig(tunnel *model.Tunnel) (*xray.InboundConfig, error) {
+	if tunnel.PortalTransport == PortalTransportXHTTP {
+		settings, err := json.Marshal(map[string]interface{}{
+			"clients": []map[string]interface{}{
+				{
+					"id":    tunnel.UUID,
+					"email": fmt.Sprintf("portal-%d", tunnel.Id),
+				},
+			},
+			"decryption": "none",
+		})
+		if err != nil {
+			return nil, err
+		}
+		streamSettings, err := json.Marshal(map[string]interface{}{
+			"network":  "xhttp",
+			"security": "none",
+			"xhttpSettings": map[string]interface{}{
+				"path": tunnel.XHttpPath,
+				"host": "",
+				"mode": "auto",
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &xray.InboundConfig{
+			Listen:         json_util.RawMessage(`"127.0.0.1"`),
+			Port:           tunnel.PortalListenPort,
+			Protocol:       "vless",
+			Settings:       json_util.RawMessage(settings),
+			StreamSettings: json_util.RawMessage(streamSettings),
+			Tag:            tunnel.PortalInboundTag(),
+		}, nil
+	}
+
 	settings, err := json.Marshal(map[string]interface{}{
 		"clients": []map[string]interface{}{
 			{

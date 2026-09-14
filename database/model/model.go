@@ -67,6 +67,10 @@ type Tunnel struct {
 	Protocol string `json:"protocol" form:"protocol"`
 	UUID     string `json:"uuid" form:"uuid"`
 
+	PortalTransport string `json:"portalTransport" form:"portalTransport" gorm:"column:portal_transport"`
+	PortalListenPort int    `json:"portalListenPort" form:"portalListenPort" gorm:"column:portal_listen_port"`
+	XHttpPath        string `json:"xhttpPath" form:"xhttpPath" gorm:"column:xhttp_path"`
+
 	KcpFinalMaskType    string `json:"kcpFinalMaskType" form:"kcpFinalMaskType" gorm:"column:kcp_final_mask_type"`
 	KcpMtu              int    `json:"kcpMtu" form:"kcpMtu"`
 	KcpTti              int    `json:"kcpTti" form:"kcpTti"`

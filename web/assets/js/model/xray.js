@@ -1373,10 +1373,10 @@ Inbound.VLESSSettings = class extends Inbound.Settings {
 };
 Inbound.VLESSSettings.VLESS = class extends XrayCommonClass {
 
-    constructor(id=RandomUtil.randomUUID(), flow=FLOW_CONTROL.DIRECT) {
+    constructor(id=RandomUtil.randomUUID(), flow='') {
         super();
         this.id = id;
-        this.flow = flow;
+        this.flow = flow === FLOW_CONTROL.DIRECT || flow === FLOW_CONTROL.ORIGIN ? '' : flow;
     }
 
     static fromJson(json={}) {

@@ -74,6 +74,60 @@ func TestMkcpInboundIsDetectedAsUDP(t *testing.T) {
 	}
 }
 
+func TestXHTTPH3InboundIsDetectedAsUDP(t *testing.T) {
+	inbound := &model.Inbound{
+		Port:           40000,
+		Protocol:       model.VLESS,
+		Settings:       `{}`,
+		StreamSettings: `{"network":"xhttp","security":"tls","tlsSettings":{"alpn":["h3"]},"xhttpSettings":{"path":"/xhttp","mode":"auto"}}`,
+	}
+	endpoint, err := inboundListenerEndpoint(inbound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint.Protocols != listenerUDP {
+		t.Fatalf("protocols = %v, want UDP for XHTTP H3", endpoint.Protocols)
+	}
+}
+
+func TestXHTTPH1AndH2InboundsAreDetectedAsTCP(t *testing.T) {
+	for _, alpn := range []string{"http/1.1", "h2"} {
+		t.Run(alpn, func(t *testing.T) {
+			inbound := &model.Inbound{
+				Port:           40000,
+				Protocol:       model.VLESS,
+				Settings:       `{}`,
+				StreamSettings: `{"network":"xhttp","security":"tls","tlsSettings":{"alpn":["` + alpn + `"]},"xhttpSettings":{"path":"/xhttp","mode":"auto"}}`,
+			}
+			endpoint, err := inboundListenerEndpoint(inbound)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if endpoint.Protocols != listenerTCP {
+				t.Fatalf("protocols = %v, want TCP for XHTTP %s", endpoint.Protocols, alpn)
+			}
+		})
+	}
+}
+
+func TestXHTTPH2AndH3MayShareSameNumericPort(t *testing.T) {
+	h2 := listenerEndpoint{Address: "0.0.0.0", Port: 40000, Protocols: listenerTCP}
+	h3 := listenerEndpoint{Address: "0.0.0.0", Port: 40000, Protocols: listenerUDP}
+	if endpointsConflict(h2, h3) || endpointsConflict(h3, h2) {
+		t.Fatal("XHTTP H2 TCP and H3 UDP may share the same numeric port")
+	}
+}
+
+func TestValidateInboundTransportLimitsXHTTPToVLESS(t *testing.T) {
+	streamSettings := `{"network":"xhttp","xhttpSettings":{"path":"/xhttp","mode":"auto"}}`
+	if err := validateInboundTransport(&model.Inbound{Protocol: model.VLESS, StreamSettings: streamSettings}); err != nil {
+		t.Fatalf("VLESS XHTTP rejected: %v", err)
+	}
+	if err := validateInboundTransport(&model.Inbound{Protocol: model.VMess, StreamSettings: streamSettings}); err == nil {
+		t.Fatal("VMess XHTTP must be rejected by the panel")
+	}
+}
+
 func TestShadowsocksSettingsNetworkConflictsWithPortalUDPBothDirections(t *testing.T) {
 	inbound := &model.Inbound{
 		Id:             9,

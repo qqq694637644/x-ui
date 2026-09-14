@@ -47,6 +47,27 @@ func transportProtocols(network string) listenerProtocols {
 	}
 }
 
+func xhttpUsesHTTP3(stream map[string]interface{}) bool {
+	network, _ := stream["network"].(string)
+	if !strings.EqualFold(strings.TrimSpace(network), "xhttp") && !strings.EqualFold(strings.TrimSpace(network), "splithttp") {
+		return false
+	}
+	security, _ := stream["security"].(string)
+	if !strings.EqualFold(strings.TrimSpace(security), "tls") {
+		return false
+	}
+	tlsSettings, ok := stream["tlsSettings"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	alpn, ok := tlsSettings["alpn"].([]interface{})
+	if !ok || len(alpn) != 1 {
+		return false
+	}
+	value, ok := alpn[0].(string)
+	return ok && value == "h3"
+}
+
 func normalizeListenAddress(address string) string {
 	address = strings.ToLower(strings.TrimSpace(address))
 	return strings.Trim(address, "[]")
@@ -109,7 +130,11 @@ func inboundListenerEndpoint(inbound *model.Inbound) (listenerEndpoint, error) {
 			return listenerEndpoint{}, common.NewError("无法判断入站传输协议: ", err)
 		}
 		streamNetwork, _ = stream["network"].(string)
-		protocols = transportProtocols(streamNetwork)
+		if xhttpUsesHTTP3(stream) {
+			protocols = listenerUDP
+		} else {
+			protocols = transportProtocols(streamNetwork)
+		}
 	}
 
 	settings := map[string]interface{}{}

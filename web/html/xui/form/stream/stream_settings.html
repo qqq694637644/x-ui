@@ -9,6 +9,7 @@
             <a-select-option value="http">http</a-select-option>
             <a-select-option value="quic">quic</a-select-option>
             <a-select-option value="grpc">grpc</a-select-option>
+            <a-select-option v-if="inbound.protocol === Protocols.VLESS" value="xhttp">xhttp</a-select-option>
         </a-select>
     </a-form-item>
 </a-form>
@@ -41,5 +42,10 @@
 <!-- grpc -->
 <template v-if="inbound.stream.network === 'grpc'">
     {{template "form/streamGRPC"}}
+</template>
+
+<!-- xhttp -->
+<template v-if="inbound.stream.network === 'xhttp'">
+    {{template "form/streamXHTTP"}}
 </template>
 {{end}}

@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 	"x-ui/database/model"
+	"x-ui/logger"
 	"x-ui/web/service"
 	"x-ui/web/session"
 
@@ -109,12 +112,22 @@ func (a *TunnelController) applySavedChange(c *gin.Context, action string, err e
 }
 
 func (a *TunnelController) getTunnels(c *gin.Context) {
+	started := time.Now()
+	traceID := strconv.FormatInt(started.UnixNano(), 36)
 	user := session.GetLoginUser(c)
-	tunnels, err := a.tunnelService.GetTunnels(user.Id)
+	logger.Infof("[tunnel-trace] trace=%s event=list.start user_id=%d method=%s path=%s remote=%s", traceID, user.Id, c.Request.Method, c.Request.URL.Path, c.ClientIP())
+
+	serviceStarted := time.Now()
+	tunnels, err := a.tunnelService.GetTunnelsTraced(user.Id, traceID)
+	serviceElapsed := time.Since(serviceStarted)
+	c.Header("X-XUI-Tunnel-Trace", traceID)
+	c.Header("Server-Timing", fmt.Sprintf("tunnel-service;dur=%.3f", float64(serviceElapsed.Microseconds())/1000))
 	if err != nil {
+		logger.Infof("[tunnel-trace] trace=%s event=list.end success=false service_ms=%.3f total_ms=%.3f error=%q", traceID, float64(serviceElapsed.Microseconds())/1000, float64(time.Since(started).Microseconds())/1000, err.Error())
 		jsonMsg(c, "获取", err)
 		return
 	}
+	logger.Infof("[tunnel-trace] trace=%s event=list.end success=true count=%d service_ms=%.3f total_ms=%.3f", traceID, len(tunnels), float64(serviceElapsed.Microseconds())/1000, float64(time.Since(started).Microseconds())/1000)
 	jsonObj(c, tunnels, nil)
 }
 

@@ -253,15 +253,63 @@ func TestPortalConfigUsesVMessMkcpAndReversePortal(t *testing.T) {
 	}
 }
 
-func TestPortalModeRejectsVless(t *testing.T) {
+func TestPortalXHTTPUsesVLESSAndLocalTCPInbound(t *testing.T) {
 	tunnel := &model.Tunnel{
 		Mode:                TunnelModePortal,
 		ListenPort:          18081,
 		Network:             "tcp",
 		TargetAddress:       "127.0.0.1",
 		TargetPort:          18081,
-		RemotePort:          40000,
+		RemoteAddress:       "cdn.example.com",
+		RemotePort:          443,
 		Protocol:            "vless",
+		UUID:                "11111111-1111-1111-1111-111111111111",
+		PortalTransport:     PortalTransportXHTTP,
+		PortalListenPort:    26418,
+		XHttpPath:           "/portal-xhttp",
+		KcpFinalMaskType:    "none",
+		KcpMtu:              1350,
+		KcpTti:              20,
+		KcpUplinkCapacity:   5,
+		KcpDownlinkCapacity: 20,
+		KcpReadBufferSize:   2,
+		KcpWriteBufferSize:  2,
+	}
+	service := &TunnelService{}
+	if err := service.checkTunnel(tunnel); err != nil {
+		t.Fatalf("VLESS/XHTTP portal rejected: %v", err)
+	}
+	portalInbound, err := service.genXrayPortalInboundConfig(tunnel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if portalInbound.Protocol != "vless" || portalInbound.Port != 26418 || string(portalInbound.Listen) != `"127.0.0.1"` {
+		t.Fatalf("portal inbound = %#v", portalInbound)
+	}
+	var stream map[string]interface{}
+	if err := json.Unmarshal(portalInbound.StreamSettings, &stream); err != nil {
+		t.Fatal(err)
+	}
+	if stream["network"] != "xhttp" || stream["security"] != "none" {
+		t.Fatalf("streamSettings = %#v", stream)
+	}
+	xhttp := stream["xhttpSettings"].(map[string]interface{})
+	if xhttp["path"] != "/portal-xhttp" || xhttp["mode"] != "auto" {
+		t.Fatalf("xhttpSettings = %#v", xhttp)
+	}
+}
+
+func TestPortalTransportProtocolPairIsValidated(t *testing.T) {
+	base := model.Tunnel{
+		Mode:                TunnelModePortal,
+		ListenPort:          18081,
+		Network:             "tcp",
+		TargetAddress:       "127.0.0.1",
+		TargetPort:          18081,
+		RemoteAddress:       "cdn.example.com",
+		RemotePort:          443,
+		PortalListenPort:    26418,
+		XHttpPath:           "/portal-xhttp",
 		UUID:                "11111111-1111-1111-1111-111111111111",
 		KcpFinalMaskType:    "none",
 		KcpMtu:              1350,
@@ -271,7 +319,20 @@ func TestPortalModeRejectsVless(t *testing.T) {
 		KcpReadBufferSize:   2,
 		KcpWriteBufferSize:  2,
 	}
-	if err := (&TunnelService{}).checkTunnel(tunnel); err == nil {
-		t.Fatal("portal mode accepted vless")
+	service := &TunnelService{}
+
+	xhttpVMess := base
+	xhttpVMess.PortalTransport = PortalTransportXHTTP
+	xhttpVMess.Protocol = "vmess"
+	if err := service.checkTunnel(&xhttpVMess); err == nil {
+		t.Fatal("XHTTP portal accepted VMess")
+	}
+
+	mkcpVLESS := base
+	mkcpVLESS.PortalTransport = PortalTransportMkcp
+	mkcpVLESS.Protocol = "vless"
+	mkcpVLESS.RemotePort = 40000
+	if err := service.checkTunnel(&mkcpVLESS); err == nil {
+		t.Fatal("mKCP portal accepted VLESS")
 	}
 }

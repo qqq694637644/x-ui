@@ -1,0 +1,28 @@
+{{define "form/streamXHTTP"}}
+<a-form layout="inline">
+    <a-form-item label="路径">
+        <a-input v-model.trim="inbound.stream.xhttp.path"></a-input>
+    </a-form-item>
+    <a-form-item label="host">
+        <a-input v-model.trim="inbound.stream.xhttp.host"></a-input>
+    </a-form-item>
+    <a-form-item label="模式">
+        <a-select v-model="inbound.stream.xhttp.mode" style="width: 130px">
+            <a-select-option value="auto">auto</a-select-option>
+            <a-select-option value="packet-up">packet-up</a-select-option>
+            <a-select-option value="stream-up">stream-up</a-select-option>
+            <a-select-option value="stream-one">stream-one</a-select-option>
+        </a-select>
+    </a-form-item>
+    <a-form-item label="HTTP 版本">
+        <a-select v-model="inbound.xhttpHttpVersion" style="width: 100px">
+            <a-select-option value="h1">H1</a-select-option>
+            <a-select-option value="h2">H2</a-select-option>
+            <a-select-option value="h3">H3</a-select-option>
+        </a-select>
+    </a-form-item>
+</a-form>
+<div style="margin-bottom: 12px; color: rgba(0, 0, 0, 0.45);">
+    H1 使用 TCP；H2 使用 TCP + TLS；H3 使用 UDP/QUIC + TLS。选择 H2/H3 会自动开启 TLS。
+</div>
+{{end}}

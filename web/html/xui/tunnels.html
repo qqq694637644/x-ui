@@ -394,9 +394,12 @@
                 this.spinning = spinning;
             },
             async getTunnels() {
+                const started = performance.now();
+                console.info('[tunnel-trace] event=client.list.start path=/xui/tunnel/list');
                 this.loading(true);
                 const msg = await HttpUtil.post('/xui/tunnel/list');
                 this.loading(false);
+                console.info(`[tunnel-trace] event=client.list.end success=${!!msg.success} elapsed_ms=${(performance.now() - started).toFixed(3)}`);
                 if (!msg.success) return;
                 this.tunnels = (msg.obj || []).map(tunnel => newTunnel(tunnel));
             },

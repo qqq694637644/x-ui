@@ -12,6 +12,7 @@ import (
 	"time"
 	"x-ui/database"
 	"x-ui/database/model"
+	"x-ui/logger"
 	"x-ui/util/common"
 	"x-ui/util/json_util"
 	"x-ui/xray"
@@ -39,16 +40,51 @@ type TunnelService struct {
 }
 
 func (s *TunnelService) GetTunnels(userId int) ([]*model.Tunnel, error) {
+	return s.GetTunnelsTraced(userId, "-")
+}
+
+func (s *TunnelService) GetTunnelsTraced(userId int, traceID string) ([]*model.Tunnel, error) {
+	started := time.Now()
+	logger.Infof("[tunnel-trace] trace=%s event=service.start user_id=%d", traceID, userId)
+
 	db := database.GetDB()
 	var tunnels []*model.Tunnel
+	dbStarted := time.Now()
 	err := db.Model(model.Tunnel{}).Where("user_id = ?", userId).Find(&tunnels).Error
+	dbElapsed := time.Since(dbStarted)
+	logger.Infof("[tunnel-trace] trace=%s event=db.end user_id=%d count=%d elapsed_ms=%.3f error=%t", traceID, userId, len(tunnels), float64(dbElapsed.Microseconds())/1000, err != nil && err != gorm.ErrRecordNotFound)
 	if err != nil && err != gorm.ErrRecordNotFound {
+		logger.Infof("[tunnel-trace] trace=%s event=service.end success=false total_ms=%.3f", traceID, float64(time.Since(started).Microseconds())/1000)
 		return nil, err
 	}
+
+	hydrateStarted := time.Now()
 	for _, tunnel := range tunnels {
 		s.normalizeTunnel(tunnel)
 		s.applyProbeStatus(tunnel)
+		logger.Infof(
+			"[tunnel-trace] trace=%s event=tunnel.info id=%d enable=%t mode=%s portal_transport=%s protocol=%s network=%s listen=%s:%d target=%s:%d remote=%s:%d portal_listen=%d xhttp_path=%q probe_status=%s",
+			traceID,
+			tunnel.Id,
+			tunnel.Enable,
+			tunnel.Mode,
+			tunnel.PortalTransport,
+			tunnel.Protocol,
+			tunnel.Network,
+			tunnel.Listen,
+			tunnel.ListenPort,
+			tunnel.TargetAddress,
+			tunnel.TargetPort,
+			tunnel.RemoteAddress,
+			tunnel.RemotePort,
+			tunnel.PortalListenPort,
+			tunnel.XHttpPath,
+			tunnel.Status,
+		)
 	}
+	hydrateElapsed := time.Since(hydrateStarted)
+	logger.Infof("[tunnel-trace] trace=%s event=hydrate.end count=%d elapsed_ms=%.3f", traceID, len(tunnels), float64(hydrateElapsed.Microseconds())/1000)
+	logger.Infof("[tunnel-trace] trace=%s event=service.end success=true count=%d db_ms=%.3f hydrate_ms=%.3f total_ms=%.3f", traceID, len(tunnels), float64(dbElapsed.Microseconds())/1000, float64(hydrateElapsed.Microseconds())/1000, float64(time.Since(started).Microseconds())/1000)
 	return tunnels, nil
 }
 

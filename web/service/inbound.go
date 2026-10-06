@@ -7,6 +7,7 @@ import (
 	"time"
 	"x-ui/database"
 	"x-ui/database/model"
+	"x-ui/util/common"
 	"x-ui/util/xray_util"
 	"x-ui/xray"
 
@@ -163,7 +164,50 @@ func (s *InboundService) AddInbounds(inbounds []*model.Inbound) error {
 
 func (s *InboundService) DelInbound(id int) error {
 	db := database.GetDB()
-	return db.Delete(model.Inbound{}, id).Error
+	oldInbound := &model.Inbound{}
+	if err := db.First(oldInbound, id).Error; err != nil {
+		return err
+	}
+	var oldEndpoints []*model.PublicEndpoint
+	if err := db.Where("inbound_id = ?", id).Find(&oldEndpoints).Error; err != nil {
+		return err
+	}
+	tx := db.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	if err := tx.Where("inbound_id = ?", id).Delete(&model.PublicEndpoint{}).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := tx.Delete(model.Inbound{}, id).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := tx.Commit().Error; err != nil {
+		return err
+	}
+	if len(oldEndpoints) == 0 {
+		return nil
+	}
+	if err := (&EndpointService{}).SyncManagedRoutes(); err != nil {
+		restoreErr := db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Save(oldInbound).Error; err != nil {
+				return err
+			}
+			for _, endpoint := range oldEndpoints {
+				if err := tx.Save(endpoint).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if restoreErr != nil {
+			return common.NewError("删除入站后的 Caddy 同步失败: ", err, "; 数据恢复失败: ", restoreErr)
+		}
+		return common.NewError("删除入站后的 Caddy 同步失败，数据库已恢复: ", err)
+	}
+	return nil
 }
 
 func (s *InboundService) GetInbound(id int) (*model.Inbound, error) {
@@ -190,6 +234,7 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
 	if err := checkInboundListenerConflicts(inbound, inbound.Id); err != nil {
 		return err
 	}
+	previous := *oldInbound
 	oldInbound.Up = inbound.Up
 	oldInbound.Down = inbound.Down
 	oldInbound.Total = inbound.Total
@@ -207,7 +252,26 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
 	// overlap, so a port-only tag is no longer unique.
 
 	db := database.GetDB()
-	return db.Save(oldInbound).Error
+	if err := db.Save(oldInbound).Error; err != nil {
+		return err
+	}
+	var endpointCount int64
+	if err := db.Model(&model.PublicEndpoint{}).
+		Where("inbound_id = ? AND status != ?", inbound.Id, model.EndpointStatusRetired).
+		Count(&endpointCount).Error; err != nil {
+		_ = db.Save(&previous).Error
+		return err
+	}
+	if endpointCount == 0 {
+		return nil
+	}
+	if err := (&EndpointService{}).SyncManagedRoutes(); err != nil {
+		if restoreErr := db.Save(&previous).Error; restoreErr != nil {
+			return common.NewError("更新入站后的 Caddy 同步失败: ", err, "; 数据恢复失败: ", restoreErr)
+		}
+		return common.NewError("更新入站后的 Caddy 同步失败，数据库已恢复: ", err)
+	}
+	return nil
 }
 
 func (s *InboundService) AddTraffic(traffics []*xray.Traffic) (err error) {

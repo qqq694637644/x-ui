@@ -34,6 +34,7 @@ type Inbound struct {
 	Total      int64  `json:"total" form:"total"`
 	Remark     string `json:"remark" form:"remark"`
 	Enable     bool   `json:"enable" form:"enable"`
+	Publish    bool   `json:"publish" form:"publish" gorm:"default:false"`
 	ExpiryTime int64  `json:"expiryTime" form:"expiryTime"`
 
 	// config part
@@ -44,6 +45,25 @@ type Inbound struct {
 	StreamSettings string   `json:"streamSettings" form:"streamSettings"`
 	Tag            string   `json:"tag" form:"tag" gorm:"unique"`
 	Sniffing       string   `json:"sniffing" form:"sniffing"`
+}
+
+const (
+	EndpointStatusPending  = "pending"
+	EndpointStatusActive   = "active"
+	EndpointStatusDraining = "draining"
+	EndpointStatusRetired  = "retired"
+)
+
+type PublicEndpoint struct {
+	Id        int    `json:"id" form:"id" gorm:"primaryKey;autoIncrement"`
+	InboundId int    `json:"inboundId" form:"inboundId" gorm:"index"`
+	Host      string `json:"host" form:"host" gorm:"index"`
+	Port      int    `json:"port" form:"port"`
+	Security  string `json:"security" form:"security"`
+	SNI       string `json:"sni" form:"sni"`
+	Status    string `json:"status" form:"status" gorm:"index"`
+	CreatedAt int64  `json:"createdAt" form:"-"`
+	RetireAt  int64  `json:"retireAt" form:"-" gorm:"index"`
 }
 
 type Tunnel struct {
@@ -67,7 +87,7 @@ type Tunnel struct {
 	Protocol string `json:"protocol" form:"protocol"`
 	UUID     string `json:"uuid" form:"uuid"`
 
-	PortalTransport string `json:"portalTransport" form:"portalTransport" gorm:"column:portal_transport"`
+	PortalTransport  string `json:"portalTransport" form:"portalTransport" gorm:"column:portal_transport"`
 	PortalListenPort int    `json:"portalListenPort" form:"portalListenPort" gorm:"column:portal_listen_port"`
 	XHttpPath        string `json:"xhttpPath" form:"xhttpPath" gorm:"column:xhttp_path"`
 

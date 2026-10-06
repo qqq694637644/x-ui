@@ -15,25 +15,36 @@ import (
 	"x-ui/util/random"
 	"x-ui/util/reflect_util"
 	"x-ui/web/entity"
+
+	"gorm.io/gorm"
 )
 
 //go:embed config.json
 var xrayTemplateConfig string
 
 var defaultValueMap = map[string]string{
-	"xrayTemplateConfig": xrayTemplateConfig,
-	"webListen":          "",
-	"webPort":            "54321",
-	"webCertFile":        "",
-	"webKeyFile":         "",
-	"secret":             random.Seq(32),
-	"webBasePath":        "/",
-	"timeLocation":       "Asia/Shanghai",
-	"tgBotEnable":        "false",
-	"tgBotToken":         "",
-	"tgBotChatId":        "0",
-	"tgRunTime":          "",
-	"caddyPath":          "/opt/caddy",
+	"xrayTemplateConfig":   xrayTemplateConfig,
+	"webListen":            "",
+	"webPort":              "54321",
+	"webCertFile":          "",
+	"webKeyFile":           "",
+	"secret":               random.Seq(32),
+	"webBasePath":          "/",
+	"timeLocation":         "Asia/Shanghai",
+	"tgBotEnable":          "false",
+	"tgBotToken":           "",
+	"tgBotChatId":          "0",
+	"tgRunTime":            "",
+	"caddyPath":            "/opt/caddy",
+	"subscriptionEnable":   "false",
+	"subscriptionToken":    "",
+	"subscriptionTitle":    "x-ui",
+	"publicBaseDomain":     "",
+	"publicPort":           "443",
+	"hostRandomLength":     "10",
+	"endpointDrainSeconds": "1800",
+	"caddyTlsCertFile":     "",
+	"caddyTlsKeyFile":      "",
 }
 
 type SettingService struct {
@@ -197,6 +208,159 @@ func (s *SettingService) GetCaddyPath() (string, error) {
 
 func (s *SettingService) SetCaddyPath(path string) error {
 	return s.setString("caddyPath", path)
+}
+
+func (s *SettingService) GetEndpointSettings() (*entity.EndpointSettings, error) {
+	token, err := s.GetSubscriptionToken()
+	if err != nil {
+		return nil, err
+	}
+	enabled, err := s.getBool("subscriptionEnable")
+	if err != nil {
+		return nil, err
+	}
+	title, err := s.getString("subscriptionTitle")
+	if err != nil {
+		return nil, err
+	}
+	domain, err := s.getString("publicBaseDomain")
+	if err != nil {
+		return nil, err
+	}
+	port, err := s.getInt("publicPort")
+	if err != nil {
+		return nil, err
+	}
+	hostLength, err := s.getInt("hostRandomLength")
+	if err != nil {
+		return nil, err
+	}
+	drainSeconds, err := s.getInt("endpointDrainSeconds")
+	if err != nil {
+		return nil, err
+	}
+	certFile, err := s.getString("caddyTlsCertFile")
+	if err != nil {
+		return nil, err
+	}
+	keyFile, err := s.getString("caddyTlsKeyFile")
+	if err != nil {
+		return nil, err
+	}
+	return &entity.EndpointSettings{
+		SubscriptionEnable:   enabled,
+		SubscriptionToken:    token,
+		SubscriptionTitle:    title,
+		PublicBaseDomain:     domain,
+		PublicPort:           port,
+		HostRandomLength:     hostLength,
+		EndpointDrainSeconds: drainSeconds,
+		CaddyTLSCertFile:     certFile,
+		CaddyTLSKeyFile:      keyFile,
+	}, nil
+}
+
+func (s *SettingService) UpdateEndpointSettings(settings *entity.EndpointSettings) error {
+	settings.PublicBaseDomain = normalizeDomain(settings.PublicBaseDomain)
+	settings.SubscriptionTitle = strings.TrimSpace(settings.SubscriptionTitle)
+	settings.CaddyTLSCertFile = strings.TrimSpace(settings.CaddyTLSCertFile)
+	settings.CaddyTLSKeyFile = strings.TrimSpace(settings.CaddyTLSKeyFile)
+	if settings.SubscriptionTitle == "" {
+		settings.SubscriptionTitle = "x-ui"
+	}
+	if settings.PublicBaseDomain != "" && !validDomain(settings.PublicBaseDomain) {
+		return common.NewError("公网基础域名不合法: ", settings.PublicBaseDomain)
+	}
+	if settings.PublicPort <= 0 || settings.PublicPort > 65535 {
+		return common.NewError("公网端口不合法: ", settings.PublicPort)
+	}
+	if settings.HostRandomLength < 4 || settings.HostRandomLength > 32 {
+		return common.NewError("随机子域名长度必须在 4 到 32 之间")
+	}
+	if settings.EndpointDrainSeconds < 0 || settings.EndpointDrainSeconds > 7*24*60*60 {
+		return common.NewError("旧入口保留时间必须在 0 到 604800 秒之间")
+	}
+	if (settings.CaddyTLSCertFile == "") != (settings.CaddyTLSKeyFile == "") {
+		return common.NewError("Caddy TLS 证书与私钥路径必须同时填写或同时留空")
+	}
+	pairs := map[string]string{
+		"subscriptionEnable":   strconv.FormatBool(settings.SubscriptionEnable),
+		"subscriptionTitle":    settings.SubscriptionTitle,
+		"publicBaseDomain":     settings.PublicBaseDomain,
+		"publicPort":           strconv.Itoa(settings.PublicPort),
+		"hostRandomLength":     strconv.Itoa(settings.HostRandomLength),
+		"endpointDrainSeconds": strconv.Itoa(settings.EndpointDrainSeconds),
+		"caddyTlsCertFile":     settings.CaddyTLSCertFile,
+		"caddyTlsKeyFile":      settings.CaddyTLSKeyFile,
+	}
+	return database.GetDB().Transaction(func(tx *gorm.DB) error {
+		for key, value := range pairs {
+			stored := &model.Setting{}
+			err := tx.Where("key = ?", key).First(stored).Error
+			if database.IsNotFound(err) {
+				if err := tx.Create(&model.Setting{Key: key, Value: value}).Error; err != nil {
+					return err
+				}
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			stored.Value = value
+			if err := tx.Save(stored).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *SettingService) GetSubscriptionToken() (string, error) {
+	token, err := s.getString("subscriptionToken")
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(token) != "" {
+		return token, nil
+	}
+	return s.RegenerateSubscriptionToken()
+}
+
+func (s *SettingService) RegenerateSubscriptionToken() (string, error) {
+	token, err := random.SecureToken(32)
+	if err != nil {
+		return "", err
+	}
+	if err := s.saveSetting("subscriptionToken", token); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func normalizeDomain(value string) string {
+	return strings.ToLower(strings.Trim(strings.TrimSpace(value), "."))
+}
+
+func validDomain(value string) bool {
+	if value == "" || len(value) > 253 {
+		return false
+	}
+	labels := strings.Split(value, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, ch := range label {
+			if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }
 
 func (s *SettingService) GetListen() (string, error) {

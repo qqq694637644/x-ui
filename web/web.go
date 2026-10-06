@@ -81,9 +81,10 @@ type Server struct {
 	httpServer *http.Server
 	listener   net.Listener
 
-	index  *controller.IndexController
-	server *controller.ServerController
-	xui    *controller.XUIController
+	index        *controller.IndexController
+	server       *controller.ServerController
+	xui          *controller.XUIController
+	subscription *controller.SubscriptionController
 
 	xrayService    service.XrayService
 	settingService service.SettingService
@@ -154,7 +155,29 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
-	engine := gin.Default()
+	engine := gin.New()
+	engine.Use(func(c *gin.Context) {
+		path := c.Request.URL.Path
+		marker := "/sub/"
+		index := strings.Index(path, marker)
+		if index < 0 {
+			c.Next()
+			return
+		}
+		originalPath := c.Request.URL.Path
+		originalRequestURI := c.Request.RequestURI
+		redactedPath := path[:index] + marker + "[redacted]"
+		c.Request.URL.Path = redactedPath
+		if c.Request.URL.RawQuery == "" {
+			c.Request.RequestURI = redactedPath
+		} else {
+			c.Request.RequestURI = redactedPath + "?" + c.Request.URL.RawQuery
+		}
+		c.Next()
+		c.Request.URL.Path = originalPath
+		c.Request.RequestURI = originalRequestURI
+	})
+	engine.Use(gin.Logger(), gin.Recovery())
 
 	secret, err := s.settingService.GetSecret()
 	if err != nil {
@@ -205,6 +228,7 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 
 	s.index = controller.NewIndexController(g)
 	s.server = controller.NewServerController(g)
+	s.subscription = controller.NewSubscriptionController(g)
 	s.xui = controller.NewXUIController(g)
 
 	return engine, nil

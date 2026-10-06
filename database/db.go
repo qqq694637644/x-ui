@@ -45,6 +45,10 @@ func initInbound() error {
 	return validateInboundStreamSettingsForXray26327()
 }
 
+func initPublicEndpoint() error {
+	return db.AutoMigrate(&model.PublicEndpoint{})
+}
+
 func validateInboundStreamSettingsForXray26327() error {
 	var inbounds []*model.Inbound
 	if err := db.Model(&model.Inbound{}).Find(&inbounds).Error; err != nil {
@@ -97,6 +101,10 @@ func InitDB(dbPath string) error {
 		return err
 	}
 	err = initInbound()
+	if err != nil {
+		return err
+	}
+	err = initPublicEndpoint()
 	if err != nil {
 		return err
 	}

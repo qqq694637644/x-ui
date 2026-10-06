@@ -290,11 +290,33 @@ func (s *TunnelService) AddTunnel(tunnel *model.Tunnel) error {
 		return common.NewError("Portal UUID 已被其他隧道使用:", tunnel.UUID)
 	}
 	db := database.GetDB()
-	return db.Save(tunnel).Error
+	if err := db.Save(tunnel).Error; err != nil {
+		return err
+	}
+	managed, err := s.needsManagedCaddy(tunnel)
+	if err != nil {
+		_ = db.Delete(tunnel).Error
+		return err
+	}
+	if managed {
+		if err := (&EndpointService{}).SyncManagedRoutes(); err != nil {
+			_ = db.Delete(tunnel).Error
+			return common.NewError("保存 Portal XHTTP 后 Caddy 同步失败，数据库已恢复: ", err)
+		}
+	}
+	return nil
 }
 
 func (s *TunnelService) DelTunnel(id int, userId int) error {
 	db := database.GetDB()
+	oldTunnel, err := s.GetTunnel(id, userId)
+	if err != nil {
+		return err
+	}
+	managed, err := s.needsManagedCaddy(oldTunnel)
+	if err != nil {
+		return err
+	}
 	result := db.Where("id = ? and user_id = ?", id, userId).Delete(model.Tunnel{})
 	if result.Error != nil {
 		return result.Error
@@ -303,6 +325,14 @@ func (s *TunnelService) DelTunnel(id int, userId int) error {
 		return common.NewError("隧道不存在或无权限:", id)
 	}
 	tunnelProbeStatuses.Delete(id)
+	if managed {
+		if err := (&EndpointService{}).SyncManagedRoutes(); err != nil {
+			if restoreErr := db.Save(oldTunnel).Error; restoreErr != nil {
+				return common.NewError("删除 Portal XHTTP 后 Caddy 同步失败: ", err, "; 数据恢复失败: ", restoreErr)
+			}
+			return common.NewError("删除 Portal XHTTP 后 Caddy 同步失败，数据库已恢复: ", err)
+		}
+	}
 	return nil
 }
 
@@ -338,6 +368,11 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	if err != nil {
 		return err
 	}
+	previous := *oldTunnel
+	oldManaged, err := s.needsManagedCaddy(oldTunnel)
+	if err != nil {
+		return err
+	}
 
 	oldTunnel.Enable = tunnel.Enable
 	oldTunnel.Mode = tunnel.Mode
@@ -365,7 +400,38 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 
 	db := database.GetDB()
 	tunnelProbeStatuses.Delete(tunnel.Id)
-	return db.Save(oldTunnel).Error
+	if err := db.Save(oldTunnel).Error; err != nil {
+		return err
+	}
+	newManaged, err := s.needsManagedCaddy(oldTunnel)
+	if err != nil {
+		_ = db.Save(&previous).Error
+		return err
+	}
+	if oldManaged || newManaged {
+		if err := (&EndpointService{}).SyncManagedRoutes(); err != nil {
+			if restoreErr := db.Save(&previous).Error; restoreErr != nil {
+				return common.NewError("更新 Portal XHTTP 后 Caddy 同步失败: ", err, "; 数据恢复失败: ", restoreErr)
+			}
+			return common.NewError("更新 Portal XHTTP 后 Caddy 同步失败，数据库已恢复: ", err)
+		}
+	}
+	return nil
+}
+
+func (s *TunnelService) needsManagedCaddy(tunnel *model.Tunnel) (bool, error) {
+	if tunnel == nil || !tunnel.Enable || tunnel.Mode != TunnelModePortal || tunnel.PortalTransport != PortalTransportXHTTP {
+		return false, nil
+	}
+	host := strings.ToLower(strings.TrimSpace(tunnel.RemoteAddress))
+	if host == "" {
+		return false, nil
+	}
+	var count int64
+	err := database.GetDB().Model(&model.PublicEndpoint{}).
+		Where("host = ? AND status IN ?", host, []string{model.EndpointStatusPending, model.EndpointStatusActive, model.EndpointStatusDraining}).
+		Count(&count).Error
+	return count > 0, err
 }
 
 func (s *TunnelService) applyProbeStatus(tunnel *model.Tunnel) {

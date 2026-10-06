@@ -41,6 +41,18 @@ type AllSetting struct {
 	TimeLocation string `json:"timeLocation" form:"timeLocation"`
 }
 
+type EndpointSettings struct {
+	SubscriptionEnable   bool   `json:"subscriptionEnable" form:"subscriptionEnable"`
+	SubscriptionToken    string `json:"subscriptionToken" form:"-"`
+	SubscriptionTitle    string `json:"subscriptionTitle" form:"subscriptionTitle"`
+	PublicBaseDomain     string `json:"publicBaseDomain" form:"publicBaseDomain"`
+	PublicPort           int    `json:"publicPort" form:"publicPort"`
+	HostRandomLength     int    `json:"hostRandomLength" form:"hostRandomLength"`
+	EndpointDrainSeconds int    `json:"endpointDrainSeconds" form:"endpointDrainSeconds"`
+	CaddyTLSCertFile     string `json:"caddyTlsCertFile" form:"caddyTlsCertFile"`
+	CaddyTLSKeyFile      string `json:"caddyTlsKeyFile" form:"caddyTlsKeyFile"`
+}
+
 func (s *AllSetting) CheckValid() error {
 	if s.WebListen != "" {
 		ip := net.ParseIP(s.WebListen)

@@ -28,13 +28,13 @@ const (
 	PortalTransportXHTTP = "xhttp"
 )
 
-type tunnelProbeStatus struct {
+type tunnelCheckStatus struct {
 	Status    string
 	Message   string
 	Timestamp time.Time
 }
 
-var tunnelProbeStatuses sync.Map
+var tunnelCheckStatuses sync.Map
 
 type TunnelService struct {
 }
@@ -61,9 +61,9 @@ func (s *TunnelService) GetTunnelsTraced(userId int, traceID string) ([]*model.T
 	hydrateStarted := time.Now()
 	for _, tunnel := range tunnels {
 		s.normalizeTunnel(tunnel)
-		s.applyProbeStatus(tunnel)
+		s.applyCheckStatus(tunnel)
 		logger.Infof(
-			"[tunnel-trace] trace=%s event=tunnel.info id=%d enable=%t mode=%s portal_transport=%s protocol=%s network=%s listen=%s:%d target=%s:%d remote=%s:%d portal_listen=%d xhttp_path=%q probe_status=%s",
+			"[tunnel-trace] trace=%s event=tunnel.info id=%d enable=%t mode=%s portal_transport=%s protocol=%s network=%s listen=%s:%d target=%s:%d remote=%s:%d portal_listen=%d xhttp_path=%q check_status=%s",
 			traceID,
 			tunnel.Id,
 			tunnel.Enable,
@@ -324,7 +324,7 @@ func (s *TunnelService) DelTunnel(id int, userId int) error {
 	if result.RowsAffected == 0 {
 		return common.NewError("隧道不存在或无权限:", id)
 	}
-	tunnelProbeStatuses.Delete(id)
+	tunnelCheckStatuses.Delete(id)
 	if managed {
 		if err := (&EndpointService{}).SyncManagedRoutes(); err != nil {
 			if restoreErr := db.Save(oldTunnel).Error; restoreErr != nil {
@@ -344,7 +344,7 @@ func (s *TunnelService) GetTunnel(id int, userId int) (*model.Tunnel, error) {
 		return nil, err
 	}
 	s.normalizeTunnel(tunnel)
-	s.applyProbeStatus(tunnel)
+	s.applyCheckStatus(tunnel)
 	return tunnel, nil
 }
 
@@ -399,7 +399,7 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	oldTunnel.KcpWriteBufferSize = tunnel.KcpWriteBufferSize
 
 	db := database.GetDB()
-	tunnelProbeStatuses.Delete(tunnel.Id)
+	tunnelCheckStatuses.Delete(tunnel.Id)
 	if err := db.Save(oldTunnel).Error; err != nil {
 		return err
 	}
@@ -434,33 +434,33 @@ func (s *TunnelService) needsManagedCaddy(tunnel *model.Tunnel) (bool, error) {
 	return count > 0, err
 }
 
-func (s *TunnelService) applyProbeStatus(tunnel *model.Tunnel) {
+func (s *TunnelService) applyCheckStatus(tunnel *model.Tunnel) {
 	tunnel.Status = "not_tested"
 	tunnel.StatusMessage = "尚未进行 TCP 探测"
-	tunnel.ProbeTime = ""
-	if status, ok := tunnelProbeStatuses.Load(tunnel.Id); ok {
-		probe := status.(tunnelProbeStatus)
-		tunnel.Status = probe.Status
-		tunnel.StatusMessage = probe.Message
-		tunnel.ProbeTime = probe.Timestamp.Local().Format("2006-01-02 15:04:05")
+	tunnel.CheckTime = ""
+	if status, ok := tunnelCheckStatuses.Load(tunnel.Id); ok {
+		check := status.(tunnelCheckStatus)
+		tunnel.Status = check.Status
+		tunnel.StatusMessage = check.Message
+		tunnel.CheckTime = check.Timestamp.Local().Format("2006-01-02 15:04:05")
 	}
 }
 
-func (s *TunnelService) ProbeTunnel(id int, userId int) (*model.Tunnel, error) {
+func (s *TunnelService) CheckTunnel(id int, userId int) (*model.Tunnel, error) {
 	tunnel, err := s.GetTunnel(id, userId)
 	if err != nil {
 		return nil, err
 	}
 	if !tunnel.Enable {
-		probe := tunnelProbeStatus{Status: "not_tested", Message: "隧道未启用", Timestamp: time.Now()}
-		tunnelProbeStatuses.Store(tunnel.Id, probe)
-		s.applyProbeStatus(tunnel)
+		check := tunnelCheckStatus{Status: "not_tested", Message: "隧道未启用", Timestamp: time.Now()}
+		tunnelCheckStatuses.Store(tunnel.Id, check)
+		s.applyCheckStatus(tunnel)
 		return tunnel, nil
 	}
 	if tunnel.Network == "udp" {
-		probe := tunnelProbeStatus{Status: "not_tested", Message: "纯 UDP 隧道未执行 TCP 探测", Timestamp: time.Now()}
-		tunnelProbeStatuses.Store(tunnel.Id, probe)
-		s.applyProbeStatus(tunnel)
+		check := tunnelCheckStatus{Status: "not_tested", Message: "纯 UDP 隧道未执行 TCP 探测", Timestamp: time.Now()}
+		tunnelCheckStatuses.Store(tunnel.Id, check)
+		s.applyCheckStatus(tunnel)
 		return tunnel, nil
 	}
 
@@ -470,9 +470,9 @@ func (s *TunnelService) ProbeTunnel(id int, userId int) (*model.Tunnel, error) {
 	}
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(tunnel.ListenPort)), 2*time.Second)
 	if err != nil {
-		probe := tunnelProbeStatus{Status: "failed", Message: "TCP 入口连接失败: " + err.Error(), Timestamp: time.Now()}
-		tunnelProbeStatuses.Store(tunnel.Id, probe)
-		s.applyProbeStatus(tunnel)
+		check := tunnelCheckStatus{Status: "failed", Message: "TCP 入口连接失败: " + err.Error(), Timestamp: time.Now()}
+		tunnelCheckStatuses.Store(tunnel.Id, check)
+		s.applyCheckStatus(tunnel)
 		return tunnel, nil
 	}
 	defer conn.Close()
@@ -480,20 +480,20 @@ func (s *TunnelService) ProbeTunnel(id int, userId int) (*model.Tunnel, error) {
 	_ = conn.SetReadDeadline(time.Now().Add(1200 * time.Millisecond))
 	buf := make([]byte, 1)
 	_, readErr := conn.Read(buf)
-	probe := tunnelProbeStatus{Status: "success", Message: "TCP 连接探测成功；该结果不是实时在线状态", Timestamp: time.Now()}
+	check := tunnelCheckStatus{Status: "success", Message: "TCP 连接探测成功；该结果不是实时在线状态", Timestamp: time.Now()}
 	if readErr != nil {
 		if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
 			// A listener with no reverse worker is closed immediately by Xray. A
 			// connection that remains open through the deadline is useful evidence
 			// that the reverse path and the B-side target accepted the stream.
 		} else if readErr == io.EOF {
-			probe = tunnelProbeStatus{Status: "failed", Message: "TCP 连接被远端立即关闭", Timestamp: time.Now()}
+			check = tunnelCheckStatus{Status: "failed", Message: "TCP 连接被远端立即关闭", Timestamp: time.Now()}
 		} else {
-			probe = tunnelProbeStatus{Status: "failed", Message: "TCP 连接异常: " + readErr.Error(), Timestamp: time.Now()}
+			check = tunnelCheckStatus{Status: "failed", Message: "TCP 连接异常: " + readErr.Error(), Timestamp: time.Now()}
 		}
 	}
-	tunnelProbeStatuses.Store(tunnel.Id, probe)
-	s.applyProbeStatus(tunnel)
+	tunnelCheckStatuses.Store(tunnel.Id, check)
+	s.applyCheckStatus(tunnel)
 	return tunnel, nil
 }
 

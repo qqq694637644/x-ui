@@ -128,7 +128,7 @@ func TestRotateAllSuccessSwitchesWholeBatchAfterOneCaddyApply(t *testing.T) {
 	}
 
 	applyCalls := 0
-	probeCalls := 0
+	healthCheckCalls := 0
 	restoreCalls := 0
 	service := &EndpointService{
 		applyManagedSiteHook: func(baseDomain string, block string) (string, error) {
@@ -138,10 +138,10 @@ func TestRotateAllSuccessSwitchesWholeBatchAfterOneCaddyApply(t *testing.T) {
 			}
 			return "old-caddy", nil
 		},
-		probeEndpointHook: func(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error {
-			probeCalls++
+		healthCheckEndpointHook: func(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error {
+			healthCheckCalls++
 			if endpoint.Host == oldA.Host || endpoint.Host == oldB.Host {
-				t.Fatalf("probe used old hostname %s", endpoint.Host)
+				t.Fatalf("health check used old hostname %s", endpoint.Host)
 			}
 			return nil
 		},
@@ -154,8 +154,8 @@ func TestRotateAllSuccessSwitchesWholeBatchAfterOneCaddyApply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RotateAll() error = %v", err)
 	}
-	if result.Count != 2 || applyCalls != 1 || probeCalls != 2 || restoreCalls != 0 {
-		t.Fatalf("unexpected rotation counters: result=%#v apply=%d probe=%d restore=%d", result, applyCalls, probeCalls, restoreCalls)
+	if result.Count != 2 || applyCalls != 1 || healthCheckCalls != 2 || restoreCalls != 0 {
+		t.Fatalf("unexpected rotation counters: result=%#v apply=%d healthCheck=%d restore=%d", result, applyCalls, healthCheckCalls, restoreCalls)
 	}
 	assertEndpointStatusForTest(t, oldA.Id, model.EndpointStatusDraining)
 	assertEndpointStatusForTest(t, oldB.Id, model.EndpointStatusDraining)
@@ -175,26 +175,26 @@ func TestRotateAllSuccessSwitchesWholeBatchAfterOneCaddyApply(t *testing.T) {
 	}
 }
 
-func TestRotateAllProbeFailureRollsBackWholeBatch(t *testing.T) {
-	if err := database.InitDB(filepath.Join(t.TempDir(), "rotate-probe-fail.db")); err != nil {
+func TestRotateAllHealthCheckFailureRollsBackWholeBatch(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "rotate-healthcheck-fail.db")); err != nil {
 		t.Fatal(err)
 	}
 	configureEndpointSettingsForTest(t)
-	_, oldA := createPublishedManagedInboundForTest(t, "probe-a", "a", 26417, "/a", "a.asdasdasdas.shop")
-	_, oldB := createPublishedManagedInboundForTest(t, "probe-b", "b", 26418, "/b", "b.asdasdasdas.shop")
+	_, oldA := createPublishedManagedInboundForTest(t, "healthcheck-a", "a", 26417, "/a", "a.asdasdasdas.shop")
+	_, oldB := createPublishedManagedInboundForTest(t, "healthcheck-b", "b", 26418, "/b", "b.asdasdasdas.shop")
 
 	applyCalls := 0
-	probeCalls := 0
+	healthCheckCalls := 0
 	restoreCalls := 0
 	service := &EndpointService{
 		applyManagedSiteHook: func(baseDomain string, block string) (string, error) {
 			applyCalls++
 			return "old-caddy", nil
 		},
-		probeEndpointHook: func(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error {
-			probeCalls++
-			if probeCalls == 2 {
-				return errors.New("injected probe failure")
+		healthCheckEndpointHook: func(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error {
+			healthCheckCalls++
+			if healthCheckCalls == 2 {
+				return errors.New("injected health-check failure")
 			}
 			return nil
 		},
@@ -207,10 +207,10 @@ func TestRotateAllProbeFailureRollsBackWholeBatch(t *testing.T) {
 		},
 	}
 	if _, err := service.RotateAll(1); err == nil {
-		t.Fatal("RotateAll() unexpectedly succeeded after one probe failed")
+		t.Fatal("RotateAll() unexpectedly succeeded after one health check failed")
 	}
-	if applyCalls != 1 || probeCalls != 2 || restoreCalls != 1 {
-		t.Fatalf("unexpected rollback counters: apply=%d probe=%d restore=%d", applyCalls, probeCalls, restoreCalls)
+	if applyCalls != 1 || healthCheckCalls != 2 || restoreCalls != 1 {
+		t.Fatalf("unexpected rollback counters: apply=%d healthCheck=%d restore=%d", applyCalls, healthCheckCalls, restoreCalls)
 	}
 	assertEndpointStatusForTest(t, oldA.Id, model.EndpointStatusActive)
 	assertEndpointStatusForTest(t, oldB.Id, model.EndpointStatusActive)
@@ -232,7 +232,7 @@ func TestRotateAllDBSwitchFailureRestoresCaddyAndKeepsOldActive(t *testing.T) {
 			applyCalls++
 			return "old-caddy", nil
 		},
-		probeEndpointHook: func(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error { return nil },
+		healthCheckEndpointHook: func(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error { return nil },
 		commitRotationHook: func(items []rotationItem, retireAt int64) error {
 			return errors.New("injected database switch failure")
 		},

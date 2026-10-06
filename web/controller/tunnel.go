@@ -35,12 +35,12 @@ func firstDeprecatedTunnelField(values url.Values) string {
 }
 
 func firstDeprecatedTunnelJSONField(body []byte) string {
-	payload := map[string]json.RawMessage{}
-	if err := json.Unmarshal(body, &payload); err != nil {
+	requestFields := map[string]json.RawMessage{}
+	if err := json.Unmarshal(body, &requestFields); err != nil {
 		return ""
 	}
 	for _, field := range deprecatedTunnelRequestFields {
-		if _, ok := payload[field]; ok {
+		if _, ok := requestFields[field]; ok {
 			return field
 		}
 	}
@@ -189,7 +189,7 @@ func (a *TunnelController) testTunnel(c *gin.Context) {
 		return
 	}
 	user := session.GetLoginUser(c)
-	tunnel, err := a.tunnelService.ProbeTunnel(id, user.Id)
+	tunnel, err := a.tunnelService.CheckTunnel(id, user.Id)
 	jsonMsgObj(c, "测试", tunnel, err)
 }
 

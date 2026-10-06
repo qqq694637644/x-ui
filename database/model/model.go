@@ -100,7 +100,7 @@ type Tunnel struct {
 
 	Status        string `json:"status" form:"-" gorm:"-"`
 	StatusMessage string `json:"statusMessage" form:"-" gorm:"-"`
-	ProbeTime     string `json:"probeTime" form:"-" gorm:"-"`
+	CheckTime     string `json:"checkTime" form:"-" gorm:"-"`
 }
 
 func NormalizeUUID(value string) (string, error) {

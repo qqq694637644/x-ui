@@ -23,7 +23,7 @@ type EndpointService struct {
 
 	applyManagedSiteHook func(baseDomain string, block string) (string, error)
 	restoreCaddyHook     func(content string) error
-	probeEndpointHook    func(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error
+	healthCheckEndpointHook func(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error
 	commitRotationHook   func(items []rotationItem, retireAt int64) error
 }
 
@@ -233,7 +233,7 @@ func (s *EndpointService) Initialize(userID int, inboundID int, form *EndpointIn
 		_ = database.GetDB().Delete(endpoint).Error
 		return nil, err
 	}
-	if err := s.probeManagedEndpoint(inbound, endpoint, managedHealthPath(transportMatchPath(spec.Path))); err != nil {
+	if err := s.checkManagedEndpointHealth(inbound, endpoint, managedHealthPath(transportMatchPath(spec.Path))); err != nil {
 		restoreErr := s.restoreCaddy(oldContent)
 		_ = database.GetDB().Delete(endpoint).Error
 		if restoreErr != nil {
@@ -398,13 +398,13 @@ func (s *EndpointService) RotateAll(userID int) (*RotationResult, error) {
 	}
 	for _, item := range items {
 		healthPath := managedHealthPath(transportMatchPath(item.spec.Path))
-		if err := s.probeManagedEndpoint(item.inbound, item.next, healthPath); err != nil {
+		if err := s.checkManagedEndpointHealth(item.inbound, item.next, healthPath); err != nil {
 			restoreErr := s.restoreCaddy(oldContent)
 			s.deletePending(pendingIDs)
 			if restoreErr != nil {
-				return nil, common.NewError("new endpoint real-chain probe failed: ", err, "; caddy rollback failed: ", restoreErr)
+				return nil, common.NewError("new endpoint real-chain health check failed: ", err, "; caddy rollback failed: ", restoreErr)
 			}
-			return nil, fmt.Errorf("new endpoint real-chain probe failed for %s: %w", item.next.Host, err)
+			return nil, fmt.Errorf("new endpoint real-chain health check failed for %s: %w", item.next.Host, err)
 		}
 	}
 
@@ -605,11 +605,11 @@ func (s *EndpointService) restoreCaddy(content string) error {
 	return s.caddyService.RestoreContent(content)
 }
 
-func (s *EndpointService) probeManagedEndpoint(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error {
-	if s.probeEndpointHook != nil {
-		return s.probeEndpointHook(inbound, endpoint, healthPath)
+func (s *EndpointService) checkManagedEndpointHealth(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error {
+	if s.healthCheckEndpointHook != nil {
+		return s.healthCheckEndpointHook(inbound, endpoint, healthPath)
 	}
-	return probeVLESSXHTTPEndpoint(inbound, endpoint, healthPath)
+	return checkVLESSXHTTPEndpointHealth(inbound, endpoint, healthPath)
 }
 
 func (s *EndpointService) commitRotation(items []rotationItem, retireAt int64) error {

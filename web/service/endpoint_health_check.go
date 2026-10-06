@@ -21,9 +21,9 @@ import (
 	"x-ui/xray"
 )
 
-const endpointProbeTimeout = 20 * time.Second
+const endpointHealthCheckTimeout = 20 * time.Second
 
-func probeVLESSXHTTPEndpoint(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error {
+func checkVLESSXHTTPEndpointHealth(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error {
 	spec, err := validateManagedInbound(inbound)
 	if err != nil {
 		return err
@@ -33,40 +33,40 @@ func probeVLESSXHTTPEndpoint(inbound *model.Inbound, endpoint *model.PublicEndpo
 	}
 	proxyPort, err := reserveLocalPort()
 	if err != nil {
-		return fmt.Errorf("reserve probe proxy port: %w", err)
+		return fmt.Errorf("reserve health-check proxy port: %w", err)
 	}
-	configData, err := buildEndpointProbeConfig(spec, endpoint, proxyPort)
+	configData, err := buildEndpointHealthCheckConfig(spec, endpoint, proxyPort)
 	if err != nil {
 		return err
 	}
-	configFile, err := os.CreateTemp("", "xui-endpoint-probe-*.json")
+	configFile, err := os.CreateTemp("", "xui-endpoint-healthcheck-*.json")
 	if err != nil {
-		return fmt.Errorf("create probe config: %w", err)
+		return fmt.Errorf("create health-check config: %w", err)
 	}
 	configPath := configFile.Name()
 	defer os.Remove(configPath)
 	if _, err := configFile.Write(configData); err != nil {
 		_ = configFile.Close()
-		return fmt.Errorf("write probe config: %w", err)
+		return fmt.Errorf("write health-check config: %w", err)
 	}
 	if err := configFile.Close(); err != nil {
-		return fmt.Errorf("close probe config: %w", err)
+		return fmt.Errorf("close health-check config: %w", err)
 	}
 
 	binaryPath, err := resolveXrayBinaryPath()
 	if err != nil {
 		return err
 	}
-	if err := validateEndpointProbeConfig(binaryPath, configPath); err != nil {
+	if err := validateEndpointHealthCheckConfig(binaryPath, configPath); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), endpointProbeTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), endpointHealthCheckTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binaryPath, "-c", configPath)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start temporary Xray probe client: %w", err)
+		return fmt.Errorf("start temporary Xray health-check client: %w", err)
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -81,7 +81,7 @@ func probeVLESSXHTTPEndpoint(inbound *model.Inbound, endpoint *model.PublicEndpo
 	}()
 
 	proxyAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(proxyPort))
-	if err := waitForProbeProxy(ctx, proxyAddr, done); err != nil {
+	if err := waitForHealthCheckProxy(ctx, proxyAddr, done); err != nil {
 		return err
 	}
 
@@ -107,7 +107,7 @@ func probeVLESSXHTTPEndpoint(inbound *model.Inbound, endpoint *model.PublicEndpo
 	target := "https://" + targetHost + normalizeManagedPath(healthPath)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return fmt.Errorf("build real-chain probe request: %w", err)
+		return fmt.Errorf("build real-chain health-check request: %w", err)
 	}
 	req.Header.Set("Cache-Control", "no-cache")
 	resp, err := client.Do(req)
@@ -122,7 +122,7 @@ func probeVLESSXHTTPEndpoint(inbound *model.Inbound, endpoint *model.PublicEndpo
 	return nil
 }
 
-func validateEndpointProbeConfig(binaryPath string, configPath string) error {
+func validateEndpointHealthCheckConfig(binaryPath string, configPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binaryPath, "run", "-test", "-config", configPath)
@@ -131,21 +131,21 @@ func validateEndpointProbeConfig(binaryPath string, configPath string) error {
 		return nil
 	}
 	if ctx.Err() != nil {
-		return fmt.Errorf("validate temporary Xray probe config timed out: %w", ctx.Err())
+		return fmt.Errorf("validate temporary Xray health-check config timed out: %w", ctx.Err())
 	}
 	message := strings.TrimSpace(string(output))
 	if message == "" {
 		message = err.Error()
 	}
-	return fmt.Errorf("temporary Xray probe config is not supported by %s: %s", binaryPath, message)
+	return fmt.Errorf("temporary Xray health-check config is not supported by %s: %s", binaryPath, message)
 }
 
-func buildEndpointProbeConfig(spec *managedInboundSpec, endpoint *model.PublicEndpoint, proxyPort int) ([]byte, error) {
+func buildEndpointHealthCheckConfig(spec *managedInboundSpec, endpoint *model.PublicEndpoint, proxyPort int) ([]byte, error) {
 	if spec == nil || endpoint == nil {
-		return nil, fmt.Errorf("probe spec and endpoint are required")
+		return nil, fmt.Errorf("health-check spec and endpoint are required")
 	}
 	if proxyPort <= 0 || proxyPort > 65535 {
-		return nil, fmt.Errorf("invalid probe proxy port: %d", proxyPort)
+		return nil, fmt.Errorf("invalid health-check proxy port: %d", proxyPort)
 	}
 	config := map[string]interface{}{
 		"log": map[string]interface{}{"loglevel": "warning"},
@@ -155,12 +155,12 @@ func buildEndpointProbeConfig(spec *managedInboundSpec, endpoint *model.PublicEn
 				"port":     proxyPort,
 				"protocol": "http",
 				"settings": map[string]interface{}{},
-				"tag":      "endpoint-probe-in",
+				"tag":      "endpoint-healthcheck-in",
 			},
 		},
 		"outbounds": []interface{}{
 			map[string]interface{}{
-				"tag":      "endpoint-probe-out",
+				"tag":      "endpoint-healthcheck-out",
 				"protocol": "vless",
 				"settings": map[string]interface{}{
 					"vnext": []interface{}{
@@ -194,15 +194,15 @@ func buildEndpointProbeConfig(spec *managedInboundSpec, endpoint *model.PublicEn
 			"rules": []interface{}{
 				map[string]interface{}{
 					"type":        "field",
-					"inboundTag":  []string{"endpoint-probe-in"},
-					"outboundTag": "endpoint-probe-out",
+					"inboundTag":  []string{"endpoint-healthcheck-in"},
+					"outboundTag": "endpoint-healthcheck-out",
 				},
 			},
 		},
 	}
 	data, err := json.Marshal(config)
 	if err != nil {
-		return nil, fmt.Errorf("marshal probe config: %w", err)
+		return nil, fmt.Errorf("marshal health-check config: %w", err)
 	}
 	return data, nil
 }
@@ -219,7 +219,7 @@ func reserveLocalPort() (int, error) {
 	return port, nil
 }
 
-func waitForProbeProxy(ctx context.Context, address string, done <-chan error) error {
+func waitForHealthCheckProxy(ctx context.Context, address string, done <-chan error) error {
 	deadline := time.NewTimer(4 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -233,13 +233,13 @@ func waitForProbeProxy(ctx context.Context, address string, done <-chan error) e
 		select {
 		case err := <-done:
 			if err == nil {
-				return fmt.Errorf("temporary Xray probe client exited before becoming ready")
+				return fmt.Errorf("temporary Xray health-check client exited before becoming ready")
 			}
-			return fmt.Errorf("temporary Xray probe client exited before becoming ready: %w", err)
+			return fmt.Errorf("temporary Xray health-check client exited before becoming ready: %w", err)
 		case <-ctx.Done():
-			return fmt.Errorf("temporary Xray probe client startup timed out: %w", ctx.Err())
+			return fmt.Errorf("temporary Xray health-check client startup timed out: %w", ctx.Err())
 		case <-deadline.C:
-			return fmt.Errorf("temporary Xray probe client did not open its local proxy")
+			return fmt.Errorf("temporary Xray health-check client did not open its local proxy")
 		case <-ticker.C:
 		}
 	}
@@ -247,7 +247,7 @@ func waitForProbeProxy(ctx context.Context, address string, done <-chan error) e
 
 func resolveXrayBinaryPath() (string, error) {
 	candidates := make([]string, 0, 4)
-	if configured := os.Getenv("XUI_PROBE_XRAY_BIN"); configured != "" {
+	if configured := os.Getenv("XUI_HEALTHCHECK_XRAY_BIN"); configured != "" {
 		candidates = append(candidates, configured)
 	}
 	candidates = append(candidates, xray.GetBinaryPath())
@@ -264,5 +264,5 @@ func resolveXrayBinaryPath() (string, error) {
 			return candidate, nil
 		}
 	}
-	return "", fmt.Errorf("Xray probe binary %s for %s/%s was not found", xray.GetBinaryPath(), runtime.GOOS, runtime.GOARCH)
+	return "", fmt.Errorf("Xray health-check binary %s for %s/%s was not found", xray.GetBinaryPath(), runtime.GOOS, runtime.GOARCH)
 }

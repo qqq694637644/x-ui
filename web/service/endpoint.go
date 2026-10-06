@@ -21,10 +21,10 @@ type EndpointService struct {
 	caddyService   CaddyService
 	linkService    LinkService
 
-	applyManagedSiteHook func(baseDomain string, block string) (string, error)
-	restoreCaddyHook     func(content string) error
+	applyManagedSiteHook    func(baseDomain string, block string) (string, error)
+	restoreCaddyHook        func(content string) error
 	healthCheckEndpointHook func(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error
-	commitRotationHook   func(items []rotationItem, retireAt int64) error
+	commitRotationHook      func(items []rotationItem, retireAt int64) error
 }
 
 type EndpointInit struct {

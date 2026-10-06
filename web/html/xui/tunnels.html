@@ -21,7 +21,7 @@
                 <transition name="list" appear>
                     <a-card hoverable style="margin-bottom: 20px;">
                         <a-alert type="info" show-icon message="A 端隧道说明"
-                                 description="直连模式由 A 主动连接 B；Portal 模式由无公网 IP 的 B 使用 VMess over mKCP 主动连接 A。目标地址始终表示 B 端可访问的地址。"></a-alert>
+                                 description="直连模式由 A 主动连接 B；Portal 模式由无公网 IP 的 B 主动连接 A。Portal 可使用 VMess/mKCP，或 VLESS/XHTTP 经 CDN/Caddy/H3 接入。目标地址始终表示 B 端可访问的地址。"></a-alert>
                     </a-card>
                 </transition>
                 <transition name="list" appear>
@@ -68,12 +68,22 @@
                             </template>
                             <template slot="remote" slot-scope="text, tunnel">
                                 <a-tag color="cyan">[[ tunnel.protocol ]]</a-tag>
-                                <a-tag v-if="tunnel.mode === 'portal'" color="orange">监听 UDP :[[ tunnel.remotePort ]]</a-tag>
+                                <template v-if="tunnel.mode === 'portal' && tunnel.portalTransport === 'xhttp'">
+                                    <a-tag color="purple">XHTTP/H3</a-tag>
+                                    <a-tag color="orange">[[ tunnel.remoteAddress ]]:[[ tunnel.remotePort ]]</a-tag>
+                                </template>
+                                <a-tag v-else-if="tunnel.mode === 'portal'" color="orange">监听 UDP :[[ tunnel.remotePort ]]</a-tag>
                                 <a-tag v-else color="orange">[[ tunnel.remoteAddress ]]:[[ tunnel.remotePort ]]</a-tag>
                             </template>
                             <template slot="kcp" slot-scope="text, tunnel">
-                                <a-tag color="green">mkcp</a-tag>
-                                <a-tag :color="tunnel.kcpFinalMaskType && tunnel.kcpFinalMaskType !== 'none' ? 'purple' : 'orange'">[[ tunnel.kcpFinalMaskType || 'none' ]]</a-tag>
+                                <template v-if="tunnel.mode === 'portal' && tunnel.portalTransport === 'xhttp'">
+                                    <a-tag color="green">xhttp</a-tag>
+                                    <a-tag color="purple">h3</a-tag>
+                                </template>
+                                <template v-else>
+                                    <a-tag color="green">mkcp</a-tag>
+                                    <a-tag :color="tunnel.kcpFinalMaskType && tunnel.kcpFinalMaskType !== 'none' ? 'purple' : 'orange'">[[ tunnel.kcpFinalMaskType || 'none' ]]</a-tag>
+                                </template>
                                 <a-tag color="blue">Xray 26</a-tag>
                             </template>
                             <template slot="status" slot-scope="text, tunnel">
@@ -158,22 +168,47 @@
                 </a-col>
             </a-row>
 
-            <a-divider orientation="left">[[ modal.tunnel.mode === 'portal' ? 'Portal 监听（VMess/mKCP inbound）' : '远端 Xray（mKCP outbound）' ]]</a-divider>
+            <a-divider orientation="left">[[ modal.tunnel.mode === 'portal' ? 'Portal 主动连接入口' : '远端 Xray（mKCP outbound）' ]]</a-divider>
             <a-alert v-if="modal.tunnel.mode === 'portal'" type="info" show-icon style="margin-bottom: 16px;"
                      message="B 端主动连接"
-                     description="A 端固定监听 0.0.0.0；这里只填写 Portal UDP 端口。B 端面板中手工填写它能够访问到的 A 地址。"></a-alert>
+                     :description="modal.tunnel.portalTransport === 'xhttp' ? 'VLESS/XHTTP 模式：B 通过 CDN 域名的 TLS/H3 主动连接；A 端只在 127.0.0.1 建立无 TLS XHTTP inbound，由 Caddy h2c 回源。' : 'VMess/mKCP 模式：A 端固定监听 0.0.0.0 UDP；B 端主动连接这个 Portal UDP 端口。'"></a-alert>
+            <a-row v-if="modal.tunnel.mode === 'portal'" :gutter="16">
+                <a-col :xs="24" :md="12">
+                    <a-form-item label="Portal 传输">
+                        <a-select v-model="modal.tunnel.portalTransport" @change="onPortalTransportChange">
+                            <a-select-option value="mkcp">VMess / mKCP</a-select-option>
+                            <a-select-option value="xhttp">VLESS / XHTTP / H3（CDN/Caddy）</a-select-option>
+                        </a-select>
+                    </a-form-item>
+                </a-col>
+            </a-row>
             <a-row :gutter="16">
-                <a-col v-if="modal.tunnel.mode !== 'portal'" :xs="24" :md="12">
-                    <a-form-item label="远端地址">
-                        <a-input v-model="modal.tunnel.remoteAddress" placeholder="B 端公网 IP 或域名"></a-input>
+                <a-col v-if="modal.tunnel.mode !== 'portal' || modal.tunnel.portalTransport === 'xhttp'" :xs="24" :md="12">
+                    <a-form-item :label="modal.tunnel.mode === 'portal' ? 'CDN 域名' : '远端地址'">
+                        <a-input v-model.trim="modal.tunnel.remoteAddress" :placeholder="modal.tunnel.mode === 'portal' ? '例如 cdn.example.com' : 'B 端公网 IP 或域名'"></a-input>
                     </a-form-item>
                 </a-col>
                 <a-col :xs="24" :md="12">
-                    <a-form-item :label="modal.tunnel.mode === 'portal' ? 'Portal mKCP UDP 端口' : '远端 mKCP 端口'">
+                    <a-form-item :label="modal.tunnel.mode === 'portal' && modal.tunnel.portalTransport === 'xhttp' ? 'CDN 公网端口' : (modal.tunnel.mode === 'portal' ? 'Portal mKCP UDP 端口' : '远端 mKCP 端口')">
                         <a-input type="number" v-model.number="modal.tunnel.remotePort"></a-input>
                     </a-form-item>
                 </a-col>
             </a-row>
+            <a-row v-if="modal.tunnel.mode === 'portal' && modal.tunnel.portalTransport === 'xhttp'" :gutter="16">
+                <a-col :xs="24" :md="12">
+                    <a-form-item label="A 端 XHTTP 本地端口">
+                        <a-input type="number" v-model.number="modal.tunnel.portalListenPort"></a-input>
+                    </a-form-item>
+                </a-col>
+                <a-col :xs="24" :md="12">
+                    <a-form-item label="XHTTP 路径">
+                        <a-input v-model.trim="modal.tunnel.xhttpPath" placeholder="/portal-xhttp"></a-input>
+                    </a-form-item>
+                </a-col>
+            </a-row>
+            <a-alert v-if="modal.tunnel.mode === 'portal' && modal.tunnel.portalTransport === 'xhttp'" type="warning" show-icon style="margin-bottom: 16px;"
+                     message="Caddy 必须把此路径反代到本地 Portal 端口"
+                     :description="'路径 ' + modal.tunnel.xhttpPath + '* → reverse_proxy h2c://127.0.0.1:' + modal.tunnel.portalListenPort + '；B 端使用 ' + modal.tunnel.remoteAddress + ':' + modal.tunnel.remotePort + '、TLS、ALPN=h3、mode=packet-up。'"></a-alert>
             <a-row :gutter="16">
                 <a-col :xs="24" :md="20">
                     <a-form-item label="UUID">
@@ -187,6 +222,7 @@
                 </a-col>
             </a-row>
 
+            <template v-if="modal.tunnel.mode !== 'portal' || modal.tunnel.portalTransport === 'mkcp'">
             <a-divider orientation="left">mKCP 参数</a-divider>
             <a-alert type="warning" show-icon style="margin-bottom: 16px;"
                      message="mKCP 参数会生成 Xray 26 配置"
@@ -244,6 +280,7 @@
                     </a-form-item>
                 </a-col>
             </a-row>
+            </template>
         </a-form>
     </a-modal>
 </a-layout>
@@ -290,7 +327,7 @@
         width: 220,
         scopedSlots: { customRender: 'remote' },
     }, {
-        title: "mKCP",
+        title: "传输",
         align: 'center',
         width: 180,
         scopedSlots: { customRender: 'kcp' },
@@ -316,6 +353,9 @@
             remotePort: 0,
             protocol: 'vmess',
             uuid: RandomUtil.randomUUID(),
+            portalTransport: 'mkcp',
+            portalListenPort: 0,
+            xhttpPath: '/portal-xhttp',
             kcpFinalMaskType: 'none',
             kcpMtu: 1350,
             kcpTti: 20,
@@ -329,6 +369,8 @@
             probeTime: '',
         }, data || {});
         if (!tunnel.mode) tunnel.mode = 'direct';
+        if (!tunnel.portalTransport) tunnel.portalTransport = 'mkcp';
+        if (!tunnel.xhttpPath) tunnel.xhttpPath = '/portal-xhttp';
         return tunnel;
     }
 
@@ -352,9 +394,12 @@
                 this.spinning = spinning;
             },
             async getTunnels() {
+                const started = performance.now();
+                console.info('[tunnel-trace] event=client.list.start path=/xui/tunnel/list');
                 this.loading(true);
                 const msg = await HttpUtil.post('/xui/tunnel/list');
                 this.loading(false);
+                console.info(`[tunnel-trace] event=client.list.end success=${!!msg.success} elapsed_ms=${(performance.now() - started).toFixed(3)}`);
                 if (!msg.success) return;
                 this.tunnels = (msg.obj || []).map(tunnel => newTunnel(tunnel));
             },
@@ -370,8 +415,22 @@
             },
             onModeChange(mode) {
                 if (mode === 'portal') {
+                    this.onPortalTransportChange(this.modal.tunnel.portalTransport || 'mkcp');
+                }
+            },
+            onPortalTransportChange(transport) {
+                this.modal.tunnel.portalTransport = transport;
+                if (transport === 'xhttp') {
+                    this.modal.tunnel.protocol = 'vless';
+                    if (!this.modal.tunnel.remotePort || this.modal.tunnel.remotePort === 40000) this.modal.tunnel.remotePort = 443;
+                    if (!this.modal.tunnel.portalListenPort) this.modal.tunnel.portalListenPort = 26418;
+                    if (!this.modal.tunnel.xhttpPath || this.modal.tunnel.xhttpPath === '/') {
+                        this.modal.tunnel.xhttpPath = '/portal-xhttp';
+                    }
+                } else {
                     this.modal.tunnel.protocol = 'vmess';
-                    this.modal.tunnel.remoteAddress = '';
+                    if (!this.modal.tunnel.remotePort || this.modal.tunnel.remotePort === 443) this.modal.tunnel.remotePort = 40000;
+                    if (!this.modal.tunnel.portalListenPort) this.modal.tunnel.portalListenPort = this.modal.tunnel.remotePort;
                 }
             },
             clickAction(action, tunnel) {

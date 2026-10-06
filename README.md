@@ -18,8 +18,9 @@
 ## 隧道模式
 
 - `direct`：A 端主动连接 B 端的 VMess/VLESS mKCP 监听端口，兼容现有配置。
-- `portal`：A 端提供 VMess/mKCP Portal UDP 入口，B 端通过 Xray `reverse.bridges` 主动连接 A；A 的业务入口可选择 TCP、UDP 或 TCP+UDP，目标地址表示 B 端可访问的地址。
-- Portal 模式固定使用 VMess，`alterId=0`，两端 UUID、mKCP 和 FinalMask 参数必须一致。
+- `portal`：A 端提供反向 Portal，B 端通过 Xray `reverse.bridges` 主动连接 A；A 的业务入口可选择 TCP、UDP 或 TCP+UDP，目标地址表示 B 端可访问的地址。
+- Portal 支持两种传输：兼容模式 `VMess/mKCP`，以及适合无公网 IP / CDN 场景的 `VLESS/XHTTP`。XHTTP Portal 在 A 端只监听 `127.0.0.1` 明文 XHTTP，由 Caddy h2c 回源；B 端通过 CDN 域名使用 TLS + H3 + `packet-up` 主动连接。
+- VMess/mKCP Portal 仍固定 `alterId=0`，两端 UUID、mKCP 和 FinalMask 参数必须一致；VLESS/XHTTP Portal 两端 UUID 和 XHTTP path 必须一致。
 - Release 工作流固定从 `qqq694637644/Xray-core` 的提交 `d2758a023cd7f4174a5a5fa4ff66e487d4342ba0` 构建 Xray v26.3.27。
 - Xray 兼容的 1–30 字节旧 ID 会按 v26.3.27 的 SHA-1 version 5 算法转换为规范 UUID；旧 direct 隧道无需手工更换 ID。
 - 数据库启动迁移会移除 `inbounds.port` 和 `tunnels.listen_port` 的旧单列唯一约束，端口是否冲突改由监听 IP、TCP/UDP 协议和端口共同判断。

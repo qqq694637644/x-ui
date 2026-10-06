@@ -1,6 +1,10 @@
 package controller
 
 import (
+	"strconv"
+	"time"
+	"x-ui/logger"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -44,6 +48,12 @@ func (a *XUIController) inbounds(c *gin.Context) {
 }
 
 func (a *XUIController) tunnels(c *gin.Context) {
+	started := time.Now()
+	traceID := strconv.FormatInt(started.UnixNano(), 36)
+	logger.Infof("[tunnel-trace] trace=%s event=page.start method=%s path=%s remote=%s", traceID, c.Request.Method, c.Request.URL.Path, c.ClientIP())
+	defer func() {
+		logger.Infof("[tunnel-trace] trace=%s event=page.end status=%d elapsed_ms=%.3f", traceID, c.Writer.Status(), float64(time.Since(started).Microseconds())/1000)
+	}()
 	html(c, "tunnels.html", "隧道列表", nil)
 }
 

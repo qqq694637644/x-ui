@@ -47,6 +47,36 @@ func transportProtocols(network string) listenerProtocols {
 	}
 }
 
+func xhttpUsesHTTP3(stream map[string]interface{}) bool {
+	network, _ := stream["network"].(string)
+	if !strings.EqualFold(strings.TrimSpace(network), "xhttp") && !strings.EqualFold(strings.TrimSpace(network), "splithttp") {
+		return false
+	}
+	security, _ := stream["security"].(string)
+	if !strings.EqualFold(strings.TrimSpace(security), "tls") {
+		return false
+	}
+	tlsSettings, ok := stream["tlsSettings"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	switch alpn := tlsSettings["alpn"].(type) {
+	case string:
+		values := strings.Split(alpn, ",")
+		return len(values) == 1 && values[0] == "h3"
+	case []interface{}:
+		if len(alpn) != 1 {
+			return false
+		}
+		value, ok := alpn[0].(string)
+		return ok && value == "h3"
+	case []string:
+		return len(alpn) == 1 && alpn[0] == "h3"
+	default:
+		return false
+	}
+}
+
 func normalizeListenAddress(address string) string {
 	address = strings.ToLower(strings.TrimSpace(address))
 	return strings.Trim(address, "[]")
@@ -90,12 +120,21 @@ func tunnelListenerEndpoints(tunnel *model.Tunnel) []listenerEndpoint {
 		},
 	}
 	if strings.EqualFold(strings.TrimSpace(tunnel.Mode), TunnelModePortal) {
-		endpoints = append(endpoints, listenerEndpoint{
-			Address:     "0.0.0.0",
-			Port:        tunnel.RemotePort,
-			Protocols:   listenerUDP,
-			Description: fmt.Sprintf("隧道 %d Portal mKCP", tunnel.Id),
-		})
+		if strings.EqualFold(strings.TrimSpace(tunnel.PortalTransport), PortalTransportXHTTP) {
+			endpoints = append(endpoints, listenerEndpoint{
+				Address:     "127.0.0.1",
+				Port:        tunnel.PortalListenPort,
+				Protocols:   listenerTCP,
+				Description: fmt.Sprintf("隧道 %d Portal XHTTP", tunnel.Id),
+			})
+		} else {
+			endpoints = append(endpoints, listenerEndpoint{
+				Address:     "0.0.0.0",
+				Port:        tunnel.RemotePort,
+				Protocols:   listenerUDP,
+				Description: fmt.Sprintf("隧道 %d Portal mKCP", tunnel.Id),
+			})
+		}
 	}
 	return endpoints
 }
@@ -109,7 +148,11 @@ func inboundListenerEndpoint(inbound *model.Inbound) (listenerEndpoint, error) {
 			return listenerEndpoint{}, common.NewError("无法判断入站传输协议: ", err)
 		}
 		streamNetwork, _ = stream["network"].(string)
-		protocols = transportProtocols(streamNetwork)
+		if xhttpUsesHTTP3(stream) {
+			protocols = listenerUDP
+		} else {
+			protocols = transportProtocols(streamNetwork)
+		}
 	}
 
 	settings := map[string]interface{}{}

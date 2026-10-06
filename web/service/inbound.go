@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -13,6 +14,22 @@ import (
 )
 
 type InboundService struct {
+}
+
+func validateInboundTransport(inbound *model.Inbound) error {
+	if strings.TrimSpace(inbound.StreamSettings) == "" {
+		return nil
+	}
+	stream := struct {
+		Network string `json:"network"`
+	}{}
+	if err := json.Unmarshal([]byte(inbound.StreamSettings), &stream); err != nil {
+		return err
+	}
+	if (strings.EqualFold(strings.TrimSpace(stream.Network), "xhttp") || strings.EqualFold(strings.TrimSpace(stream.Network), "splithttp")) && inbound.Protocol != model.VLESS {
+		return fmt.Errorf("XHTTP 传输仅支持 VLESS 入站")
+	}
+	return nil
 }
 
 func (s *InboundService) GetInbounds(userId int) ([]*model.Inbound, error) {
@@ -82,6 +99,9 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) error {
 	if err := xray_util.ValidateXray26327StreamSettings(inbound.StreamSettings); err != nil {
 		return err
 	}
+	if err := validateInboundTransport(inbound); err != nil {
+		return err
+	}
 	if err := checkInboundListenerConflicts(inbound, 0); err != nil {
 		return err
 	}
@@ -97,6 +117,9 @@ func (s *InboundService) AddInbounds(inbounds []*model.Inbound) error {
 	endpoints := make([]listenerEndpoint, 0, len(inbounds))
 	for _, inbound := range inbounds {
 		if err := xray_util.ValidateXray26327StreamSettings(inbound.StreamSettings); err != nil {
+			return err
+		}
+		if err := validateInboundTransport(inbound); err != nil {
 			return err
 		}
 		if err := checkInboundListenerConflicts(inbound, 0); err != nil {
@@ -155,6 +178,9 @@ func (s *InboundService) GetInbound(id int) (*model.Inbound, error) {
 
 func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
 	if err := xray_util.ValidateXray26327StreamSettings(inbound.StreamSettings); err != nil {
+		return err
+	}
+	if err := validateInboundTransport(inbound); err != nil {
 		return err
 	}
 	oldInbound, err := s.GetInbound(inbound.Id)

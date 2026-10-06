@@ -39,6 +39,28 @@ func TestPortalTunnelOwnEndpointsDetectUDPConflict(t *testing.T) {
 	}
 }
 
+func TestPortalXHTTPEndpointIsLocalTCP(t *testing.T) {
+	tunnel := &model.Tunnel{
+		Id:               2,
+		Mode:             TunnelModePortal,
+		Listen:           "0.0.0.0",
+		ListenPort:       18081,
+		Network:          "tcp",
+		PortalTransport:  PortalTransportXHTTP,
+		PortalListenPort: 26418,
+		RemoteAddress:    "cdn.example.com",
+		RemotePort:       443,
+	}
+	endpoints := tunnelListenerEndpoints(tunnel)
+	if len(endpoints) != 2 {
+		t.Fatalf("endpoints = %#v", endpoints)
+	}
+	portal := endpoints[1]
+	if portal.Address != "127.0.0.1" || portal.Port != 26418 || portal.Protocols != listenerTCP {
+		t.Fatalf("Portal XHTTP endpoint = %#v, want local TCP 127.0.0.1:26418", portal)
+	}
+}
+
 func TestDokodemoInboundUsesSettingsNetworkForConflictDetection(t *testing.T) {
 	inbound := &model.Inbound{
 		Id:             3,
@@ -71,6 +93,67 @@ func TestMkcpInboundIsDetectedAsUDP(t *testing.T) {
 	}
 	if endpoint.Protocols != listenerUDP {
 		t.Fatalf("protocols = %v, want UDP", endpoint.Protocols)
+	}
+}
+
+func TestXHTTPH3InboundIsDetectedAsUDP(t *testing.T) {
+	for name, streamSettings := range map[string]string{
+		"array alpn":  `{"network":"xhttp","security":"tls","tlsSettings":{"alpn":["h3"]},"xhttpSettings":{"path":"/xhttp","mode":"auto"}}`,
+		"string alpn": `{"network":"xhttp","security":"tls","tlsSettings":{"alpn":"h3"},"xhttpSettings":{"path":"/xhttp","mode":"auto"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			inbound := &model.Inbound{
+				Port:           40000,
+				Protocol:       model.VLESS,
+				Settings:       `{}`,
+				StreamSettings: streamSettings,
+			}
+			endpoint, err := inboundListenerEndpoint(inbound)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if endpoint.Protocols != listenerUDP {
+				t.Fatalf("protocols = %v, want UDP for XHTTP H3", endpoint.Protocols)
+			}
+		})
+	}
+}
+
+func TestXHTTPH1AndH2InboundsAreDetectedAsTCP(t *testing.T) {
+	for _, alpn := range []string{"http/1.1", "h2"} {
+		t.Run(alpn, func(t *testing.T) {
+			inbound := &model.Inbound{
+				Port:           40000,
+				Protocol:       model.VLESS,
+				Settings:       `{}`,
+				StreamSettings: `{"network":"xhttp","security":"tls","tlsSettings":{"alpn":["` + alpn + `"]},"xhttpSettings":{"path":"/xhttp","mode":"auto"}}`,
+			}
+			endpoint, err := inboundListenerEndpoint(inbound)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if endpoint.Protocols != listenerTCP {
+				t.Fatalf("protocols = %v, want TCP for XHTTP %s", endpoint.Protocols, alpn)
+			}
+		})
+	}
+}
+
+func TestXHTTPH2AndH3MayShareSameNumericPort(t *testing.T) {
+	h2 := listenerEndpoint{Address: "0.0.0.0", Port: 40000, Protocols: listenerTCP}
+	h3 := listenerEndpoint{Address: "0.0.0.0", Port: 40000, Protocols: listenerUDP}
+	if endpointsConflict(h2, h3) || endpointsConflict(h3, h2) {
+		t.Fatal("XHTTP H2 TCP and H3 UDP may share the same numeric port")
+	}
+}
+
+func TestValidateInboundTransportLimitsXHTTPToVLESS(t *testing.T) {
+	streamSettings := `{"network":"xhttp","xhttpSettings":{"path":"/xhttp","mode":"auto"}}`
+	if err := validateInboundTransport(&model.Inbound{Protocol: model.VLESS, StreamSettings: streamSettings}); err != nil {
+		t.Fatalf("VLESS XHTTP rejected: %v", err)
+	}
+	if err := validateInboundTransport(&model.Inbound{Protocol: model.VMess, StreamSettings: streamSettings}); err == nil {
+		t.Fatal("VMess XHTTP must be rejected by the panel")
 	}
 }
 

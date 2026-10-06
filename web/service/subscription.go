@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -15,16 +16,21 @@ type SubscriptionService struct {
 	linkService    LinkService
 }
 
+var (
+	ErrSubscriptionDisabled = errors.New("subscription is disabled")
+	ErrSubscriptionToken    = errors.New("invalid subscription token")
+)
+
 func (s *SubscriptionService) Generate(token string) (string, error) {
 	settings, err := s.settingService.GetEndpointSettings()
 	if err != nil {
 		return "", err
 	}
 	if !settings.SubscriptionEnable {
-		return "", fmt.Errorf("subscription is disabled")
+		return "", ErrSubscriptionDisabled
 	}
 	if subtle.ConstantTimeCompare([]byte(token), []byte(settings.SubscriptionToken)) != 1 {
-		return "", fmt.Errorf("invalid subscription token")
+		return "", ErrSubscriptionToken
 	}
 
 	db := database.GetDB()
@@ -54,15 +60,16 @@ func (s *SubscriptionService) Generate(token string) (string, error) {
 	for _, inbound := range inbounds {
 		endpoint := activeByInbound[inbound.Id]
 		if endpoint == nil {
-			continue
+			return "", fmt.Errorf("published inbound %d has no active public endpoint", inbound.Id)
 		}
 		link, err := s.linkService.GenerateInboundLink(inbound, endpoint)
 		if err != nil {
-			continue
+			return "", fmt.Errorf("published inbound %d cannot generate subscription link: %w", inbound.Id, err)
 		}
-		if strings.TrimSpace(link) != "" {
-			links = append(links, link)
+		if strings.TrimSpace(link) == "" {
+			return "", fmt.Errorf("published inbound %d generated an empty subscription link", inbound.Id)
 		}
+		links = append(links, link)
 	}
 	if len(links) == 0 {
 		return "", fmt.Errorf("subscription has no publishable endpoints")

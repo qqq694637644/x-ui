@@ -17,61 +17,66 @@ const (
 type ManagedRoute struct {
 	Host         string
 	Path         string
-	Network      string
 	UpstreamHost string
 	UpstreamPort int
 	Kind         string
 }
 
-type ManagedProbe struct {
-	Host      string
-	Path      string
-	LocalHost string
-	LocalPort int
-}
-
-func RenderManagedCaddy(baseDomain string, publicPort int, certFile string, keyFile string, routes []ManagedRoute) (string, []ManagedProbe, error) {
+func RenderManagedCaddy(baseDomain string, publicPort int, certFile string, keyFile string, routes []ManagedRoute) (string, error) {
 	if len(routes) == 0 {
-		return managedCaddyBegin + "\n# no managed endpoints\n" + managedCaddyEnd, nil, nil
+		return managedCaddyBegin + "\n# no managed endpoints\n" + managedCaddyEnd, nil
 	}
 	baseDomain = normalizeDomain(baseDomain)
 	if !validDomain(baseDomain) {
-		return "", nil, fmt.Errorf("invalid public base domain: %s", baseDomain)
+		return "", fmt.Errorf("invalid public base domain: %s", baseDomain)
 	}
 	if publicPort <= 0 || publicPort > 65535 {
-		return "", nil, fmt.Errorf("invalid public port: %d", publicPort)
+		return "", fmt.Errorf("invalid public port: %d", publicPort)
 	}
-	if (strings.TrimSpace(certFile) == "") != (strings.TrimSpace(keyFile) == "") {
-		return "", nil, fmt.Errorf("caddy TLS cert and key must both be set or both be empty")
+	certFile = strings.TrimSpace(certFile)
+	keyFile = strings.TrimSpace(keyFile)
+	if certFile == "" || keyFile == "" {
+		return "", fmt.Errorf("managed endpoints require wildcard Caddy TLS certificate and key")
 	}
 
 	normalized := make([]ManagedRoute, 0, len(routes))
-	seen := map[string]bool{}
+	seen := map[string]string{}
 	for _, route := range routes {
 		route.Host = strings.ToLower(strings.TrimSpace(route.Host))
 		route.Path = normalizeManagedPath(route.Path)
 		if route.Host == "" || route.Path == "" {
-			return "", nil, fmt.Errorf("managed route host/path must not be empty")
+			return "", fmt.Errorf("managed route host/path must not be empty")
+		}
+		if !isDirectManagedSubdomain(route.Host, baseDomain) {
+			return "", fmt.Errorf("managed route host %s is not a direct subdomain of %s", route.Host, baseDomain)
 		}
 		if route.UpstreamPort <= 0 || route.UpstreamPort > 65535 {
-			return "", nil, fmt.Errorf("invalid upstream port for %s: %d", route.Host, route.UpstreamPort)
+			return "", fmt.Errorf("invalid upstream port for %s: %d", route.Host, route.UpstreamPort)
 		}
-		if route.UpstreamHost == "" || route.UpstreamHost == "0.0.0.0" || route.UpstreamHost == "::" || route.UpstreamHost == "[::]" {
-			route.UpstreamHost = "127.0.0.1"
+		if strings.TrimSpace(route.UpstreamHost) != "127.0.0.1" {
+			return "", fmt.Errorf("managed XHTTP upstream must be 127.0.0.1, got %s", route.UpstreamHost)
 		}
 		if strings.ContainsAny(route.Path, " \t\r\n{}") {
-			return "", nil, fmt.Errorf("invalid managed route path: %s", route.Path)
+			return "", fmt.Errorf("invalid managed route path: %s", route.Path)
 		}
-		key := route.Host + "||" + route.Path + "||" + strconv.Itoa(route.UpstreamPort)
-		if seen[key] {
+		key := route.Host + "||" + route.Path
+		target := net.JoinHostPort(route.UpstreamHost, strconv.Itoa(route.UpstreamPort))
+		if previous, exists := seen[key]; exists {
+			if previous != target {
+				return "", fmt.Errorf("conflicting managed route %s%s: %s vs %s", route.Host, route.Path, previous, target)
+			}
 			continue
 		}
-		seen[key] = true
+		seen[key] = target
 		normalized = append(normalized, route)
 	}
+
 	sort.SliceStable(normalized, func(i, j int) bool {
 		if normalized[i].Host != normalized[j].Host {
 			return normalized[i].Host < normalized[j].Host
+		}
+		if len(normalized[i].Path) != len(normalized[j].Path) {
+			return len(normalized[i].Path) > len(normalized[j].Path)
 		}
 		if normalized[i].Path != normalized[j].Path {
 			return normalized[i].Path < normalized[j].Path
@@ -82,27 +87,18 @@ func RenderManagedCaddy(baseDomain string, publicPort int, certFile string, keyF
 	var b strings.Builder
 	b.WriteString(managedCaddyBegin)
 	b.WriteString("\n")
-	if len(normalized) == 0 {
-		b.WriteString("# no managed endpoints\n")
-		b.WriteString(managedCaddyEnd)
-		return b.String(), nil, nil
-	}
-
 	site := "*." + baseDomain
 	if publicPort != 443 {
 		site = net.JoinHostPort(site, strconv.Itoa(publicPort))
 	}
 	b.WriteString(site)
 	b.WriteString(" {\n")
-	if strings.TrimSpace(certFile) != "" {
-		b.WriteString("    tls ")
-		b.WriteString(strings.TrimSpace(certFile))
-		b.WriteByte(' ')
-		b.WriteString(strings.TrimSpace(keyFile))
-		b.WriteString("\n")
-	}
+	b.WriteString("    tls ")
+	b.WriteString(certFile)
+	b.WriteByte(' ')
+	b.WriteString(keyFile)
+	b.WriteString("\n")
 
-	probes := make([]ManagedProbe, 0, len(normalized))
 	for i, route := range normalized {
 		healthMatcher := fmt.Sprintf("xui_health_%d", i+1)
 		routeMatcher := fmt.Sprintf("xui_route_%d", i+1)
@@ -117,7 +113,7 @@ func RenderManagedCaddy(baseDomain string, publicPort int, certFile string, keyF
 		b.WriteString("\n    }\n")
 		b.WriteString("    handle @")
 		b.WriteString(healthMatcher)
-		b.WriteString(" {\n        respond \"\" 204\n    }\n")
+		b.WriteString(" {\n        header Cache-Control \"no-store\"\n        respond \"\" 204\n    }\n")
 
 		b.WriteString("\n    @")
 		b.WriteString(routeMatcher)
@@ -128,62 +124,212 @@ func RenderManagedCaddy(baseDomain string, publicPort int, certFile string, keyF
 		b.WriteString("*\n    }\n")
 		b.WriteString("    handle @")
 		b.WriteString(routeMatcher)
-		b.WriteString(" {\n        reverse_proxy ")
-		b.WriteString(managedUpstream(route))
+		b.WriteString(" {\n        reverse_proxy h2c://")
+		b.WriteString(net.JoinHostPort(route.UpstreamHost, strconv.Itoa(route.UpstreamPort)))
 		b.WriteString("\n    }\n")
-
-		probes = append(probes, ManagedProbe{
-			Host:      route.Host,
-			Path:      healthPath,
-			LocalHost: route.UpstreamHost,
-			LocalPort: route.UpstreamPort,
-		})
 	}
 	b.WriteString("\n    handle {\n        respond \"Not Found\" 404\n    }\n")
 	b.WriteString("}\n")
 	b.WriteString(managedCaddyEnd)
-	return b.String(), probes, nil
+	return b.String(), nil
 }
 
-func ReplaceManagedCaddyBlock(content string, block string) (string, error) {
+func ReplaceOwnedManagedCaddy(content string, baseDomain string, block string) (string, error) {
+	withoutManaged, err := removeManagedCaddyBlock(content)
+	if err != nil {
+		return "", err
+	}
+	cleaned, err := stripOwnedCaddySites(withoutManaged, baseDomain)
+	if err != nil {
+		return "", err
+	}
+	cleaned = strings.TrimRight(cleaned, "\r\n")
+	if cleaned == "" {
+		return block + "\n", nil
+	}
+	return cleaned + "\n\n" + block + "\n", nil
+}
+
+func removeManagedCaddyBlock(content string) (string, error) {
 	begin := strings.Index(content, managedCaddyBegin)
 	end := strings.Index(content, managedCaddyEnd)
 	if begin < 0 && end < 0 {
-		trimmed := strings.TrimRight(content, "\r\n")
-		if trimmed == "" {
-			return block + "\n", nil
-		}
-		return trimmed + "\n\n" + block + "\n", nil
+		return content, nil
 	}
 	if begin < 0 || end < 0 || end < begin {
 		return "", fmt.Errorf("caddy managed block markers are incomplete or out of order")
 	}
 	end += len(managedCaddyEnd)
-	prefix := strings.TrimRight(content[:begin], "\r\n")
-	suffix := strings.TrimLeft(content[end:], "\r\n")
-	var b strings.Builder
-	if prefix != "" {
-		b.WriteString(prefix)
-		b.WriteString("\n\n")
-	}
-	b.WriteString(block)
-	b.WriteString("\n")
-	if suffix != "" {
-		b.WriteString("\n")
-		b.WriteString(suffix)
-		if !strings.HasSuffix(suffix, "\n") {
-			b.WriteString("\n")
-		}
-	}
-	return b.String(), nil
+	return content[:begin] + content[end:], nil
 }
 
-func (s *CaddyService) ApplyManagedBlock(block string) (string, *CaddyCommandResult, error) {
+func stripOwnedCaddySites(content string, baseDomain string) (string, error) {
+	baseDomain = normalizeDomain(baseDomain)
+	if !validDomain(baseDomain) {
+		return "", fmt.Errorf("invalid public base domain: %s", baseDomain)
+	}
+	lines := strings.SplitAfter(content, "\n")
+	var out strings.Builder
+	depth := 0
+	skipping := false
+	for _, line := range lines {
+		delta, header, hasOpen, err := caddyLineStructure(line)
+		if err != nil {
+			return "", err
+		}
+		if depth == 0 && !skipping && hasOpen {
+			owned, mixed := classifyOwnedCaddyHeader(header, baseDomain)
+			if mixed {
+				return "", fmt.Errorf("caddy site block mixes managed and unmanaged addresses: %s", strings.TrimSpace(header))
+			}
+			if owned {
+				skipping = true
+				depth += delta
+				if depth == 0 {
+					skipping = false
+				}
+				continue
+			}
+		}
+		if skipping {
+			depth += delta
+			if depth < 0 {
+				return "", fmt.Errorf("invalid Caddyfile brace structure")
+			}
+			if depth == 0 {
+				skipping = false
+			}
+			continue
+		}
+		out.WriteString(line)
+		depth += delta
+		if depth < 0 {
+			return "", fmt.Errorf("invalid Caddyfile brace structure")
+		}
+	}
+	if depth != 0 || skipping {
+		return "", fmt.Errorf("invalid Caddyfile brace structure")
+	}
+	return out.String(), nil
+}
+
+func caddyLineStructure(line string) (delta int, header string, hasOpen bool, err error) {
+	inQuote := false
+	escaped := false
+	openIndex := -1
+	for i, ch := range line {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' && inQuote {
+			escaped = true
+			continue
+		}
+		if ch == '"' {
+			inQuote = !inQuote
+			continue
+		}
+		if !inQuote && ch == '#' {
+			break
+		}
+		if inQuote {
+			continue
+		}
+		switch ch {
+		case '{':
+			if openIndex < 0 {
+				openIndex = i
+			}
+			delta++
+		case '}':
+			delta--
+		}
+	}
+	if inQuote {
+		return 0, "", false, fmt.Errorf("unterminated quote in Caddyfile line: %s", strings.TrimSpace(line))
+	}
+	if openIndex >= 0 {
+		hasOpen = true
+		header = strings.TrimSpace(line[:openIndex])
+	}
+	return delta, header, hasOpen, nil
+}
+
+func classifyOwnedCaddyHeader(header string, baseDomain string) (owned bool, mixed bool) {
+	header = strings.TrimSpace(header)
+	if header == "" || strings.HasPrefix(header, "(") {
+		return false, false
+	}
+	parts := strings.FieldsFunc(header, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t'
+	})
+	ownedCount := 0
+	otherCount := 0
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if ownedCaddyAddress(part, baseDomain) {
+			ownedCount++
+		} else {
+			otherCount++
+		}
+	}
+	if ownedCount > 0 && otherCount > 0 {
+		return false, true
+	}
+	return ownedCount > 0 && otherCount == 0, false
+}
+
+func ownedCaddyAddress(address string, baseDomain string) bool {
+	address = strings.TrimSpace(strings.Trim(address, ","))
+	if address == "" {
+		return false
+	}
+	if idx := strings.Index(address, "://"); idx >= 0 {
+		address = address[idx+3:]
+	}
+	if idx := strings.IndexAny(address, "/{"); idx >= 0 {
+		address = address[:idx]
+	}
+	if host, _, err := net.SplitHostPort(address); err == nil {
+		address = host
+	} else if idx := strings.LastIndex(address, ":"); idx > 0 {
+		if _, parseErr := strconv.Atoi(address[idx+1:]); parseErr == nil {
+			address = address[:idx]
+		}
+	}
+	host := strings.ToLower(strings.Trim(strings.TrimSpace(address), "[]."))
+	if host == "*."+baseDomain {
+		return true
+	}
+	suffix := "." + baseDomain
+	if !strings.HasSuffix(host, suffix) {
+		return false
+	}
+	label := strings.TrimSuffix(host, suffix)
+	return label != "" && label != "*" && !strings.Contains(label, ".")
+}
+
+func isDirectManagedSubdomain(host string, baseDomain string) bool {
+	host = strings.ToLower(strings.Trim(strings.TrimSpace(host), "."))
+	baseDomain = normalizeDomain(baseDomain)
+	suffix := "." + baseDomain
+	if !strings.HasSuffix(host, suffix) {
+		return false
+	}
+	label := strings.TrimSuffix(host, suffix)
+	return label != "" && label != "*" && !strings.Contains(label, ".")
+}
+
+func (s *CaddyService) ApplyManagedSite(baseDomain string, block string) (string, *CaddyCommandResult, error) {
 	config, err := s.GetConfig()
 	if err != nil {
 		return "", nil, err
 	}
-	next, err := ReplaceManagedCaddyBlock(config.Content, block)
+	next, err := ReplaceOwnedManagedCaddy(config.Content, baseDomain, block)
 	if err != nil {
 		return "", nil, err
 	}
@@ -219,14 +365,4 @@ func managedHealthPath(path string) string {
 		return "/" + managedHealthLeaf
 	}
 	return strings.TrimRight(path, "/") + "/" + managedHealthLeaf
-}
-
-func managedUpstream(route ManagedRoute) string {
-	target := net.JoinHostPort(strings.Trim(route.UpstreamHost, "[]"), strconv.Itoa(route.UpstreamPort))
-	switch strings.ToLower(strings.TrimSpace(route.Network)) {
-	case "xhttp", "http", "grpc":
-		return "h2c://" + target
-	default:
-		return target
-	}
 }

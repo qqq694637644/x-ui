@@ -23,7 +23,6 @@ func TestSubscriptionReflectsActiveEndpointRotationWithoutChangingPath(t *testin
 	}
 	if err := settingService.UpdateEndpointSettings(&entity.EndpointSettings{
 		SubscriptionEnable:   true,
-		SubscriptionTitle:    "test",
 		PublicBaseDomain:     "asdasdasdas.shop",
 		PublicPort:           443,
 		HostRandomLength:     10,
@@ -32,19 +31,9 @@ func TestSubscriptionReflectsActiveEndpointRotationWithoutChangingPath(t *testin
 		t.Fatal(err)
 	}
 
-	inbound := &model.Inbound{
-		UserId:         1,
-		Remark:         "node-a",
-		Enable:         true,
-		Publish:        true,
-		Listen:         "127.0.0.1",
-		Port:           26417,
-		Protocol:       model.VLESS,
-		Settings:       `{"clients":[{"id":"11111111-1111-1111-1111-111111111111","flow":""}],"decryption":"none"}`,
-		StreamSettings: `{"network":"xhttp","security":"none","xhttpSettings":{"path":"/q8Fa72Lm9x","host":"","mode":"auto"}}`,
-		Tag:            "subscription-test",
-		Sniffing:       `{"enabled":false}`,
-	}
+	inbound := validManagedInboundForTest(0, "node-a", 26417, "/q8Fa72Lm9x")
+	inbound.Publish = true
+	inbound.Tag = "subscription-test"
 	if err := database.GetDB().Create(inbound).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +41,6 @@ func TestSubscriptionReflectsActiveEndpointRotationWithoutChangingPath(t *testin
 		InboundId: inbound.Id,
 		Host:      "a.asdasdasdas.shop",
 		Port:      443,
-		Security:  "tls",
 		Status:    model.EndpointStatusActive,
 		CreatedAt: 1,
 	}
@@ -81,7 +69,6 @@ func TestSubscriptionReflectsActiveEndpointRotationWithoutChangingPath(t *testin
 		InboundId: inbound.Id,
 		Host:      "d.asdasdasdas.shop",
 		Port:      443,
-		Security:  "tls",
 		Status:    model.EndpointStatusActive,
 		CreatedAt: 2,
 	}
@@ -112,7 +99,6 @@ func TestSubscriptionRejectsWrongToken(t *testing.T) {
 	settingService := &SettingService{}
 	if err := settingService.UpdateEndpointSettings(&entity.EndpointSettings{
 		SubscriptionEnable:   true,
-		SubscriptionTitle:    "test",
 		PublicBaseDomain:     "asdasdasdas.shop",
 		PublicPort:           443,
 		HostRandomLength:     10,
@@ -122,6 +108,75 @@ func TestSubscriptionRejectsWrongToken(t *testing.T) {
 	}
 	if _, err := (&SubscriptionService{}).Generate("wrong-token"); err == nil {
 		t.Fatal("wrong subscription token unexpectedly succeeded")
+	}
+}
+
+func TestSubscriptionFailsClosedWhenPublishedInboundHasNoActiveEndpoint(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "subscription-missing-endpoint.db")); err != nil {
+		t.Fatal(err)
+	}
+	settingService := &SettingService{}
+	settings, err := settingService.GetEndpointSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settingService.UpdateEndpointSettings(&entity.EndpointSettings{
+		SubscriptionEnable:   true,
+		PublicBaseDomain:     "asdasdasdas.shop",
+		PublicPort:           443,
+		HostRandomLength:     10,
+		EndpointDrainSeconds: 1800,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inbound := validManagedInboundForTest(0, "missing-endpoint", 26417, "/fixed")
+	inbound.Publish = true
+	inbound.Tag = "subscription-missing-endpoint"
+	if err := database.GetDB().Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&SubscriptionService{}).Generate(settings.SubscriptionToken); err == nil {
+		t.Fatal("subscription unexpectedly succeeded without an active endpoint")
+	}
+}
+
+func TestSubscriptionFailsClosedWhenPublishedInboundBecomesInvalid(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "subscription-invalid-inbound.db")); err != nil {
+		t.Fatal(err)
+	}
+	settingService := &SettingService{}
+	settings, err := settingService.GetEndpointSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settingService.UpdateEndpointSettings(&entity.EndpointSettings{
+		SubscriptionEnable:   true,
+		PublicBaseDomain:     "asdasdasdas.shop",
+		PublicPort:           443,
+		HostRandomLength:     10,
+		EndpointDrainSeconds: 1800,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inbound := validManagedInboundForTest(0, "invalid-inbound", 26417, "/fixed")
+	inbound.Publish = true
+	inbound.Tag = "subscription-invalid-inbound"
+	inbound.StreamSettings = `{"network":"ws","security":"none","wsSettings":{"path":"/fixed"}}`
+	if err := database.GetDB().Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+	endpoint := &model.PublicEndpoint{
+		InboundId: inbound.Id,
+		Host:      "invalid.asdasdasdas.shop",
+		Port:      443,
+		Status:    model.EndpointStatusActive,
+		CreatedAt: 1,
+	}
+	if err := database.GetDB().Create(endpoint).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&SubscriptionService{}).Generate(settings.SubscriptionToken); err == nil {
+		t.Fatal("subscription unexpectedly returned a partial result for an invalid published inbound")
 	}
 }
 

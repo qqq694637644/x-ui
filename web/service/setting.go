@@ -38,7 +38,6 @@ var defaultValueMap = map[string]string{
 	"caddyPath":            "/opt/caddy",
 	"subscriptionEnable":   "false",
 	"subscriptionToken":    "",
-	"subscriptionTitle":    "x-ui",
 	"publicBaseDomain":     "",
 	"publicPort":           "443",
 	"hostRandomLength":     "10",
@@ -219,10 +218,6 @@ func (s *SettingService) GetEndpointSettings() (*entity.EndpointSettings, error)
 	if err != nil {
 		return nil, err
 	}
-	title, err := s.getString("subscriptionTitle")
-	if err != nil {
-		return nil, err
-	}
 	domain, err := s.getString("publicBaseDomain")
 	if err != nil {
 		return nil, err
@@ -250,7 +245,6 @@ func (s *SettingService) GetEndpointSettings() (*entity.EndpointSettings, error)
 	return &entity.EndpointSettings{
 		SubscriptionEnable:   enabled,
 		SubscriptionToken:    token,
-		SubscriptionTitle:    title,
 		PublicBaseDomain:     domain,
 		PublicPort:           port,
 		HostRandomLength:     hostLength,
@@ -262,12 +256,8 @@ func (s *SettingService) GetEndpointSettings() (*entity.EndpointSettings, error)
 
 func (s *SettingService) UpdateEndpointSettings(settings *entity.EndpointSettings) error {
 	settings.PublicBaseDomain = normalizeDomain(settings.PublicBaseDomain)
-	settings.SubscriptionTitle = strings.TrimSpace(settings.SubscriptionTitle)
 	settings.CaddyTLSCertFile = strings.TrimSpace(settings.CaddyTLSCertFile)
 	settings.CaddyTLSKeyFile = strings.TrimSpace(settings.CaddyTLSKeyFile)
-	if settings.SubscriptionTitle == "" {
-		settings.SubscriptionTitle = "x-ui"
-	}
 	if settings.PublicBaseDomain != "" && !validDomain(settings.PublicBaseDomain) {
 		return common.NewError("公网基础域名不合法: ", settings.PublicBaseDomain)
 	}
@@ -285,7 +275,6 @@ func (s *SettingService) UpdateEndpointSettings(settings *entity.EndpointSetting
 	}
 	pairs := map[string]string{
 		"subscriptionEnable":   strconv.FormatBool(settings.SubscriptionEnable),
-		"subscriptionTitle":    settings.SubscriptionTitle,
 		"publicBaseDomain":     settings.PublicBaseDomain,
 		"publicPort":           strconv.Itoa(settings.PublicPort),
 		"hostRandomLength":     strconv.Itoa(settings.HostRandomLength),

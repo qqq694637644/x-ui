@@ -24,7 +24,8 @@ c.y.z
 
 - 每个可发布 Inbound 拥有独立 PublicEndpoint。
 - PublicEndpoint 只随机轮换二级子域名（本文指 `<random>.asdasdasdas.shop` 这一层）；path 不随机，始终沿用对应 Inbound 当前配置。
-- Xray 内部监听地址、端口、UUID/密码和内部 XHTTP path 尽量保持不变。
+- V1 只托管 `VLESS + XHTTP + listen=127.0.0.1 + security=none + 单客户端`，其他协议/传输/内部 TLS 一律拒绝发布。
+- Xray 内部监听地址、端口、UUID 和内部 XHTTP path 保持不变。
 - Caddy 负责随机公网 hostname + 固定 path 到本地 Inbound 的转发。
 - x-ui 提供稳定的 `GET /sub/:token` 客户端订阅。
 - V1 的主要操作是“一键全部随机”：一次为所有已发布代理生成新的随机子域名，并以一个批次完成验证、切换和回滚。
@@ -35,6 +36,7 @@ c.y.z
 - 不在 V1 实现 Clash/Mihomo YAML、HWID、复杂多租户订阅。
 - 不在日常轮换中调用 Cloudflare DNS API。
 - 不为了轮换公网地址而修改 Inbound UUID、内部端口或 XHTTP path；path 在轮换前后保持不变。
+- 不兼容 VMess、Trojan、Shadowsocks、WS、HTTP/H2、gRPC、非本地监听、Inbound TLS/REALITY 或自定义公网 SNI 的托管发布。
 - 不整体移植 3x-ui，只参考其服务端链接生成、XHTTP 参数序列化和 raw subscription 思路。
 
 ## 3. 当前 x-ui 基线
@@ -61,7 +63,6 @@ c.y.z
            PublicEndpoint
       host=d8k2m9xq.asdasdasdas.shop
       port=443
-      security=tls
       status=active
                   |
        +----------+----------+
@@ -79,7 +80,7 @@ public -> internal            |
 原则：
 
 - Inbound 是 Xray 内部配置的事实来源。
-- PublicEndpoint 是客户端公网 Host/Port/TLS 信息的事实来源；传输 path 继续由 Inbound 的 StreamSettings 提供。
+- PublicEndpoint 只保存客户端公网 Host/Port 和生命周期；公网 TLS/SNI 固定为当前 Host，传输 path 继续由 Inbound 的 StreamSettings 提供。
 - Subscription 不保存第二份完整节点配置，而是动态读取 Inbound + active PublicEndpoint 生成。
 - Caddy route 由 PublicEndpoint 派生。
 - 一个 Inbound 正常只有一个 active Endpoint；轮换期间允许 pending / active / draining 并存。
@@ -97,8 +98,6 @@ type PublicEndpoint struct {
 
     Host     string
     Port     int
-    Security string
-    SNI      string
 
     Status    string
     CreatedAt int64
@@ -115,7 +114,7 @@ type PublicEndpoint struct {
 
 建议约束：
 
-- `Host` 在当前有效 Endpoint 中必须唯一。
+- `Host` 在全部 Endpoint 历史中必须唯一；retired hostname 永不重新分配。
 - 业务层保证同一 Inbound 最多一个 active Endpoint。
 - 删除 Inbound 时同步清理 Endpoint。
 
@@ -137,7 +136,6 @@ V1 只提供一个默认订阅，复用现有 `Setting` 表：
 ```text
 subscriptionEnable
 subscriptionToken
-subscriptionTitle
 publicBaseDomain
 publicPort
 hostRandomLength
@@ -157,7 +155,7 @@ endpointDrainSeconds = 1800
 
 ## 6. 安全随机值
 
-当前 `util/random/random.go` 使用 `math/rand`。普通 UI 随机值可以继续用，但以下值新增 `crypto/rand` 实现：
+当前 `util/random/random.go` 使用 `math/rand`。普通 UI 随机值可以继续用，但以下值必须使用 `crypto/rand`：
 
 - subscription token
 - public hostname label
@@ -173,14 +171,14 @@ endpointDrainSeconds = 1800
 GenerateInboundLink(inbound, endpoint) (string, error)
 ```
 
-职责：
+职责（严格模式）：
 
-- 从 Inbound 读取协议、UUID/密码、streamSettings 等内部配置。
-- 用 PublicEndpoint 覆盖客户端侧 address、port、TLS/security、SNI/Host；path 继续使用 Inbound 当前 StreamSettings 中的值。
-- V1 支持 VMess、VLESS、Trojan、Shadowsocks。
-- VLESS/XHTTP 正确输出 `type=xhttp`、公网 `path`、`host`、`mode` 和客户端需要的 TLS 参数。
+- 只接受 VLESS + XHTTP + `127.0.0.1` + `security=none` + 单客户端。
+- 从 Inbound 读取 UUID、固定 XHTTP path 和 mode。
+- 用 PublicEndpoint 覆盖客户端侧 address/port，并固定输出 `security=tls`、`host=<PublicEndpoint.Host>`、`sni=<PublicEndpoint.Host>`。
+- 任意不满足严格托管约束的配置直接报错，不做协议兼容或降级。
 
-当前前端 `genVmessLink`、`genVLESSLink`、`genSSLink`、`genTrojanLink` 作为行为基线，同时参考 3x-ui 的服务端 link generator。
+当前前端 VLESS/XHTTP 分享链接和 3x-ui 的服务端 VLESS/XHTTP 生成逻辑作为行为参考。
 
 长期应让“复制链接 / 二维码 / 订阅”全部使用同一个后端 LinkService，避免前后端两套协议序列化逻辑漂移。
 
@@ -237,7 +235,7 @@ Caddy 使用对应 wildcard origin certificate，并长期接受 `*.asdasdasdas.
 # END XUI MANAGED ENDPOINTS
 ```
 
-Managed block 之外的手工配置必须原样保留。更新继续复用现有 `CaddyService` 的 validate -> backup/write -> reload -> rollback。
+对于当前 `publicBaseDomain`，x-ui 采用破坏式所有权：首次托管时删除该域名下旧的 exact-host 站点块以及旧 `*.publicBaseDomain` wildcard 站点块，之后只保留数据库生成的唯一 managed wildcard 站点。其他无关域名的 Caddy 配置保留。更新继续复用现有 `CaddyService` 的 validate -> backup/write -> reload -> rollback。
 
 ### 9.3 固定 path
 
@@ -300,16 +298,16 @@ V1 默认任意关键 Endpoint 失败就整批回滚，避免出现不可预期�
 
 ## 12. 健康检查
 
-发布前至少验证：
+发布前必须做真实传输链路探测，而不是只检查 Caddy 自己返回 204：
 
-- 新随机 hostname 能通过 TLS/CDN 到达 Caddy。
-- host/path matcher 命中正确 route。
-- 固定 path 能正确命中对应 XHTTP/WS 等 transport route。
-- 后端本地端口可达。
+- 临时启动一个使用同 UUID/path/mode 的 Xray VLESS/XHTTP 客户端。
+- 临时客户端通过新 hostname 建立 `TLS/XHTTP -> Cloudflare -> Caddy -> h2c -> 本地 Xray` 连接。
+- 再通过该真实代理链路访问仅用于验证的 204 URL；只有整条 VLESS/XHTTP 链路可用才算成功。
+- 临时 Xray 进程、配置文件和本地代理端口均在探测后清理。
 
 检查应有明确超时、有限重试，并避免在错误信息中泄露 token/credential。
 
-如果普通 HTTP 状态不足以验证 XHTTP，需要基于当前固定 Xray 26.3.27 增加最小 transport-aware probe，并用测试确认。
+探测配置必须用当前固定 Xray 26.3.27 做 `run -test` 自动化校验。
 
 ## 13. Portal / Tunnel 联动
 
@@ -349,7 +347,7 @@ GET /sub/:token
 
 ## 15. 管理页面
 
-新增“订阅 / 公网入口”页面，展示稳定订阅 URL、基础域名、子域名随机长度、drain 时间，以及每个可发布代理的当前公网 Endpoint 和固定 path。
+新增“订阅 / 公网入口”页面，展示稳定订阅 URL、基础域名、子域名随机长度、drain 时间，以及每个严格可发布 VLESS/XHTTP 的当前公网 Endpoint 和固定 path。
 
 每行至少支持：
 
@@ -364,22 +362,23 @@ GET /sub/:token
 
 新增模型继续使用 GORM `AutoMigrate`。
 
-首次启用时不要自动猜测 Caddyfile。提供显式初始化，让管理员为已有 Inbound 填写当前公网 Host、Port、TLS/SNI；path 直接读取 Inbound 当前 StreamSettings。保存为第一条 active PublicEndpoint，并预览最终客户端分享链接。
+首次启用时不要自动猜测 Inbound 与公网 Host 的关系。提供显式初始化，让管理员为已有严格 VLESS/XHTTP Inbound 填写当前公网 Host、Port；公网 TLS/SNI 固定跟随 Host，path 直接读取 Inbound 当前 StreamSettings。第一次应用时同时破坏式接管 `publicBaseDomain` 对应 Caddy 站点。
 
 ## 17. 测试计划
 
 ### LinkService
 
 - VLESS/XHTTP path 保持与 Inbound StreamSettings 一致。
-- XHTTP `mode`、TLS、SNI/Host。
-- VMess、Trojan、Shadowsocks。
-- URL 编码、remark、IPv6 host:port。
+- XHTTP `mode`、公网 TLS、`SNI=Host`。
+- 非 VLESS、非 XHTTP、内部 TLS、非本地监听、多客户端等严格拒绝。
+- URL 编码和 remark。
 
 ### Subscription
 
 - 只输出 Enable + Publish + active endpoint。
 - `a.y.z -> d.y.z` 后订阅立即反映新值。
 - draining Endpoint 不进入新订阅。
+- 任意已发布节点缺 endpoint 或链接生成失败时，整个订阅请求失败，不返回残缺订阅。
 - 多 Inbound 顺序稳定。
 - Base64 可正确解码为多行链接。
 - 无效 token 被拒绝。
@@ -387,9 +386,10 @@ GET /sub/:token
 
 ### Caddy renderer
 
-- Managed block 外内容不变。
+- 当前基础域名下旧 exact-host/wildcard 块被破坏式清理，无关域名配置保持不变。
 - 单节点 / 多节点 / 同 hostname 多 path。
 - hostname 变化时固定 path matcher 保持不变。
+- 同 Host 下较长 path 优先于较短前缀 path。
 - pending + active + draining 并存。
 - retired 不生成 route。
 
@@ -399,6 +399,8 @@ GET /sub/:token
 - validate / reload / health check / DB 切换任一失败都能回滚。
 - rotate-all 全成功只 reload 一次。
 - rotate-all 任意失败保持旧 active。
+- Caddy apply 成功但真实 XHTTP 探测失败时恢复旧 Caddy。
+- DB 状态切换失败时恢复旧 Caddy 并清理 pending。
 
 ## 18. 实施阶段
 
@@ -410,7 +412,7 @@ GET /sub/:token
 - 实现 `GET /sub/:token`。
 - 增加单元测试。
 
-目标：客户端先能用一个稳定 URL 同步多个 x-ui 代理配置。
+目标：客户端先能用一个稳定 URL 同步多个严格托管的 VLESS/XHTTP 配置；任一节点异常时 fail closed。
 
 ### Phase 2：PublicEndpoint 与 Caddy
 
@@ -419,7 +421,7 @@ GET /sub/:token
 - active/draining/retired 状态。
 - 健康检查和回滚。
 
-目标：公网 Host 与 Xray 内部监听配置解耦，同时保持 transport path 不变。
+目标：公网 Host 与固定的 `127.0.0.1 + VLESS/XHTTP security=none` 内部配置解耦，同时保持 transport path 不变，并让 x-ui 成为该 wildcard Caddy 区域的唯一真源。
 
 ### Phase 3：自动随机轮换
 
@@ -445,5 +447,6 @@ GET /sub/:token
 6. Caddy 修改或新 Endpoint 验证失败时，当前 active 配置保持可用。
 7. 批量轮换只执行一次 Caddy reload，并且默认全部成功才切换。
 8. 正常轮换无需 Cloudflare API，也无需重启 Xray。
-9. 轮换 hostname 前后，XHTTP/WS 等 transport path 不发生变化。
+9. 轮换 hostname 前后，XHTTP path 不发生变化；retired hostname 永不重新分配。
 10. LinkService、Subscription、Caddy renderer、rotation rollback 都有自动化测试。
+11. 只有真实 `VLESS/XHTTP -> Cloudflare -> Caddy -> h2c -> Xray` 探测成功，pending 才允许切 active。

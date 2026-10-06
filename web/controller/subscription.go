@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 
 	"x-ui/web/service"
@@ -23,7 +24,11 @@ func (a *SubscriptionController) subscription(c *gin.Context) {
 	if err != nil {
 		c.Header("Cache-Control", "no-store, no-cache, must-revalidate")
 		c.Header("Pragma", "no-cache")
-		c.String(http.StatusNotFound, "Not Found")
+		if errors.Is(err, service.ErrSubscriptionDisabled) || errors.Is(err, service.ErrSubscriptionToken) {
+			c.String(http.StatusNotFound, "Not Found")
+			return
+		}
+		c.String(http.StatusServiceUnavailable, "Subscription temporarily unavailable")
 		return
 	}
 	c.Header("Content-Type", "text/plain; charset=utf-8")

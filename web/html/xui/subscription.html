@@ -39,7 +39,7 @@
                         type="info"
                         show-icon
                         message="稳定订阅 + 一键全部随机子域名"
-                        description="客户端保存一个稳定订阅 URL。点击“全部随机一次”只更换已发布代理的随机子域名，XHTTP/WS path 保持 Inbound 当前配置不变；Cloudflare wildcard DNS 无需修改。">
+                        description="严格模式只托管 VLESS + XHTTP + 127.0.0.1 + security=none 的 Inbound。公网固定使用 Caddy TLS，Caddy 到 Xray 固定使用 h2c；点击“全部随机一次”只更换子域名，XHTTP path 永远保持不变。">
                     </a-alert>
                 </a-card>
 
@@ -48,22 +48,17 @@
                         type="warning"
                         show-icon
                         style="margin-bottom: 16px;"
-                        message="首次迁移注意"
-                        description="x-ui 只维护 Caddyfile 中的 XUI MANAGED ENDPOINTS 区块，不会删除你原来的手工站点。初始化并验证托管入口后，请自行移除与旧 Host 重复的手工 Caddy route；否则旧 Host 即使在 x-ui 中 retired，仍可能被手工配置继续接受。">
+                        message="破坏式接管 Caddy wildcard 区域"
+                        description="首次初始化托管入口时，x-ui 会删除 Caddyfile 中属于当前基础域名的旧 exact-host 和 wildcard 站点块，并由数据库生成唯一的托管 wildcard 站点。其他域名的 Caddy 配置保留。请先确认基础域名填写正确。">
                     </a-alert>
                     <a-form layout="vertical">
                         <a-row :gutter="16">
-                            <a-col :xs="24" :md="8">
+                            <a-col :xs="24" :md="12">
                                 <a-form-item label="启用客户端订阅">
                                     <a-switch v-model="settings.subscriptionEnable"></a-switch>
                                 </a-form-item>
                             </a-col>
-                            <a-col :xs="24" :md="8">
-                                <a-form-item label="订阅名称">
-                                    <a-input v-model.trim="settings.subscriptionTitle" placeholder="x-ui"></a-input>
-                                </a-form-item>
-                            </a-col>
-                            <a-col :xs="24" :md="8">
+                            <a-col :xs="24" :md="12">
                                 <a-form-item label="基础域名">
                                     <a-input v-model.trim="settings.publicBaseDomain" placeholder="asdasdasdas.shop"></a-input>
                                 </a-form-item>
@@ -164,7 +159,7 @@
                             <template v-if="row.active">
                                 <div><code>[[ row.active.host ]]:[[ row.active.port ]]</code></div>
                                 <a-tag color="green">active</a-tag>
-                                <a-tag>[[ row.active.security || 'none' ]]</a-tag>
+                                <a-tag>TLS → h2c</a-tag>
                             </template>
                             <a-tag v-else color="orange">未初始化</a-tag>
                         </template>
@@ -209,7 +204,7 @@
                                 <a-button v-if="row.link" @click="copyText(row.link)">复制链接</a-button>
                                 <a-button v-if="row.link" @click="qrModal.show(row.remark || '代理链接', row.link)">二维码</a-button>
                             </a-space>
-                            <div v-if="!row.supported" style="color:#999; margin-top:6px;">当前协议/传输不支持托管入口</div>
+                            <div v-if="!row.supported" style="color:#999; margin-top:6px;">仅支持 VLESS + XHTTP + 127.0.0.1 + security=none + 单客户端</div>
                         </template>
                     </a-table>
                 </a-card>
@@ -237,15 +232,10 @@
             <a-form-item label="公网端口">
                 <a-input-number style="width:100%" :min="1" :max="65535" v-model="initModal.form.port"></a-input-number>
             </a-form-item>
-            <a-form-item label="Security">
-                <a-input value="tls" disabled></a-input>
-            </a-form-item>
-            <a-form-item label="SNI（可留空，客户端默认使用连接 Host）">
-                <a-input v-model.trim="initModal.form.sni" placeholder="留空"></a-input>
-            </a-form-item>
             <a-form-item label="固定 Path">
                 <a-input :value="initModal.row ? initModal.row.path : ''" disabled></a-input>
             </a-form-item>
+            <a-alert type="info" show-icon message="公网 TLS 与 SNI 固定使用当前 Host；不提供自定义 SNI。"></a-alert>
         </a-form>
     </a-modal>
 </a-layout>
@@ -263,7 +253,6 @@
             settings: {
                 subscriptionEnable: false,
                 subscriptionToken: '',
-                subscriptionTitle: 'x-ui',
                 publicBaseDomain: '',
                 publicPort: 443,
                 hostRandomLength: 10,
@@ -284,7 +273,7 @@
                 visible: false,
                 loading: false,
                 row: null,
-                form: {host: '', port: 443, security: 'tls', sni: ''},
+                form: {host: '', port: 443},
             },
         },
         computed: {
@@ -296,7 +285,8 @@
                 return root + 'sub/' + this.settings.subscriptionToken;
             },
             canRotateAll() {
-                return this.rows.some(row => row.enable && row.publish && row.active);
+                const published = this.rows.filter(row => row.enable && row.publish);
+                return published.length > 0 && published.every(row => row.supported && row.active);
             },
         },
         methods: {
@@ -370,8 +360,6 @@
                 this.initModal.form = {
                     host: '',
                     port: this.settings.publicPort || 443,
-                    security: 'tls',
-                    sni: '',
                 };
                 this.initModal.visible = true;
             },

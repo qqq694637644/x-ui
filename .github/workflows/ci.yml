@@ -87,6 +87,11 @@ jobs:
           cd .build/xray-core-v26.3.27
           go build -trimpath -o "$RUNNER_TEMP/xray-v26.3.27" ./main
 
+      - name: Validate managed endpoint probe config with pinned Xray
+        env:
+          XUI_PROBE_XRAY_BIN: ${{ runner.temp }}/xray-v26.3.27
+        run: go test ./web/service -run TestEndpointProbeConfigAcceptedByBundledXray -count=1
+
       - name: Generate A config with x-ui production generator
         run: |
           go run ./cmd/portal-fixture \

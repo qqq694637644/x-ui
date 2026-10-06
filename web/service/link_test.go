@@ -2,20 +2,30 @@ package service
 
 import (
 	"net/url"
-	"strings"
 	"testing"
 
 	"x-ui/database/model"
 )
 
-func TestGenerateVLESSXHTTPLinkUsesPublicHostAndFixedInboundPath(t *testing.T) {
-	inbound := &model.Inbound{
-		Remark:         "primary",
+func validManagedInboundForTest(id int, remark string, port int, path string) *model.Inbound {
+	return &model.Inbound{
+		Id:             id,
+		UserId:         1,
+		Remark:         remark,
+		Enable:         true,
+		Listen:         "127.0.0.1",
+		Port:           port,
 		Protocol:       model.VLESS,
 		Settings:       `{"clients":[{"id":"11111111-1111-1111-1111-111111111111","flow":""}],"decryption":"none"}`,
-		StreamSettings: `{"network":"xhttp","security":"none","xhttpSettings":{"path":"/q8Fa72Lm9x","host":"","mode":"auto"}}`,
+		StreamSettings: `{"network":"xhttp","security":"none","xhttpSettings":{"path":"` + path + `","host":"","mode":"auto"}}`,
+		Tag:            "managed-test",
+		Sniffing:       `{"enabled":false}`,
 	}
-	endpoint := &model.PublicEndpoint{Host: "d8k2m9xq.asdasdasdas.shop", Port: 443, Security: "tls"}
+}
+
+func TestGenerateManagedVLESSXHTTPLinkUsesPublicHostAndFixedPath(t *testing.T) {
+	inbound := validManagedInboundForTest(1, "primary", 26417, "/q8Fa72Lm9x")
+	endpoint := &model.PublicEndpoint{Host: "d8k2m9xq.asdasdasdas.shop", Port: 443}
 	link, err := (&LinkService{}).GenerateInboundLink(inbound, endpoint)
 	if err != nil {
 		t.Fatalf("GenerateInboundLink() error = %v", err)
@@ -31,38 +41,51 @@ func TestGenerateVLESSXHTTPLinkUsesPublicHostAndFixedInboundPath(t *testing.T) {
 		t.Fatalf("port = %q, want 443", got)
 	}
 	query := parsed.Query()
-	if got := query.Get("type"); got != "xhttp" {
-		t.Fatalf("type = %q, want xhttp", got)
+	checks := map[string]string{
+		"type":     "xhttp",
+		"path":     "/q8Fa72Lm9x",
+		"mode":     "auto",
+		"host":     endpoint.Host,
+		"security": "tls",
+		"sni":      endpoint.Host,
 	}
-	if got := query.Get("path"); got != "/q8Fa72Lm9x" {
-		t.Fatalf("path = %q, want fixed inbound path", got)
-	}
-	if got := query.Get("mode"); got != "auto" {
-		t.Fatalf("mode = %q, want auto", got)
-	}
-	if got := query.Get("host"); got != endpoint.Host {
-		t.Fatalf("host = %q, want public endpoint host %q", got, endpoint.Host)
-	}
-	if got := query.Get("security"); got != "tls" {
-		t.Fatalf("security = %q, want tls", got)
-	}
-	if got := query.Get("sni"); got != endpoint.Host {
-		t.Fatalf("sni = %q, want public endpoint host %q", got, endpoint.Host)
+	for key, want := range checks {
+		if got := query.Get(key); got != want {
+			t.Fatalf("%s = %q, want %q", key, got, want)
+		}
 	}
 }
 
-func TestGenerateVLESSXHTTPLinkDoesNotInventRandomPath(t *testing.T) {
-	inbound := &model.Inbound{
-		Protocol:       model.VLESS,
-		Settings:       `{"clients":[{"id":"11111111-1111-1111-1111-111111111111"}],"decryption":"none"}`,
-		StreamSettings: `{"network":"xhttp","security":"none","xhttpSettings":{"path":"/stable-path","host":"","mode":"auto"}}`,
+func TestValidateManagedInboundRejectsUnsupportedShapes(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*model.Inbound)
+	}{
+		{name: "vmess", mutate: func(in *model.Inbound) { in.Protocol = model.VMess }},
+		{name: "websocket", mutate: func(in *model.Inbound) {
+			in.StreamSettings = `{"network":"ws","security":"none","wsSettings":{"path":"/fixed"}}`
+		}},
+		{name: "internal tls", mutate: func(in *model.Inbound) {
+			in.StreamSettings = `{"network":"xhttp","security":"tls","xhttpSettings":{"path":"/fixed","host":"","mode":"auto"}}`
+		}},
+		{name: "non local listen", mutate: func(in *model.Inbound) { in.Listen = "0.0.0.0" }},
+		{name: "internal xhttp host", mutate: func(in *model.Inbound) {
+			in.StreamSettings = `{"network":"xhttp","security":"none","xhttpSettings":{"path":"/fixed","host":"internal.example","mode":"auto"}}`
+		}},
+		{name: "multiple clients", mutate: func(in *model.Inbound) {
+			in.Settings = `{"clients":[{"id":"11111111-1111-1111-1111-111111111111"},{"id":"22222222-2222-2222-2222-222222222222"}],"decryption":"none"}`
+		}},
+		{name: "flow", mutate: func(in *model.Inbound) {
+			in.Settings = `{"clients":[{"id":"11111111-1111-1111-1111-111111111111","flow":"xtls-rprx-vision"}],"decryption":"none"}`
+		}},
 	}
-	endpoint := &model.PublicEndpoint{Host: "r1.example.com", Port: 443, Security: "tls"}
-	link, err := (&LinkService{}).GenerateInboundLink(inbound, endpoint)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(link, "path=%2Fstable-path") {
-		t.Fatalf("link does not preserve fixed path: %s", link)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			inbound := validManagedInboundForTest(1, "strict", 26417, "/fixed")
+			tc.mutate(inbound)
+			if _, err := validateManagedInbound(inbound); err == nil {
+				t.Fatalf("validateManagedInbound() unexpectedly accepted %s", tc.name)
+			}
+		})
 	}
 }

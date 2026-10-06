@@ -97,6 +97,9 @@ func (s *InboundService) assignUniqueInboundTag(inbound *model.Inbound, ignoreID
 }
 
 func (s *InboundService) AddInbound(inbound *model.Inbound) error {
+	// Public subscription state is only enabled through EndpointService after
+	// an active endpoint and strict managed configuration have been validated.
+	inbound.Publish = false
 	if err := xray_util.ValidateXray26327StreamSettings(inbound.StreamSettings); err != nil {
 		return err
 	}
@@ -117,6 +120,7 @@ func (s *InboundService) AddInbounds(inbounds []*model.Inbound) error {
 	reservedTags := make(map[string]struct{}, len(inbounds))
 	endpoints := make([]listenerEndpoint, 0, len(inbounds))
 	for _, inbound := range inbounds {
+		inbound.Publish = false
 		if err := xray_util.ValidateXray26327StreamSettings(inbound.StreamSettings); err != nil {
 			return err
 		}
@@ -176,7 +180,8 @@ func (s *InboundService) DelInbound(id int) error {
 	if tx.Error != nil {
 		return tx.Error
 	}
-	if err := tx.Where("inbound_id = ?", id).Delete(&model.PublicEndpoint{}).Error; err != nil {
+	if err := tx.Model(&model.PublicEndpoint{}).Where("inbound_id = ?", id).
+		Updates(map[string]interface{}{"status": model.EndpointStatusRetired, "retire_at": time.Now().Unix()}).Error; err != nil {
 		tx.Rollback()
 		return err
 	}
@@ -250,6 +255,18 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
 	// Preserve the existing unique tag when the listen port changes. Multiple
 	// inbounds may now share a numeric port when their address/protocols do not
 	// overlap, so a port-only tag is no longer unique.
+	if oldInbound.Publish {
+		if _, err := validateManagedInbound(oldInbound); err != nil {
+			return common.NewError("已发布入站不允许保存为非托管 VLESS/XHTTP 配置: ", err)
+		}
+		endpoint, err := (&EndpointService{}).activeEndpoint(oldInbound.Id)
+		if err != nil {
+			return common.NewError("已发布入站缺少 active 公网入口: ", err)
+		}
+		if _, err := (&LinkService{}).GenerateInboundLink(oldInbound, endpoint); err != nil {
+			return common.NewError("已发布入站无法生成严格订阅链接: ", err)
+		}
+	}
 
 	db := database.GetDB()
 	if err := db.Save(oldInbound).Error; err != nil {

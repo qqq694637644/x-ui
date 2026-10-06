@@ -1,11 +1,7 @@
 package service
 
 import (
-	"crypto/tls"
 	"fmt"
-	"net"
-	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,17 +17,26 @@ var endpointMutationLock sync.Mutex
 
 type EndpointService struct {
 	inboundService InboundService
-	tunnelService  TunnelService
 	settingService SettingService
 	caddyService   CaddyService
 	linkService    LinkService
+
+	applyManagedSiteHook func(baseDomain string, block string) (string, error)
+	restoreCaddyHook     func(content string) error
+	probeEndpointHook    func(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error
+	commitRotationHook   func(items []rotationItem, retireAt int64) error
 }
 
 type EndpointInit struct {
-	Host     string `json:"host" form:"host"`
-	Port     int    `json:"port" form:"port"`
-	Security string `json:"security" form:"security"`
-	SNI      string `json:"sni" form:"sni"`
+	Host string `json:"host" form:"host"`
+	Port int    `json:"port" form:"port"`
+}
+
+type rotationItem struct {
+	inbound *model.Inbound
+	old     *model.PublicEndpoint
+	next    *model.PublicEndpoint
+	spec    *managedInboundSpec
 }
 
 type EndpointRow struct {
@@ -63,7 +68,7 @@ type RotationResult struct {
 func (s *EndpointService) SyncManagedRoutes() error {
 	endpointMutationLock.Lock()
 	defer endpointMutationLock.Unlock()
-	_, _, err := s.applyCurrentRoutes()
+	_, err := s.applyCurrentRoutes()
 	return err
 }
 
@@ -97,7 +102,7 @@ func (s *EndpointService) RecoverPending() error {
 		Update("status", model.EndpointStatusRetired).Error; err != nil {
 		return err
 	}
-	if _, _, err := s.applyCurrentRoutes(); err != nil {
+	if _, err := s.applyCurrentRoutes(); err != nil {
 		_ = database.GetDB().Model(&model.PublicEndpoint{}).Where("id IN ?", ids).
 			Update("status", model.EndpointStatusPending).Error
 		return err
@@ -128,19 +133,19 @@ func (s *EndpointService) List(userID int) ([]*EndpointRow, error) {
 	}
 	rows := make([]*EndpointRow, 0, len(inbounds))
 	for _, inbound := range inbounds {
-		transport, transportErr := inboundTransportInfo(inbound)
+		spec, specErr := validateManagedInbound(inbound)
 		row := &EndpointRow{
 			InboundId: inbound.Id,
 			Remark:    inbound.Remark,
 			Enable:    inbound.Enable,
 			Publish:   inbound.Publish,
 			Protocol:  inbound.Protocol,
-			Supported: transportErr == nil && managedNetworkSupported(transport.Network) && linkProtocolSupported(inbound.Protocol),
+			Supported: specErr == nil,
 			Endpoints: byInbound[inbound.Id],
 		}
-		if transportErr == nil {
-			row.Network = transport.Network
-			row.Path = transport.Path
+		if specErr == nil {
+			row.Network = "xhttp"
+			row.Path = spec.Path
 		}
 		for _, endpoint := range row.Endpoints {
 			if endpoint.Status == model.EndpointStatusActive {
@@ -148,7 +153,7 @@ func (s *EndpointService) List(userID int) ([]*EndpointRow, error) {
 				break
 			}
 		}
-		if row.Active != nil && linkProtocolSupported(inbound.Protocol) {
+		if row.Active != nil && specErr == nil {
 			if link, linkErr := s.linkService.GenerateInboundLink(inbound, row.Active); linkErr == nil {
 				row.Link = link
 			}
@@ -166,15 +171,9 @@ func (s *EndpointService) Initialize(userID int, inboundID int, form *EndpointIn
 	if err != nil {
 		return nil, err
 	}
-	transport, err := inboundTransportInfo(inbound)
+	spec, err := validateManagedInbound(inbound)
 	if err != nil {
 		return nil, err
-	}
-	if !managedNetworkSupported(transport.Network) {
-		return nil, fmt.Errorf("transport %s is not supported by managed Caddy endpoints", transport.Network)
-	}
-	if !linkProtocolSupported(inbound.Protocol) {
-		return nil, fmt.Errorf("protocol %s cannot be published as a subscription link", inbound.Protocol)
 	}
 	settings, err := s.settingService.GetEndpointSettings()
 	if err != nil {
@@ -188,7 +187,7 @@ func (s *EndpointService) Initialize(userID int, inboundID int, form *EndpointIn
 	if host == "" {
 		return nil, fmt.Errorf("public host is required")
 	}
-	if net.ParseIP(host) == nil && !validDomain(host) {
+	if !validDomain(host) {
 		return nil, fmt.Errorf("public host is invalid: %s", host)
 	}
 	suffix := "." + settings.PublicBaseDomain
@@ -205,13 +204,6 @@ func (s *EndpointService) Initialize(userID int, inboundID int, form *EndpointIn
 	}
 	if port != settings.PublicPort {
 		return nil, fmt.Errorf("public endpoint port must match configured public port %d", settings.PublicPort)
-	}
-	security := strings.ToLower(strings.TrimSpace(form.Security))
-	if security == "" {
-		security = "tls"
-	}
-	if security != "tls" {
-		return nil, fmt.Errorf("managed CDN endpoints currently require TLS")
 	}
 	var count int64
 	if err := database.GetDB().Model(model.PublicEndpoint{}).
@@ -230,21 +222,27 @@ func (s *EndpointService) Initialize(userID int, inboundID int, form *EndpointIn
 		InboundId: inboundID,
 		Host:      host,
 		Port:      port,
-		Security:  security,
-		SNI:       strings.TrimSpace(form.SNI),
 		Status:    model.EndpointStatusPending,
 		CreatedAt: time.Now().Unix(),
 	}
 	if err := database.GetDB().Create(endpoint).Error; err != nil {
 		return nil, err
 	}
-	oldContent, _, err := s.applyCurrentRoutes()
+	oldContent, err := s.applyCurrentRoutes()
 	if err != nil {
 		_ = database.GetDB().Delete(endpoint).Error
 		return nil, err
 	}
+	if err := s.probeManagedEndpoint(inbound, endpoint, managedHealthPath(transportMatchPath(spec.Path))); err != nil {
+		restoreErr := s.restoreCaddy(oldContent)
+		_ = database.GetDB().Delete(endpoint).Error
+		if restoreErr != nil {
+			return nil, common.NewError("初始化公网入口真实链路探测失败: ", err, "; Caddy 回滚失败: ", restoreErr)
+		}
+		return nil, err
+	}
 	if err := database.GetDB().Model(endpoint).Update("status", model.EndpointStatusActive).Error; err != nil {
-		restoreErr := s.caddyService.RestoreContent(oldContent)
+		restoreErr := s.restoreCaddy(oldContent)
 		_ = database.GetDB().Delete(endpoint).Error
 		if restoreErr != nil {
 			return nil, common.NewError("初始化公网入口状态切换失败: ", err, "; Caddy 回滚失败: ", restoreErr)
@@ -261,24 +259,15 @@ func (s *EndpointService) SetPublish(userID int, inboundID int, publish bool) er
 		return err
 	}
 	if publish {
-		if !linkProtocolSupported(inbound.Protocol) {
-			return fmt.Errorf("protocol %s cannot be published", inbound.Protocol)
+		if _, err := validateManagedInbound(inbound); err != nil {
+			return err
 		}
-		transport, err := inboundTransportInfo(inbound)
+		endpoint, err := s.activeEndpoint(inboundID)
 		if err != nil {
-			return err
+			return fmt.Errorf("initialize a public endpoint before publishing this inbound: %w", err)
 		}
-		if !managedNetworkSupported(transport.Network) {
-			return fmt.Errorf("transport %s is not supported by managed endpoints", transport.Network)
-		}
-		var count int64
-		if err := database.GetDB().Model(model.PublicEndpoint{}).
-			Where("inbound_id = ? AND status = ?", inboundID, model.EndpointStatusActive).
-			Count(&count).Error; err != nil {
-			return err
-		}
-		if count == 0 {
-			return fmt.Errorf("initialize a public endpoint before publishing this inbound")
+		if _, err := s.linkService.GenerateInboundLink(inbound, endpoint); err != nil {
+			return fmt.Errorf("published inbound validation failed: %w", err)
 		}
 	}
 	return database.GetDB().Model(&model.Inbound{}).Where("id = ? AND user_id = ?", inboundID, userID).
@@ -323,7 +312,7 @@ func (s *EndpointService) UpdateSettings(settings *entity.EndpointSettings) erro
 	if count == 0 {
 		return nil
 	}
-	if _, _, err := s.applyCurrentRoutes(); err != nil {
+	if _, err := s.applyCurrentRoutes(); err != nil {
 		_ = s.settingService.UpdateEndpointSettings(old)
 		return err
 	}
@@ -350,46 +339,37 @@ func (s *EndpointService) RotateAll(userID int) (*RotationResult, error) {
 		return nil, fmt.Errorf("no enabled and published inbounds")
 	}
 
-	type pendingItem struct {
-		inbound *model.Inbound
-		old     *model.PublicEndpoint
-		next    *model.PublicEndpoint
-		path    string
-	}
-	items := make([]pendingItem, 0, len(inbounds))
+	items := make([]rotationItem, 0, len(inbounds))
 	now := time.Now().Unix()
 	reservedHosts := map[string]bool{}
 	for _, inbound := range inbounds {
-		transport, err := inboundTransportInfo(inbound)
+		spec, err := validateManagedInbound(inbound)
 		if err != nil {
-			return nil, err
-		}
-		if !managedNetworkSupported(transport.Network) {
-			return nil, fmt.Errorf("inbound %d transport %s is not supported by managed rotation", inbound.Id, transport.Network)
+			return nil, fmt.Errorf("published inbound %d is not eligible for managed rotation: %w", inbound.Id, err)
 		}
 		old, err := s.activeEndpoint(inbound.Id)
 		if err != nil {
 			return nil, fmt.Errorf("inbound %d has no active endpoint: %w", inbound.Id, err)
+		}
+		if _, err := s.linkService.GenerateInboundLink(inbound, old); err != nil {
+			return nil, fmt.Errorf("published inbound %d cannot generate its current subscription link: %w", inbound.Id, err)
 		}
 		host, err := s.generateUniqueHost(settings.PublicBaseDomain, settings.HostRandomLength, reservedHosts)
 		if err != nil {
 			return nil, err
 		}
 		reservedHosts[host] = true
-		sni := old.SNI
-		if strings.EqualFold(strings.TrimSpace(sni), strings.TrimSpace(old.Host)) {
-			sni = host
-		}
 		next := &model.PublicEndpoint{
 			InboundId: inbound.Id,
 			Host:      host,
 			Port:      settings.PublicPort,
-			Security:  old.Security,
-			SNI:       sni,
 			Status:    model.EndpointStatusPending,
 			CreatedAt: now,
 		}
-		items = append(items, pendingItem{inbound: inbound, old: old, next: next, path: transport.Path})
+		if _, err := s.linkService.GenerateInboundLink(inbound, next); err != nil {
+			return nil, fmt.Errorf("published inbound %d cannot generate the next subscription link: %w", inbound.Id, err)
+		}
+		items = append(items, rotationItem{inbound: inbound, old: old, next: next, spec: spec})
 	}
 
 	tx := database.GetDB().Begin()
@@ -407,65 +387,40 @@ func (s *EndpointService) RotateAll(userID int) (*RotationResult, error) {
 	}
 
 	pendingIDs := make([]int, 0, len(items))
-	pendingHosts := map[string]bool{}
-	securityByHost := map[string]string{}
 	for _, item := range items {
 		pendingIDs = append(pendingIDs, item.next.Id)
-		pendingHosts[item.next.Host] = true
-		securityByHost[item.next.Host] = item.next.Security
 	}
 
-	oldContent, probes, err := s.applyCurrentRoutes()
+	oldContent, err := s.applyCurrentRoutes()
 	if err != nil {
 		s.deletePending(pendingIDs)
 		return nil, err
 	}
-	if err := s.healthCheckPending(probes, pendingHosts, securityByHost, settings.PublicPort); err != nil {
-		restoreErr := s.caddyService.RestoreContent(oldContent)
-		s.deletePending(pendingIDs)
-		if restoreErr != nil {
-			return nil, common.NewError("new endpoints failed health check: ", err, "; caddy rollback failed: ", restoreErr)
+	for _, item := range items {
+		healthPath := managedHealthPath(transportMatchPath(item.spec.Path))
+		if err := s.probeManagedEndpoint(item.inbound, item.next, healthPath); err != nil {
+			restoreErr := s.restoreCaddy(oldContent)
+			s.deletePending(pendingIDs)
+			if restoreErr != nil {
+				return nil, common.NewError("new endpoint real-chain probe failed: ", err, "; caddy rollback failed: ", restoreErr)
+			}
+			return nil, fmt.Errorf("new endpoint real-chain probe failed for %s: %w", item.next.Host, err)
 		}
-		return nil, err
 	}
 
-	switchTx := database.GetDB().Begin()
-	if switchTx.Error != nil {
-		s.deletePending(pendingIDs)
-		return nil, s.rollbackCaddy(oldContent, switchTx.Error)
-	}
 	retireAt := time.Now().Add(time.Duration(settings.EndpointDrainSeconds) * time.Second).Unix()
+	if err := s.commitRotation(items, retireAt); err != nil {
+		s.deletePending(pendingIDs)
+		return nil, s.rollbackCaddy(oldContent, err)
+	}
 	result := &RotationResult{Items: make([]RotationPair, 0, len(items))}
 	for _, item := range items {
-		if err := switchTx.Model(&model.PublicEndpoint{}).Where("id = ?", item.old.Id).
-			Updates(map[string]interface{}{"status": model.EndpointStatusDraining, "retire_at": retireAt}).Error; err != nil {
-			switchTx.Rollback()
-			s.deletePending(pendingIDs)
-			return nil, s.rollbackCaddy(oldContent, err)
-		}
-		if err := switchTx.Model(&model.PublicEndpoint{}).Where("id = ?", item.next.Id).
-			Updates(map[string]interface{}{"status": model.EndpointStatusActive, "retire_at": 0}).Error; err != nil {
-			switchTx.Rollback()
-			s.deletePending(pendingIDs)
-			return nil, s.rollbackCaddy(oldContent, err)
-		}
-		if err := switchTx.Model(&model.Tunnel{}).
-			Where("mode = ? AND portal_transport = ? AND remote_address = ?", TunnelModePortal, PortalTransportXHTTP, item.old.Host).
-			Update("remote_address", item.next.Host).Error; err != nil {
-			switchTx.Rollback()
-			s.deletePending(pendingIDs)
-			return nil, s.rollbackCaddy(oldContent, err)
-		}
 		result.Items = append(result.Items, RotationPair{
 			InboundId: item.inbound.Id,
 			OldHost:   item.old.Host,
 			NewHost:   item.next.Host,
-			Path:      item.path,
+			Path:      item.spec.Path,
 		})
-	}
-	if err := switchTx.Commit().Error; err != nil {
-		s.deletePending(pendingIDs)
-		return nil, s.rollbackCaddy(oldContent, err)
 	}
 	result.Count = len(result.Items)
 	return result, nil
@@ -494,7 +449,7 @@ func (s *EndpointService) Retire(userID int, endpointID int) error {
 		Updates(map[string]interface{}{"status": model.EndpointStatusRetired, "retire_at": time.Now().Unix()}).Error; err != nil {
 		return err
 	}
-	if _, _, err := s.applyCurrentRoutes(); err != nil {
+	if _, err := s.applyCurrentRoutes(); err != nil {
 		_ = database.GetDB().Model(&endpoint).
 			Updates(map[string]interface{}{"status": oldStatus, "retire_at": oldRetireAt}).Error
 		return err
@@ -523,7 +478,7 @@ func (s *EndpointService) RetireExpired() error {
 		Update("status", model.EndpointStatusRetired).Error; err != nil {
 		return err
 	}
-	if _, _, err := s.applyCurrentRoutes(); err != nil {
+	if _, err := s.applyCurrentRoutes(); err != nil {
 		_ = database.GetDB().Model(&model.PublicEndpoint{}).Where("id IN ?", ids).
 			Update("status", model.EndpointStatusDraining).Error
 		return err
@@ -531,24 +486,24 @@ func (s *EndpointService) RetireExpired() error {
 	return nil
 }
 
-func (s *EndpointService) applyCurrentRoutes() (string, []ManagedProbe, error) {
+func (s *EndpointService) applyCurrentRoutes() (string, error) {
 	settings, err := s.settingService.GetEndpointSettings()
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 	routes, err := s.managedRoutes()
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
-	block, probes, err := RenderManagedCaddy(settings.PublicBaseDomain, settings.PublicPort, settings.CaddyTLSCertFile, settings.CaddyTLSKeyFile, routes)
+	block, err := RenderManagedCaddy(settings.PublicBaseDomain, settings.PublicPort, settings.CaddyTLSCertFile, settings.CaddyTLSKeyFile, routes)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
-	oldContent, _, err := s.caddyService.ApplyManagedBlock(block)
+	oldContent, err := s.applyManagedSite(settings.PublicBaseDomain, block)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
-	return oldContent, probes, nil
+	return oldContent, nil
 }
 
 func (s *EndpointService) managedRoutes() ([]ManagedRoute, error) {
@@ -608,18 +563,14 @@ func (s *EndpointService) managedRoutes() ([]ManagedRoute, error) {
 		if inbound == nil || !inbound.Enable {
 			continue
 		}
-		transport, err := inboundTransportInfo(inbound)
+		spec, err := validateManagedInbound(inbound)
 		if err != nil {
-			return nil, err
-		}
-		if !managedNetworkSupported(transport.Network) {
-			return nil, fmt.Errorf("inbound %d transport %s cannot be rendered through Caddy", inbound.Id, transport.Network)
+			return nil, fmt.Errorf("managed inbound %d is invalid: %w", inbound.Id, err)
 		}
 		routes = append(routes, ManagedRoute{
 			Host:         endpoint.Host,
-			Path:         transportMatchPath(transport.Path),
-			Network:      transport.Network,
-			UpstreamHost: inbound.Listen,
+			Path:         transportMatchPath(spec.Path),
+			UpstreamHost: "127.0.0.1",
 			UpstreamPort: inbound.Port,
 			Kind:         "inbound",
 		})
@@ -627,7 +578,6 @@ func (s *EndpointService) managedRoutes() ([]ManagedRoute, error) {
 			routes = append(routes, ManagedRoute{
 				Host:         endpoint.Host,
 				Path:         transportMatchPath(portal.XHttpPath),
-				Network:      "xhttp",
 				UpstreamHost: "127.0.0.1",
 				UpstreamPort: portal.PortalListenPort,
 				Kind:         "portal",
@@ -637,66 +587,58 @@ func (s *EndpointService) managedRoutes() ([]ManagedRoute, error) {
 	return routes, nil
 }
 
-func (s *EndpointService) healthCheckPending(probes []ManagedProbe, pendingHosts map[string]bool, securityByHost map[string]string, publicPort int) error {
-	filtered := make([]ManagedProbe, 0)
-	for _, probe := range probes {
-		if pendingHosts[probe.Host] {
-			filtered = append(filtered, probe)
-		}
+func (s *EndpointService) applyManagedSite(baseDomain string, block string) (string, error) {
+	if s.applyManagedSiteHook != nil {
+		return s.applyManagedSiteHook(baseDomain, block)
 	}
-	if len(filtered) == 0 {
-		return fmt.Errorf("no health probes were generated for pending endpoints")
+	oldContent, _, err := s.caddyService.ApplyManagedSite(baseDomain, block)
+	if err != nil {
+		return "", err
 	}
-	localSeen := map[string]bool{}
-	for _, probe := range filtered {
-		localTarget := net.JoinHostPort(strings.Trim(probe.LocalHost, "[]"), strconv.Itoa(probe.LocalPort))
-		if !localSeen[localTarget] {
-			localSeen[localTarget] = true
-			conn, err := net.DialTimeout("tcp", localTarget, 2*time.Second)
-			if err != nil {
-				return fmt.Errorf("local upstream %s is unreachable: %w", localTarget, err)
-			}
-			_ = conn.Close()
-		}
+	return oldContent, nil
+}
 
-		scheme := "https"
-		if strings.EqualFold(securityByHost[probe.Host], "none") {
-			scheme = "http"
+func (s *EndpointService) restoreCaddy(content string) error {
+	if s.restoreCaddyHook != nil {
+		return s.restoreCaddyHook(content)
+	}
+	return s.caddyService.RestoreContent(content)
+}
+
+func (s *EndpointService) probeManagedEndpoint(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error {
+	if s.probeEndpointHook != nil {
+		return s.probeEndpointHook(inbound, endpoint, healthPath)
+	}
+	return probeVLESSXHTTPEndpoint(inbound, endpoint, healthPath)
+}
+
+func (s *EndpointService) commitRotation(items []rotationItem, retireAt int64) error {
+	if s.commitRotationHook != nil {
+		return s.commitRotationHook(items, retireAt)
+	}
+	tx := database.GetDB().Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	for _, item := range items {
+		if err := tx.Model(&model.PublicEndpoint{}).Where("id = ?", item.old.Id).
+			Updates(map[string]interface{}{"status": model.EndpointStatusDraining, "retire_at": retireAt}).Error; err != nil {
+			tx.Rollback()
+			return err
 		}
-		hostPort := probe.Host
-		if (scheme == "https" && publicPort != 443) || (scheme == "http" && publicPort != 80) {
-			hostPort = net.JoinHostPort(probe.Host, strconv.Itoa(publicPort))
+		if err := tx.Model(&model.PublicEndpoint{}).Where("id = ?", item.next.Id).
+			Updates(map[string]interface{}{"status": model.EndpointStatusActive, "retire_at": 0}).Error; err != nil {
+			tx.Rollback()
+			return err
 		}
-		target := scheme + "://" + hostPort + probe.Path
-		var lastErr error
-		for attempt := 0; attempt < 3; attempt++ {
-			client := &http.Client{
-				Timeout:   5 * time.Second,
-				Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}},
-				CheckRedirect: func(req *http.Request, via []*http.Request) error {
-					return http.ErrUseLastResponse
-				},
-			}
-			req, _ := http.NewRequest(http.MethodGet, target, nil)
-			req.Header.Set("Cache-Control", "no-cache")
-			resp, err := client.Do(req)
-			if err == nil {
-				_ = resp.Body.Close()
-				if resp.StatusCode == http.StatusNoContent {
-					lastErr = nil
-					break
-				}
-				lastErr = fmt.Errorf("health URL %s returned HTTP %d", target, resp.StatusCode)
-			} else {
-				lastErr = err
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-		if lastErr != nil {
-			return fmt.Errorf("public endpoint health check failed for %s: %w", probe.Host, lastErr)
+		if err := tx.Model(&model.Tunnel{}).
+			Where("mode = ? AND portal_transport = ? AND remote_address = ?", TunnelModePortal, PortalTransportXHTTP, item.old.Host).
+			Update("remote_address", item.next.Host).Error; err != nil {
+			tx.Rollback()
+			return err
 		}
 	}
-	return nil
+	return tx.Commit().Error
 }
 
 func (s *EndpointService) activeEndpoint(inboundID int) (*model.PublicEndpoint, error) {
@@ -720,7 +662,7 @@ func (s *EndpointService) getOwnedInbound(userID int, inboundID int) (*model.Inb
 func (s *EndpointService) ensureHostAvailable(host string) error {
 	var count int64
 	if err := database.GetDB().Model(model.PublicEndpoint{}).
-		Where("host = ? AND status != ?", host, model.EndpointStatusRetired).Count(&count).Error; err != nil {
+		Where("host = ?", host).Count(&count).Error; err != nil {
 		return err
 	}
 	if count > 0 {
@@ -755,19 +697,10 @@ func (s *EndpointService) deletePending(ids []int) {
 }
 
 func (s *EndpointService) rollbackCaddy(oldContent string, cause error) error {
-	if restoreErr := s.caddyService.RestoreContent(oldContent); restoreErr != nil {
+	if restoreErr := s.restoreCaddy(oldContent); restoreErr != nil {
 		return common.NewError("endpoint transaction failed: ", cause, "; caddy rollback failed: ", restoreErr)
 	}
 	return cause
-}
-
-func managedNetworkSupported(network string) bool {
-	switch strings.ToLower(strings.TrimSpace(network)) {
-	case "xhttp", "ws", "http", "grpc":
-		return true
-	default:
-		return false
-	}
 }
 
 func transportMatchPath(value string) string {
@@ -775,13 +708,4 @@ func transportMatchPath(value string) string {
 		value = value[:index]
 	}
 	return normalizeManagedPath(value)
-}
-
-func linkProtocolSupported(protocol model.Protocol) bool {
-	switch protocol {
-	case model.VMess, model.VLESS, model.Trojan, model.Shadowsocks:
-		return true
-	default:
-		return false
-	}
 }

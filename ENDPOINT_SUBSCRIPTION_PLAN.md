@@ -23,18 +23,18 @@ c.y.z
 核心目标：
 
 - 每个可发布 Inbound 拥有独立 PublicEndpoint。
-- PublicEndpoint 的 hostname 和公网 path 可以随机轮换。
+- PublicEndpoint 只随机轮换二级子域名（本文指 `<random>.asdasdasdas.shop` 这一层）；path 不随机，始终沿用对应 Inbound 当前配置。
 - Xray 内部监听地址、端口、UUID/密码和内部 XHTTP path 尽量保持不变。
-- Caddy 负责公网 hostname/path 到本地 Inbound 的转发与 path rewrite。
+- Caddy 负责随机公网 hostname + 固定 path 到本地 Inbound 的转发。
 - x-ui 提供稳定的 `GET /sub/:token` 客户端订阅。
-- 单节点和全部节点都支持安全轮换、健康检查与回滚。
+- V1 的主要操作是“一键全部随机”：一次为所有已发布代理生成新的随机子域名，并以一个批次完成验证、切换和回滚。
 
 ## 2. 非目标
 
 - 不从第三方 URL 拉取别人的订阅。
 - 不在 V1 实现 Clash/Mihomo YAML、HWID、复杂多租户订阅。
 - 不在日常轮换中调用 Cloudflare DNS API。
-- 不为了轮换公网地址而修改 Inbound UUID、内部端口或内部 XHTTP path。
+- 不为了轮换公网地址而修改 Inbound UUID、内部端口或 XHTTP path；path 在轮换前后保持不变。
 - 不整体移植 3x-ui，只参考其服务端链接生成、XHTTP 参数序列化和 raw subscription 思路。
 
 ## 3. 当前 x-ui 基线
@@ -61,7 +61,6 @@ c.y.z
            PublicEndpoint
       host=d8k2m9xq.asdasdasdas.shop
       port=443
-      path=/P9xKa2LmQ7
       security=tls
       status=active
                   |
@@ -80,7 +79,7 @@ public -> internal            |
 原则：
 
 - Inbound 是 Xray 内部配置的事实来源。
-- PublicEndpoint 是客户端公网连接信息的事实来源。
+- PublicEndpoint 是客户端公网 Host/Port/TLS 信息的事实来源；传输 path 继续由 Inbound 的 StreamSettings 提供。
 - Subscription 不保存第二份完整节点配置，而是动态读取 Inbound + active PublicEndpoint 生成。
 - Caddy route 由 PublicEndpoint 派生。
 - 一个 Inbound 正常只有一个 active Endpoint；轮换期间允许 pending / active / draining 并存。
@@ -98,7 +97,6 @@ type PublicEndpoint struct {
 
     Host     string
     Port     int
-    Path     string
     Security string
     SNI      string
 
@@ -117,7 +115,7 @@ type PublicEndpoint struct {
 
 建议约束：
 
-- `Host + Path` 唯一。
+- `Host` 在当前有效 Endpoint 中必须唯一。
 - 业务层保证同一 Inbound 最多一个 active Endpoint。
 - 删除 Inbound 时同步清理 Endpoint。
 
@@ -143,7 +141,6 @@ subscriptionTitle
 publicBaseDomain
 publicPort
 hostRandomLength
-pathRandomLength
 endpointDrainSeconds
 ```
 
@@ -153,7 +150,6 @@ endpointDrainSeconds
 publicBaseDomain     = asdasdasdas.shop
 publicPort           = 443
 hostRandomLength     = 10
-pathRandomLength     = 16
 endpointDrainSeconds = 1800
 ```
 
@@ -165,9 +161,7 @@ endpointDrainSeconds = 1800
 
 - subscription token
 - public hostname label
-- public path
-
-建议：hostname 使用 `[a-z0-9]` 10-14 位；path 使用 `[A-Za-z0-9]` 16 位左右；subscription token 至少 32 字节随机数据并使用 base64url 或 hex 编码。
+建议：随机子域名 label 使用 `[a-z0-9]` 10-14 位，最终生成 `<random>.<publicBaseDomain>`；subscription token 至少 32 字节随机数据并使用 base64url 或 hex 编码。XHTTP/WS 等 path 不参与随机化。
 
 订阅 token 视为 bearer secret：不写日志、只在登录管理页展示、允许手动重新生成。
 
@@ -182,7 +176,7 @@ GenerateInboundLink(inbound, endpoint) (string, error)
 职责：
 
 - 从 Inbound 读取协议、UUID/密码、streamSettings 等内部配置。
-- 用 PublicEndpoint 覆盖客户端侧 address、port、path、TLS/security、SNI/Host。
+- 用 PublicEndpoint 覆盖客户端侧 address、port、TLS/security、SNI/Host；path 继续使用 Inbound 当前 StreamSettings 中的值。
 - V1 支持 VMess、VLESS、Trojan、Shadowsocks。
 - VLESS/XHTTP 正确输出 `type=xhttp`、公网 `path`、`host`、`mode` 和客户端需要的 TLS 参数。
 
@@ -217,7 +211,7 @@ Content-Type: text/plain; charset=utf-8
 Cache-Control: no-store
 ```
 
-订阅 URL 长期稳定；节点 hostname/path 可以变化，但 token 默认保持不变。
+订阅 URL 长期稳定；节点 hostname 可以变化，但 path 保持与 Inbound 当前配置一致，token 默认保持不变。
 
 ## 9. Caddy 管理
 
@@ -245,44 +239,37 @@ Caddy 使用对应 wildcard origin certificate，并长期接受 `*.asdasdasdas.
 
 Managed block 之外的手工配置必须原样保留。更新继续复用现有 `CaddyService` 的 validate -> backup/write -> reload -> rollback。
 
-### 9.3 XHTTP path rewrite
+### 9.3 固定 path
+
+轮换只改变 hostname，不改变 path。Caddy 直接使用 Inbound 当前 transport path 作为 matcher，不做随机 path rewrite。
 
 示例：
 
 ```text
-PublicEndpoint:
-  host = d8k2m9xq.asdasdasdas.shop
-  path = /P9xKa2LmQ7
+轮换前：
+  a.y.z/q8Fa72Lm9x* -> 127.0.0.1:26417
 
-Inbound:
-  listen = 127.0.0.1
-  port = 26417
-  internal path = /q8Fa72Lm9x
+轮换后：
+  d.y.z/q8Fa72Lm9x* -> 127.0.0.1:26417
 ```
 
-Caddy 要把公网 path prefix 替换为内部 path prefix，同时保留后续 suffix：
+这样客户端订阅中的 `path=/q8Fa72Lm9x` 始终不变，只更新 server/host 字段。Portal XHTTP 同理保留自己的固定 path。
+
+## 10. 一键全部随机
+
+V1 的主操作不是逐条修改，而是“全部随机一次”。点击一次后，为所有 `Enable + Publish` 的代理分别生成新的随机子域名，所有 path 保持原值。
 
 ```text
-/P9xKa2LmQ7/<suffix>
-       ->
-/q8Fa72Lm9x/<suffix>
-```
-
-实现时使用 strip public prefix + prepend internal prefix 或等价方式，并增加 suffix 测试。
-
-## 10. 单节点轮换
-
-```text
-1. 读取当前 active Endpoint
-2. crypto/rand 生成新 hostname + path
-3. 创建 pending Endpoint
-4. 渲染 Caddy：旧 active + 新 pending 同时存在
+1. 读取全部当前 active Endpoint
+2. 为每个待发布 Inbound 用 crypto/rand 生成新的随机子域名
+3. 批量创建 pending Endpoint
+4. 一次渲染 Caddy：全部旧 active + 全部新 pending 同时存在
 5. Caddy validate
-6. Caddy save + reload
-7. 对新 Endpoint 做健康检查
-8. 数据库事务：pending -> active；old active -> draining
-9. /sub/:token 从此自动输出新 Endpoint
-10. draining 到期后移除旧 route 并标记 retired
+6. Caddy save + reload（只 reload 一次）
+7. 健康检查全部新 hostname + 原 path
+8. 全部成功后执行一次数据库事务：全部 pending -> active；全部 old active -> draining
+9. /sub/:token 从此一次性输出整批新 hostname，所有 path 保持不变
+10. draining 到期后批量移除旧 route 并标记 retired
 ```
 
 失败处理：
@@ -292,15 +279,15 @@ Caddy 要把公网 path prefix 替换为内部 path prefix，同时保留后续 
 - reload 成功但健康检查失败：恢复前一版 managed block，清理 pending。
 - DB active 切换失败：恢复旧 Caddy managed block，避免 Caddy 与订阅状态分裂。
 
-正常轮换不修改 Cloudflare DNS、UUID、内部端口、内部 XHTTP path，因此无需 Restart Xray。
+正常轮换不修改 Cloudflare DNS、UUID、内部端口、XHTTP path，因此无需 Restart Xray。
 
-## 11. 批量轮换
+## 11. 批量原子性
 
-“全部随机更换”必须做成批量事务式流程，而不是逐个节点独立 reload：
+“全部随机一次”必须做成批量事务式流程，而不是逐个节点独立 reload：
 
 ```text
 读取全部待轮换 Inbound
- -> 为每个生成 pending Endpoint
+ -> 为每个生成新 hostname 的 pending Endpoint
  -> 一次渲染所有旧 + 新 route
  -> 一次 validate
  -> 一次 reload
@@ -317,7 +304,7 @@ V1 默认任意关键 Endpoint 失败就整批回滚，避免出现不可预期�
 
 - 新随机 hostname 能通过 TLS/CDN 到达 Caddy。
 - host/path matcher 命中正确 route。
-- XHTTP 公网 path 正确映射到内部 path。
+- 固定 path 能正确命中对应 XHTTP/WS 等 transport route。
 - 后端本地端口可达。
 
 检查应有明确超时、有限重试，并避免在错误信息中泄露 token/credential。
@@ -350,7 +337,6 @@ POST /xui/subscription/settings
 POST /xui/subscription/token/regenerate
 
 GET  /xui/endpoint/list
-POST /xui/endpoint/:inboundId/rotate
 POST /xui/endpoint/rotate-all
 POST /xui/endpoint/:id/retire
 ```
@@ -363,29 +349,28 @@ GET /sub/:token
 
 ## 15. 管理页面
 
-新增“订阅 / 公网入口”页面，展示稳定订阅 URL、基础域名、随机长度、drain 时间，以及每个可发布代理的当前公网 Endpoint。
+新增“订阅 / 公网入口”页面，展示稳定订阅 URL、基础域名、子域名随机长度、drain 时间，以及每个可发布代理的当前公网 Endpoint 和固定 path。
 
 每行至少支持：
 
 - 是否发布到订阅。
-- 随机更换。
 - 复制当前分享链接。
 - 查看 active / pending / draining 状态。
 - 手工 retire 旧 Endpoint。
 
-页面顶部支持“全部随机更换”。
+页面顶部提供主要操作“全部随机一次”。点击后整批更新所有已发布代理的 hostname，不修改任何 path。
 
 ## 16. 首次启用与迁移
 
 新增模型继续使用 GORM `AutoMigrate`。
 
-首次启用时不要自动猜测 Caddyfile。提供显式初始化，让管理员为已有 Inbound 填写当前公网 Host、Path、Port、TLS/SNI，保存为第一条 active PublicEndpoint，并预览最终客户端分享链接。
+首次启用时不要自动猜测 Caddyfile。提供显式初始化，让管理员为已有 Inbound 填写当前公网 Host、Port、TLS/SNI；path 直接读取 Inbound 当前 StreamSettings。保存为第一条 active PublicEndpoint，并预览最终客户端分享链接。
 
 ## 17. 测试计划
 
 ### LinkService
 
-- VLESS/XHTTP public path 覆盖 internal path。
+- VLESS/XHTTP path 保持与 Inbound StreamSettings 一致。
 - XHTTP `mode`、TLS、SNI/Host。
 - VMess、Trojan、Shadowsocks。
 - URL 编码、remark、IPv6 host:port。
@@ -404,13 +389,13 @@ GET /sub/:token
 
 - Managed block 外内容不变。
 - 单节点 / 多节点 / 同 hostname 多 path。
-- public/internal prefix rewrite 保留 suffix。
+- hostname 变化时固定 path matcher 保持不变。
 - pending + active + draining 并存。
 - retired 不生成 route。
 
 ### Rotation
 
-- 单节点成功切换。
+- 全部 hostname 一次性成功切换，path 全部保持不变。
 - validate / reload / health check / DB 切换任一失败都能回滚。
 - rotate-all 全成功只 reload 一次。
 - rotate-all 任意失败保持旧 active。
@@ -434,16 +419,15 @@ GET /sub/:token
 - active/draining/retired 状态。
 - 健康检查和回滚。
 
-目标：公网 Host/Path 与 Xray 内部配置解耦。
+目标：公网 Host 与 Xray 内部监听配置解耦，同时保持 transport path 不变。
 
 ### Phase 3：自动随机轮换
 
-- 单节点 rotate。
-- rotate-all。
+- `rotate-all` 作为 V1 主要且默认的轮换入口。
 - drain/retire。
 - UI 操作和状态展示。
 
-目标：完成“随机 hostname + 随机 path + 订阅自动同步”的一键工作流。
+目标：完成“全部随机子域名一次 + 固定 path + 订阅自动同步”的一键工作流。
 
 ### Phase 4：Portal/Tunnel 联动
 
@@ -455,11 +439,11 @@ GET /sub/:token
 
 1. 多个启用代理配置可以通过一个固定订阅 URL 一次返回。
 2. 客户端无需修改订阅 URL。
-3. 单个代理公网 hostname/path 可随机生成并安全切换。
+3. 一次操作可以为全部已发布代理生成新的随机子域名；所有 path 保持原值。
 4. `a.y.z -> d.y.z` 后，下一次客户端刷新订阅只拿到新的 active Endpoint。
 5. 旧 Endpoint 在 drain 窗口内继续可用，但不再发布给新订阅。
 6. Caddy 修改或新 Endpoint 验证失败时，当前 active 配置保持可用。
 7. 批量轮换只执行一次 Caddy reload，并且默认全部成功才切换。
 8. 正常轮换无需 Cloudflare API，也无需重启 Xray。
-9. XHTTP path rewrite 保留请求 suffix。
+9. 轮换 hostname 前后，XHTTP/WS 等 transport path 不发生变化。
 10. LinkService、Subscription、Caddy renderer、rotation rollback 都有自动化测试。

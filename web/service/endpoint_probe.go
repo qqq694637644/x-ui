@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"x-ui/database/model"
@@ -54,6 +55,9 @@ func probeVLESSXHTTPEndpoint(inbound *model.Inbound, endpoint *model.PublicEndpo
 
 	binaryPath, err := resolveXrayBinaryPath()
 	if err != nil {
+		return err
+	}
+	if err := validateEndpointProbeConfig(binaryPath, configPath); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), endpointProbeTimeout)
@@ -116,6 +120,24 @@ func probeVLESSXHTTPEndpoint(inbound *model.Inbound, endpoint *model.PublicEndpo
 		return fmt.Errorf("VLESS/XHTTP real-chain request returned HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func validateEndpointProbeConfig(binaryPath string, configPath string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binaryPath, "run", "-test", "-config", configPath)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("validate temporary Xray probe config timed out: %w", ctx.Err())
+	}
+	message := strings.TrimSpace(string(output))
+	if message == "" {
+		message = err.Error()
+	}
+	return fmt.Errorf("temporary Xray probe config is not supported by %s: %s", binaryPath, message)
 }
 
 func buildEndpointProbeConfig(spec *managedInboundSpec, endpoint *model.PublicEndpoint, proxyPort int) ([]byte, error) {

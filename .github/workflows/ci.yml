@@ -90,7 +90,7 @@ jobs:
       - name: Validate managed endpoint probe config with pinned Xray
         env:
           XUI_PROBE_XRAY_BIN: ${{ runner.temp }}/xray-v26.3.27
-        run: go test ./web/service -run TestEndpointProbeConfigAcceptedByBundledXray -count=1
+        run: go test ./web/service -run TestEndpointProbeConfigAcceptedByConfiguredXray -count=1
 
       - name: Generate A config with x-ui production generator
         run: |

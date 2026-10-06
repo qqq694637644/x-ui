@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
-	"runtime"
 	"testing"
 
 	"x-ui/database/model"
@@ -41,9 +40,9 @@ func TestBuildEndpointProbeConfigUsesSameXHTTPPathAndPublicTLSHost(t *testing.T)
 	}
 }
 
-func TestEndpointProbeConfigAcceptedByBundledXray(t *testing.T) {
-	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
-		t.Skip("bundled probe config validation runs on linux/amd64 CI")
+func TestEndpointProbeConfigAcceptedByConfiguredXray(t *testing.T) {
+	if os.Getenv("XUI_PROBE_XRAY_BIN") == "" {
+		t.Skip("set XUI_PROBE_XRAY_BIN to an Xray build that supports managed XHTTP")
 	}
 	spec := &managedInboundSpec{
 		ClientID: "11111111-1111-1111-1111-111111111111",
@@ -61,7 +60,7 @@ func TestEndpointProbeConfigAcceptedByBundledXray(t *testing.T) {
 	}
 	binary, err := resolveXrayBinaryPath()
 	if err != nil {
-		t.Skipf("Xray validation binary is unavailable in this job: %v", err)
+		t.Fatal(err)
 	}
 	cmd := exec.Command(binary, "run", "-test", "-config", path)
 	if output, err := cmd.CombinedOutput(); err != nil {

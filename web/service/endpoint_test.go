@@ -14,8 +14,10 @@ import (
 
 func configureEndpointSettingsForTest(t *testing.T) {
 	t.Helper()
+	setManagedStateHealthy(true)
 	if err := (&SettingService{}).UpdateEndpointSettings(&entity.EndpointSettings{
 		SubscriptionEnable:   true,
+		SubscriptionBaseURL:  "https://sub.example.net/xui",
 		PublicBaseDomain:     "asdasdasdas.shop",
 		PublicPort:           443,
 		HostRandomLength:     10,
@@ -104,6 +106,84 @@ func TestManagedRoutesCarryPortalAcrossEndpointHostGroup(t *testing.T) {
 	}
 }
 
+func TestInitializeBatchTakesOverAllEligibleInboundsWithOneCaddyApply(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "initialize-batch.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	inboundA := validManagedInboundForTest(0, "a", 26417, "/a")
+	inboundA.Tag = "initialize-batch-a"
+	inboundB := validManagedInboundForTest(0, "b", 26418, "/b")
+	inboundB.Tag = "initialize-batch-b"
+	for _, inbound := range []*model.Inbound{inboundA, inboundB} {
+		if err := database.GetDB().Create(inbound).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	applyCalls := 0
+	healthCalls := 0
+	service := &EndpointService{
+		applyManagedSiteHook: func(baseDomain string, block string) (string, error) {
+			applyCalls++
+			for _, expected := range []string{"a.asdasdasdas.shop", "b.asdasdasdas.shop", "path /a*", "path /b*"} {
+				if !strings.Contains(block, expected) {
+					t.Fatalf("managed Caddy block missing %q:\n%s", expected, block)
+				}
+			}
+			return "legacy-caddy", nil
+		},
+		healthCheckEndpointHook: func(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error {
+			healthCalls++
+			return nil
+		},
+	}
+	result, err := service.InitializeBatch(1, &EndpointBatchInit{Items: []*EndpointInit{
+		{InboundId: inboundA.Id, Host: "a.asdasdasdas.shop", Port: 443},
+		{InboundId: inboundB.Id, Host: "b.asdasdasdas.shop", Port: 443},
+	}})
+	if err != nil {
+		t.Fatalf("InitializeBatch() error = %v", err)
+	}
+	if result.Count != 2 || applyCalls != 1 || healthCalls != 2 {
+		t.Fatalf("unexpected initialization result=%#v apply=%d health=%d", result, applyCalls, healthCalls)
+	}
+	assertActiveEndpointCountForTest(t, 2)
+	assertNoPendingEndpointsForTest(t)
+}
+
+func TestInitializeBatchRejectsPartialFirstTakeoverBeforeCaddyApply(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "initialize-partial.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	inboundA := validManagedInboundForTest(0, "a", 26417, "/a")
+	inboundA.Tag = "initialize-partial-a"
+	inboundB := validManagedInboundForTest(0, "b", 26418, "/b")
+	inboundB.Tag = "initialize-partial-b"
+	for _, inbound := range []*model.Inbound{inboundA, inboundB} {
+		if err := database.GetDB().Create(inbound).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	applyCalls := 0
+	service := &EndpointService{applyManagedSiteHook: func(baseDomain string, block string) (string, error) {
+		applyCalls++
+		return "", nil
+	}}
+	_, err := service.InitializeBatch(1, &EndpointBatchInit{Items: []*EndpointInit{
+		{InboundId: inboundA.Id, Host: "a.asdasdasdas.shop", Port: 443},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "must initialize all enabled eligible inbounds atomically") {
+		t.Fatalf("InitializeBatch() partial takeover error = %v", err)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("partial first takeover applied Caddy %d times", applyCalls)
+	}
+	assertActiveEndpointCountForTest(t, 0)
+	assertNoPendingEndpointsForTest(t)
+}
+
 func TestRotateAllSuccessSwitchesWholeBatchAfterOneCaddyApply(t *testing.T) {
 	if err := database.InitDB(filepath.Join(t.TempDir(), "rotate-success.db")); err != nil {
 		t.Fatal(err)
@@ -129,6 +209,7 @@ func TestRotateAllSuccessSwitchesWholeBatchAfterOneCaddyApply(t *testing.T) {
 
 	applyCalls := 0
 	healthCheckCalls := 0
+	portalHealthCalls := 0
 	restoreCalls := 0
 	service := &EndpointService{
 		applyManagedSiteHook: func(baseDomain string, block string) (string, error) {
@@ -145,6 +226,10 @@ func TestRotateAllSuccessSwitchesWholeBatchAfterOneCaddyApply(t *testing.T) {
 			}
 			return nil
 		},
+		healthCheckPortalHook: func(portal *model.Tunnel) error {
+			portalHealthCalls++
+			return nil
+		},
 		restoreCaddyHook: func(content string) error {
 			restoreCalls++
 			return nil
@@ -154,8 +239,8 @@ func TestRotateAllSuccessSwitchesWholeBatchAfterOneCaddyApply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RotateAll() error = %v", err)
 	}
-	if result.Count != 2 || applyCalls != 1 || healthCheckCalls != 2 || restoreCalls != 0 {
-		t.Fatalf("unexpected rotation counters: result=%#v apply=%d healthCheck=%d restore=%d", result, applyCalls, healthCheckCalls, restoreCalls)
+	if result.Count != 2 || applyCalls != 1 || healthCheckCalls != 2 || portalHealthCalls != 1 || restoreCalls != 0 {
+		t.Fatalf("unexpected rotation counters: result=%#v apply=%d healthCheck=%d portalHealth=%d restore=%d", result, applyCalls, healthCheckCalls, portalHealthCalls, restoreCalls)
 	}
 	assertEndpointStatusForTest(t, oldA.Id, model.EndpointStatusDraining)
 	assertEndpointStatusForTest(t, oldB.Id, model.EndpointStatusDraining)
@@ -215,6 +300,67 @@ func TestRotateAllHealthCheckFailureRollsBackWholeBatch(t *testing.T) {
 	assertEndpointStatusForTest(t, oldA.Id, model.EndpointStatusActive)
 	assertEndpointStatusForTest(t, oldB.Id, model.EndpointStatusActive)
 	assertNoPendingEndpointsForTest(t)
+	assertRetiredEndpointCountForTest(t, 2)
+}
+
+func TestRotateAllPortalListenerFailureRollsBackWholeBatch(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "rotate-portal-fail.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	_, old := createPublishedManagedInboundForTest(t, "portal-health", "portal-health", 26417, "/business", "portal.asdasdasdas.shop")
+	portal := &model.Tunnel{
+		UserId:           1,
+		Enable:           true,
+		Mode:             TunnelModePortal,
+		RemoteAddress:    old.Host,
+		RemotePort:       443,
+		Protocol:         "vless",
+		UUID:             "44444444-4444-4444-4444-444444444444",
+		PortalTransport:  PortalTransportXHTTP,
+		PortalListenPort: 26419,
+		XHttpPath:        "/portal-health",
+	}
+	if err := database.GetDB().Create(portal).Error; err != nil {
+		t.Fatal(err)
+	}
+	restoreCalls := 0
+	service := &EndpointService{
+		applyManagedSiteHook: func(baseDomain string, block string) (string, error) { return "old-caddy", nil },
+		healthCheckEndpointHook: func(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error { return nil },
+		healthCheckPortalHook: func(portal *model.Tunnel) error { return errors.New("portal listener unavailable") },
+		restoreCaddyHook: func(content string) error {
+			restoreCalls++
+			return nil
+		},
+	}
+	if _, err := service.RotateAll(1); err == nil || !strings.Contains(err.Error(), "portal") {
+		t.Fatalf("RotateAll() portal failure error = %v", err)
+	}
+	if restoreCalls != 1 {
+		t.Fatalf("portal failure restored Caddy %d times, want 1", restoreCalls)
+	}
+	assertEndpointStatusForTest(t, old.Id, model.EndpointStatusActive)
+	assertNoPendingEndpointsForTest(t)
+	assertRetiredEndpointCountForTest(t, 1)
+}
+
+func TestStartupReconcileFailureMarksManagedStateUnhealthy(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "startup-reconcile-fail.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	_, _ = createPublishedManagedInboundForTest(t, "startup-reconcile", "startup-reconcile", 26417, "/fixed", "startup.asdasdasdas.shop")
+	service := &EndpointService{applyManagedSiteHook: func(baseDomain string, block string) (string, error) {
+		return "", errors.New("injected reconcile failure")
+	}}
+	if err := service.StartupReconcile(); err == nil {
+		t.Fatal("StartupReconcile() unexpectedly succeeded")
+	}
+	if isManagedStateHealthy() {
+		t.Fatal("managed state remained healthy after startup reconcile failure")
+	}
+	defer setManagedStateHealthy(true)
 }
 
 func TestRotateAllDBSwitchFailureRestoresCaddyAndKeepsOldActive(t *testing.T) {
@@ -250,6 +396,7 @@ func TestRotateAllDBSwitchFailureRestoresCaddyAndKeepsOldActive(t *testing.T) {
 	assertEndpointStatusForTest(t, oldA.Id, model.EndpointStatusActive)
 	assertEndpointStatusForTest(t, oldB.Id, model.EndpointStatusActive)
 	assertNoPendingEndpointsForTest(t)
+	assertRetiredEndpointCountForTest(t, 2)
 }
 
 func TestCommitRotationDatabaseTransactionRollsBackPartialUpdates(t *testing.T) {
@@ -376,5 +523,16 @@ func assertNoPendingEndpointsForTest(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("pending endpoint count = %d, want 0", count)
+	}
+}
+
+func assertRetiredEndpointCountForTest(t *testing.T, want int64) {
+	t.Helper()
+	var count int64
+	if err := database.GetDB().Model(&model.PublicEndpoint{}).Where("status = ?", model.EndpointStatusRetired).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != want {
+		t.Fatalf("retired endpoint count = %d, want %d", count, want)
 	}
 }

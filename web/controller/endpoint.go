@@ -34,7 +34,7 @@ func (a *EndpointController) initRouter(g *gin.RouterGroup) {
 	g.POST("/settings", a.settings)
 	g.POST("/settings/update", a.updateSettings)
 	g.POST("/token/regenerate", a.regenerateToken)
-	g.POST("/init/:id", a.initialize)
+	g.POST("/init-batch", a.initializeBatch)
 	g.POST("/publish/:id", a.setPublish)
 	g.POST("/link/:id", a.link)
 	g.POST("/rotate-all", a.rotateAll)
@@ -46,11 +46,8 @@ func (a *EndpointController) startTask() {
 	if webServer == nil {
 		return
 	}
-	if err := a.endpointService.RecoverPending(); err != nil {
-		logger.Warning("recover pending endpoints failed:", err)
-	}
-	if err := a.endpointService.ReconcileManagedRoutes(); err != nil {
-		logger.Warning("reconcile managed Caddy endpoints failed:", err)
+	if err := a.endpointService.StartupReconcile(); err != nil {
+		logger.Warning("managed endpoint startup reconcile failed; subscription and rotation are fail-closed:", err)
 	}
 	_, err := webServer.GetCron().AddFunc("@every 1m", func() {
 		if err := a.endpointService.RetireExpired(); err != nil {
@@ -79,7 +76,7 @@ func (a *EndpointController) updateSettings(c *gin.Context) {
 		jsonMsg(c, "保存订阅与入口设置", err)
 		return
 	}
-	err := a.endpointService.UpdateSettings(form)
+	err := a.endpointService.UpdateSettings(form, c.Request.Host)
 	jsonMsg(c, "保存订阅与入口设置", err)
 }
 
@@ -88,20 +85,15 @@ func (a *EndpointController) regenerateToken(c *gin.Context) {
 	jsonObj(c, token, err)
 }
 
-func (a *EndpointController) initialize(c *gin.Context) {
-	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		jsonMsg(c, "初始化公网入口", err)
-		return
-	}
-	form := &service.EndpointInit{}
+func (a *EndpointController) initializeBatch(c *gin.Context) {
+	form := &service.EndpointBatchInit{}
 	if err := c.ShouldBind(form); err != nil {
-		jsonMsg(c, "初始化公网入口", err)
+		jsonMsg(c, "批量初始化公网入口", err)
 		return
 	}
 	user := session.GetLoginUser(c)
-	endpoint, err := a.endpointService.Initialize(user.Id, id, form)
-	jsonMsgObj(c, "初始化公网入口", endpoint, err)
+	result, err := a.endpointService.InitializeBatch(user.Id, form)
+	jsonMsgObj(c, "批量初始化公网入口", result, err)
 }
 
 func (a *EndpointController) setPublish(c *gin.Context) {

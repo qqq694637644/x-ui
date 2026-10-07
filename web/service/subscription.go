@@ -32,6 +32,12 @@ func (s *SubscriptionService) Generate(token string) (string, error) {
 	if subtle.ConstantTimeCompare([]byte(token), []byte(settings.SubscriptionToken)) != 1 {
 		return "", ErrSubscriptionToken
 	}
+	if strings.TrimSpace(settings.SubscriptionBaseURL) == "" {
+		return "", fmt.Errorf("stable subscription base URL is not configured")
+	}
+	if !isManagedStateHealthy() {
+		return "", ErrManagedStateUnhealthy
+	}
 
 	db := database.GetDB()
 	var inbounds []*model.Inbound
@@ -50,18 +56,20 @@ func (s *SubscriptionService) Generate(token string) (string, error) {
 		return "", err
 	}
 	activeByInbound := make(map[int]*model.PublicEndpoint, len(endpoints))
+	activeCountByInbound := make(map[int]int, len(endpoints))
 	for _, endpoint := range endpoints {
-		if _, exists := activeByInbound[endpoint.InboundId]; !exists {
+		activeCountByInbound[endpoint.InboundId]++
+		if activeCountByInbound[endpoint.InboundId] == 1 {
 			activeByInbound[endpoint.InboundId] = endpoint
 		}
 	}
 
 	links := make([]string, 0, len(inbounds))
 	for _, inbound := range inbounds {
-		endpoint := activeByInbound[inbound.Id]
-		if endpoint == nil {
-			return "", fmt.Errorf("published inbound %d has no active public endpoint", inbound.Id)
+		if activeCountByInbound[inbound.Id] != 1 {
+			return "", fmt.Errorf("published inbound %d must have exactly one active public endpoint, got %d", inbound.Id, activeCountByInbound[inbound.Id])
 		}
+		endpoint := activeByInbound[inbound.Id]
 		link, err := s.linkService.GenerateInboundLink(inbound, endpoint)
 		if err != nil {
 			return "", fmt.Errorf("published inbound %d cannot generate subscription link: %w", inbound.Id, err)

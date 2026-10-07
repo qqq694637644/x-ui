@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/base64"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -23,6 +24,7 @@ func TestSubscriptionReflectsActiveEndpointRotationWithoutChangingPath(t *testin
 	}
 	if err := settingService.UpdateEndpointSettings(&entity.EndpointSettings{
 		SubscriptionEnable:   true,
+		SubscriptionBaseURL:  "https://sub.example.net/xui",
 		PublicBaseDomain:     "asdasdasdas.shop",
 		PublicPort:           443,
 		HostRandomLength:     10,
@@ -99,6 +101,7 @@ func TestSubscriptionRejectsWrongToken(t *testing.T) {
 	settingService := &SettingService{}
 	if err := settingService.UpdateEndpointSettings(&entity.EndpointSettings{
 		SubscriptionEnable:   true,
+		SubscriptionBaseURL:  "https://sub.example.net/xui",
 		PublicBaseDomain:     "asdasdasdas.shop",
 		PublicPort:           443,
 		HostRandomLength:     10,
@@ -122,6 +125,7 @@ func TestSubscriptionFailsClosedWhenPublishedInboundHasNoActiveEndpoint(t *testi
 	}
 	if err := settingService.UpdateEndpointSettings(&entity.EndpointSettings{
 		SubscriptionEnable:   true,
+		SubscriptionBaseURL:  "https://sub.example.net/xui",
 		PublicBaseDomain:     "asdasdasdas.shop",
 		PublicPort:           443,
 		HostRandomLength:     10,
@@ -151,6 +155,7 @@ func TestSubscriptionFailsClosedWhenPublishedInboundBecomesInvalid(t *testing.T)
 	}
 	if err := settingService.UpdateEndpointSettings(&entity.EndpointSettings{
 		SubscriptionEnable:   true,
+		SubscriptionBaseURL:  "https://sub.example.net/xui",
 		PublicBaseDomain:     "asdasdasdas.shop",
 		PublicPort:           443,
 		HostRandomLength:     10,
@@ -177,6 +182,71 @@ func TestSubscriptionFailsClosedWhenPublishedInboundBecomesInvalid(t *testing.T)
 	}
 	if _, err := (&SubscriptionService{}).Generate(settings.SubscriptionToken); err == nil {
 		t.Fatal("subscription unexpectedly returned a partial result for an invalid published inbound")
+	}
+}
+
+func TestSubscriptionFailsClosedWhenManagedStateIsUnhealthy(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "subscription-unhealthy.db")); err != nil {
+		t.Fatal(err)
+	}
+	settingService := &SettingService{}
+	settings, err := settingService.GetEndpointSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settingService.UpdateEndpointSettings(&entity.EndpointSettings{
+		SubscriptionEnable:   true,
+		SubscriptionBaseURL:  "https://sub.example.net/xui",
+		PublicBaseDomain:     "asdasdasdas.shop",
+		PublicPort:           443,
+		HostRandomLength:     10,
+		EndpointDrainSeconds: 1800,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setManagedStateHealthy(false)
+	defer setManagedStateHealthy(true)
+	if _, err := (&SubscriptionService{}).Generate(settings.SubscriptionToken); !errors.Is(err, ErrManagedStateUnhealthy) {
+		t.Fatalf("subscription unhealthy error = %v, want %v", err, ErrManagedStateUnhealthy)
+	}
+}
+
+func TestSubscriptionRejectsMultipleActiveEndpointsForInbound(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "subscription-duplicate-active.db")); err != nil {
+		t.Fatal(err)
+	}
+	settingService := &SettingService{}
+	settings, err := settingService.GetEndpointSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settingService.UpdateEndpointSettings(&entity.EndpointSettings{
+		SubscriptionEnable:   true,
+		SubscriptionBaseURL:  "https://sub.example.net/xui",
+		PublicBaseDomain:     "asdasdasdas.shop",
+		PublicPort:           443,
+		HostRandomLength:     10,
+		EndpointDrainSeconds: 1800,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inbound := validManagedInboundForTest(0, "duplicate-active", 26417, "/fixed")
+	inbound.Publish = true
+	inbound.Tag = "subscription-duplicate-active"
+	if err := database.GetDB().Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.GetDB().Exec("DROP INDEX idx_public_endpoints_one_active_per_inbound").Error; err != nil {
+		t.Fatal(err)
+	}
+	for i, host := range []string{"first.asdasdasdas.shop", "second.asdasdasdas.shop"} {
+		endpoint := &model.PublicEndpoint{InboundId: inbound.Id, Host: host, Port: 443, Status: model.EndpointStatusActive, CreatedAt: int64(i + 1)}
+		if err := database.GetDB().Create(endpoint).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := (&SubscriptionService{}).Generate(settings.SubscriptionToken); err == nil || !strings.Contains(err.Error(), "exactly one active public endpoint") {
+		t.Fatalf("subscription duplicate-active error = %v", err)
 	}
 }
 

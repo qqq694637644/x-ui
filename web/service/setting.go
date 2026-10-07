@@ -4,6 +4,8 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -38,6 +40,7 @@ var defaultValueMap = map[string]string{
 	"caddyPath":            "/opt/caddy",
 	"subscriptionEnable":   "false",
 	"subscriptionToken":    "",
+	"subscriptionBaseUrl":  "",
 	"publicBaseDomain":     "",
 	"publicPort":           "443",
 	"hostRandomLength":     "10",
@@ -218,6 +221,10 @@ func (s *SettingService) GetEndpointSettings() (*entity.EndpointSettings, error)
 	if err != nil {
 		return nil, err
 	}
+	subscriptionBaseURL, err := s.getString("subscriptionBaseUrl")
+	if err != nil {
+		return nil, err
+	}
 	domain, err := s.getString("publicBaseDomain")
 	if err != nil {
 		return nil, err
@@ -245,6 +252,7 @@ func (s *SettingService) GetEndpointSettings() (*entity.EndpointSettings, error)
 	return &entity.EndpointSettings{
 		SubscriptionEnable:   enabled,
 		SubscriptionToken:    token,
+		SubscriptionBaseURL:  subscriptionBaseURL,
 		PublicBaseDomain:     domain,
 		PublicPort:           port,
 		HostRandomLength:     hostLength,
@@ -256,6 +264,11 @@ func (s *SettingService) GetEndpointSettings() (*entity.EndpointSettings, error)
 
 func (s *SettingService) UpdateEndpointSettings(settings *entity.EndpointSettings) error {
 	settings.PublicBaseDomain = normalizeDomain(settings.PublicBaseDomain)
+	normalizedSubscriptionBaseURL, err := normalizeSubscriptionBaseURL(settings.SubscriptionBaseURL)
+	if err != nil {
+		return err
+	}
+	settings.SubscriptionBaseURL = normalizedSubscriptionBaseURL
 	settings.CaddyTLSCertFile = strings.TrimSpace(settings.CaddyTLSCertFile)
 	settings.CaddyTLSKeyFile = strings.TrimSpace(settings.CaddyTLSKeyFile)
 	if settings.PublicBaseDomain != "" && !validDomain(settings.PublicBaseDomain) {
@@ -263,6 +276,15 @@ func (s *SettingService) UpdateEndpointSettings(settings *entity.EndpointSetting
 	}
 	if settings.PublicPort <= 0 || settings.PublicPort > 65535 {
 		return common.NewError("公网端口不合法: ", settings.PublicPort)
+	}
+	if settings.SubscriptionEnable && settings.SubscriptionBaseURL == "" {
+		return common.NewError("启用客户端订阅时必须配置稳定订阅基础 URL")
+	}
+	if settings.SubscriptionBaseURL != "" {
+		u, _ := url.Parse(settings.SubscriptionBaseURL)
+		if hostBelongsToManagedZone(u.Hostname(), settings.PublicBaseDomain) {
+			return common.NewError("稳定订阅域名不得属于托管基础域名区域: ", u.Hostname())
+		}
 	}
 	if settings.HostRandomLength < 4 || settings.HostRandomLength > 32 {
 		return common.NewError("随机子域名长度必须在 4 到 32 之间")
@@ -275,6 +297,7 @@ func (s *SettingService) UpdateEndpointSettings(settings *entity.EndpointSetting
 	}
 	pairs := map[string]string{
 		"subscriptionEnable":   strconv.FormatBool(settings.SubscriptionEnable),
+		"subscriptionBaseUrl":  settings.SubscriptionBaseURL,
 		"publicBaseDomain":     settings.PublicBaseDomain,
 		"publicPort":           strconv.Itoa(settings.PublicPort),
 		"hostRandomLength":     strconv.Itoa(settings.HostRandomLength),
@@ -302,6 +325,45 @@ func (s *SettingService) UpdateEndpointSettings(settings *entity.EndpointSetting
 		}
 		return nil
 	})
+}
+
+func normalizeSubscriptionBaseURL(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	u, err := url.Parse(value)
+	if err != nil {
+		return "", common.NewError("稳定订阅基础 URL 不合法: ", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", common.NewError("稳定订阅基础 URL 仅支持 http 或 https")
+	}
+	if u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", common.NewError("稳定订阅基础 URL 必须是无用户信息、查询参数和 fragment 的绝对 URL")
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	return strings.TrimRight(u.String(), "/"), nil
+}
+
+func requestHostname(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		return strings.ToLower(strings.Trim(host, "[]."))
+	}
+	return strings.ToLower(strings.Trim(value, "[]."))
+}
+
+func hostBelongsToManagedZone(host string, baseDomain string) bool {
+	host = strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]."))
+	baseDomain = normalizeDomain(baseDomain)
+	if host == "" || baseDomain == "" {
+		return false
+	}
+	return host == baseDomain || strings.HasSuffix(host, "."+baseDomain)
 }
 
 func (s *SettingService) GetSubscriptionToken() (string, error) {

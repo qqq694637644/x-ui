@@ -46,7 +46,25 @@ func initInbound() error {
 }
 
 func initPublicEndpoint() error {
-	return db.AutoMigrate(&model.PublicEndpoint{})
+	if err := db.AutoMigrate(&model.PublicEndpoint{}); err != nil {
+		return err
+	}
+	var duplicates []struct {
+		InboundID int   `gorm:"column:inbound_id"`
+		Count     int64 `gorm:"column:count"`
+	}
+	if err := db.Model(&model.PublicEndpoint{}).
+		Select("inbound_id, COUNT(*) AS count").
+		Where("status = ?", model.EndpointStatusActive).
+		Group("inbound_id").
+		Having("COUNT(*) > 1").
+		Scan(&duplicates).Error; err != nil {
+		return err
+	}
+	if len(duplicates) > 0 {
+		return fmt.Errorf("public endpoint invariant violated: inbound %d has %d active endpoints", duplicates[0].InboundID, duplicates[0].Count)
+	}
+	return db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_public_endpoints_one_active_per_inbound ON public_endpoints(inbound_id) WHERE status = 'active'").Error
 }
 
 func validateInboundStreamSettingsForXray26327() error {

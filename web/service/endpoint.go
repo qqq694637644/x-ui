@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -24,12 +25,23 @@ type EndpointService struct {
 	applyManagedSiteHook    func(baseDomain string, block string) (string, error)
 	restoreCaddyHook        func(content string) error
 	healthCheckEndpointHook func(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error
+	healthCheckPortalHook   func(portal *model.Tunnel) error
 	commitRotationHook      func(items []rotationItem, retireAt int64) error
 }
 
 type EndpointInit struct {
-	Host string `json:"host" form:"host"`
-	Port int    `json:"port" form:"port"`
+	InboundId int    `json:"inboundId" form:"inboundId"`
+	Host      string `json:"host" form:"host"`
+	Port      int    `json:"port" form:"port"`
+}
+
+type EndpointBatchInit struct {
+	Items []*EndpointInit `json:"items" form:"items"`
+}
+
+type EndpointInitResult struct {
+	Count int                     `json:"count"`
+	Items []*model.PublicEndpoint `json:"items"`
 }
 
 type rotationItem struct {
@@ -69,44 +81,47 @@ func (s *EndpointService) SyncManagedRoutes() error {
 	endpointMutationLock.Lock()
 	defer endpointMutationLock.Unlock()
 	_, err := s.applyCurrentRoutes()
+	if err == nil {
+		setManagedStateHealthy(true)
+	}
 	return err
 }
 
-func (s *EndpointService) ReconcileManagedRoutes() error {
-	var count int64
-	if err := database.GetDB().Model(&model.PublicEndpoint{}).Count(&count).Error; err != nil {
-		return err
-	}
-	if count == 0 {
-		return nil
-	}
-	return s.SyncManagedRoutes()
-}
-
-func (s *EndpointService) RecoverPending() error {
+func (s *EndpointService) StartupReconcile() error {
 	endpointMutationLock.Lock()
 	defer endpointMutationLock.Unlock()
+	setManagedStateHealthy(false)
 
 	var pending []*model.PublicEndpoint
 	if err := database.GetDB().Where("status = ?", model.EndpointStatusPending).Find(&pending).Error; err != nil {
 		return err
 	}
-	if len(pending) == 0 {
+	hadPending := len(pending) > 0
+	if hadPending {
+		ids := make([]int, 0, len(pending))
+		for _, endpoint := range pending {
+			ids = append(ids, endpoint.Id)
+		}
+		if err := database.GetDB().Model(&model.PublicEndpoint{}).Where("id IN ?", ids).
+			Updates(map[string]interface{}{"status": model.EndpointStatusRetired, "retire_at": time.Now().Unix()}).Error; err != nil {
+			return err
+		}
+	}
+
+	var liveCount int64
+	if err := database.GetDB().Model(&model.PublicEndpoint{}).
+		Where("status IN ?", []string{model.EndpointStatusActive, model.EndpointStatusDraining}).
+		Count(&liveCount).Error; err != nil {
+		return err
+	}
+	if liveCount == 0 && !hadPending {
+		setManagedStateHealthy(true)
 		return nil
 	}
-	ids := make([]int, 0, len(pending))
-	for _, endpoint := range pending {
-		ids = append(ids, endpoint.Id)
-	}
-	if err := database.GetDB().Model(&model.PublicEndpoint{}).Where("id IN ?", ids).
-		Update("status", model.EndpointStatusRetired).Error; err != nil {
-		return err
-	}
 	if _, err := s.applyCurrentRoutes(); err != nil {
-		_ = database.GetDB().Model(&model.PublicEndpoint{}).Where("id IN ?", ids).
-			Update("status", model.EndpointStatusPending).Error
 		return err
 	}
+	setManagedStateHealthy(true)
 	return nil
 }
 
@@ -163,17 +178,15 @@ func (s *EndpointService) List(userID int) ([]*EndpointRow, error) {
 	return rows, nil
 }
 
-func (s *EndpointService) Initialize(userID int, inboundID int, form *EndpointInit) (*model.PublicEndpoint, error) {
+func (s *EndpointService) InitializeBatch(userID int, form *EndpointBatchInit) (*EndpointInitResult, error) {
 	endpointMutationLock.Lock()
 	defer endpointMutationLock.Unlock()
-
-	inbound, err := s.getOwnedInbound(userID, inboundID)
-	if err != nil {
-		return nil, err
+	if !isManagedStateHealthy() {
+		return nil, ErrManagedStateUnhealthy
 	}
-	spec, err := validateManagedInbound(inbound)
-	if err != nil {
-		return nil, err
+
+	if form == nil || len(form.Items) == 0 {
+		return nil, fmt.Errorf("at least one public endpoint mapping is required")
 	}
 	settings, err := s.settingService.GetEndpointSettings()
 	if err != nil {
@@ -183,74 +196,123 @@ func (s *EndpointService) Initialize(userID int, inboundID int, form *EndpointIn
 		return nil, fmt.Errorf("public base domain is not configured")
 	}
 
-	host := strings.ToLower(strings.Trim(strings.TrimSpace(form.Host), "."))
-	if host == "" {
-		return nil, fmt.Errorf("public host is required")
+	selectedInbounds := make(map[int]bool, len(form.Items))
+	selectedHosts := make(map[string]bool, len(form.Items))
+	items := make([]rotationItem, 0, len(form.Items))
+	now := time.Now().Unix()
+	for _, entry := range form.Items {
+		if entry == nil || entry.InboundId <= 0 {
+			return nil, fmt.Errorf("each public endpoint mapping requires an inbound id")
+		}
+		if selectedInbounds[entry.InboundId] {
+			return nil, fmt.Errorf("inbound %d appears more than once in initialization batch", entry.InboundId)
+		}
+		selectedInbounds[entry.InboundId] = true
+		inbound, err := s.getOwnedInbound(userID, entry.InboundId)
+		if err != nil {
+			return nil, err
+		}
+		spec, err := validateManagedInbound(inbound)
+		if err != nil {
+			return nil, fmt.Errorf("inbound %d is not eligible for managed endpoints: %w", inbound.Id, err)
+		}
+		var activeCount int64
+		if err := database.GetDB().Model(&model.PublicEndpoint{}).
+			Where("inbound_id = ? AND status = ?", inbound.Id, model.EndpointStatusActive).
+			Count(&activeCount).Error; err != nil {
+			return nil, err
+		}
+		if activeCount > 0 {
+			return nil, fmt.Errorf("inbound %d already has an active public endpoint", inbound.Id)
+		}
+
+		host := strings.ToLower(strings.Trim(strings.TrimSpace(entry.Host), "."))
+		if !validDomain(host) || !isDirectManagedSubdomain(host, settings.PublicBaseDomain) {
+			return nil, fmt.Errorf("public host %s must be a direct subdomain of %s", host, settings.PublicBaseDomain)
+		}
+		if selectedHosts[host] {
+			return nil, fmt.Errorf("public host appears more than once in initialization batch: %s", host)
+		}
+		selectedHosts[host] = true
+		if err := s.ensureHostAvailable(host); err != nil {
+			return nil, err
+		}
+		port := entry.Port
+		if port == 0 {
+			port = settings.PublicPort
+		}
+		if port != settings.PublicPort {
+			return nil, fmt.Errorf("public endpoint port must match configured public port %d", settings.PublicPort)
+		}
+		endpoint := &model.PublicEndpoint{
+			InboundId: inbound.Id,
+			Host:      host,
+			Port:      port,
+			Status:    model.EndpointStatusPending,
+			CreatedAt: now,
+		}
+		if _, err := s.linkService.GenerateInboundLink(inbound, endpoint); err != nil {
+			return nil, fmt.Errorf("inbound %d cannot generate its initial subscription link: %w", inbound.Id, err)
+		}
+		items = append(items, rotationItem{inbound: inbound, next: endpoint, spec: spec})
 	}
-	if !validDomain(host) {
-		return nil, fmt.Errorf("public host is invalid: %s", host)
-	}
-	suffix := "." + settings.PublicBaseDomain
-	if !strings.HasSuffix(host, suffix) {
-		return nil, fmt.Errorf("public host must be a direct subdomain of %s", settings.PublicBaseDomain)
-	}
-	label := strings.TrimSuffix(host, suffix)
-	if label == "" || strings.Contains(label, ".") {
-		return nil, fmt.Errorf("public host must contain exactly one label before %s", settings.PublicBaseDomain)
-	}
-	port := form.Port
-	if port == 0 {
-		port = settings.PublicPort
-	}
-	if port != settings.PublicPort {
-		return nil, fmt.Errorf("public endpoint port must match configured public port %d", settings.PublicPort)
-	}
-	var count int64
-	if err := database.GetDB().Model(model.PublicEndpoint{}).
-		Where("inbound_id = ? AND status = ?", inboundID, model.EndpointStatusActive).
-		Count(&count).Error; err != nil {
-		return nil, err
-	}
-	if count > 0 {
-		return nil, fmt.Errorf("inbound %d already has an active public endpoint", inboundID)
-	}
-	if err := s.ensureHostAvailable(host); err != nil {
+	if err := s.requireAtomicInitialCoverage(userID, selectedInbounds); err != nil {
 		return nil, err
 	}
 
-	endpoint := &model.PublicEndpoint{
-		InboundId: inboundID,
-		Host:      host,
-		Port:      port,
-		Status:    model.EndpointStatusPending,
-		CreatedAt: time.Now().Unix(),
+	tx := database.GetDB().Begin()
+	if tx.Error != nil {
+		return nil, tx.Error
 	}
-	if err := database.GetDB().Create(endpoint).Error; err != nil {
+	for i := range items {
+		if err := tx.Create(items[i].next).Error; err != nil {
+			tx.Rollback()
+			return nil, err
+		}
+	}
+	if err := tx.Commit().Error; err != nil {
 		return nil, err
 	}
+	pendingIDs := endpointIDs(items)
+
 	oldContent, err := s.applyCurrentRoutes()
 	if err != nil {
-		_ = database.GetDB().Delete(endpoint).Error
+		s.retirePending(pendingIDs)
 		return nil, err
 	}
-	if err := s.checkManagedEndpointHealth(inbound, endpoint, managedHealthPath(transportMatchPath(spec.Path))); err != nil {
-		restoreErr := s.restoreCaddy(oldContent)
-		_ = database.GetDB().Delete(endpoint).Error
-		if restoreErr != nil {
-			return nil, common.NewError("初始化公网入口真实链路探测失败: ", err, "; Caddy 回滚失败: ", restoreErr)
+	for _, item := range items {
+		healthPath := managedHealthPath(transportMatchPath(item.spec.Path))
+		if err := s.checkManagedEndpointHealth(item.inbound, item.next, healthPath); err != nil {
+			restoreErr := s.restoreCaddy(oldContent)
+			s.retirePending(pendingIDs)
+			if restoreErr != nil {
+				setManagedStateHealthy(false)
+				return nil, common.NewError("初始化公网入口真实链路探测失败: ", err, "; Caddy 回滚失败: ", restoreErr)
+			}
+			return nil, fmt.Errorf("initial endpoint real-chain health check failed for %s: %w", item.next.Host, err)
 		}
-		return nil, err
-	}
-	if err := database.GetDB().Model(endpoint).Update("status", model.EndpointStatusActive).Error; err != nil {
-		restoreErr := s.restoreCaddy(oldContent)
-		_ = database.GetDB().Delete(endpoint).Error
-		if restoreErr != nil {
-			return nil, common.NewError("初始化公网入口状态切换失败: ", err, "; Caddy 回滚失败: ", restoreErr)
+		if err := s.checkManagedPortalsHealth(item.inbound.Id, item.next.Host); err != nil {
+			restoreErr := s.restoreCaddy(oldContent)
+			s.retirePending(pendingIDs)
+			if restoreErr != nil {
+				setManagedStateHealthy(false)
+				return nil, common.NewError("初始化 Portal 监听探测失败: ", err, "; Caddy 回滚失败: ", restoreErr)
+			}
+			return nil, err
 		}
-		return nil, err
 	}
-	endpoint.Status = model.EndpointStatusActive
-	return endpoint, nil
+
+	if err := s.commitInitialization(items); err != nil {
+		s.retirePending(pendingIDs)
+		return nil, s.rollbackCaddy(oldContent, err)
+	}
+	result := &EndpointInitResult{Count: len(items), Items: make([]*model.PublicEndpoint, 0, len(items))}
+	for _, item := range items {
+		item.next.Status = model.EndpointStatusActive
+		result.Items = append(result.Items, item.next)
+	}
+	setManagedStateHealthy(true)
+	return result, nil
 }
 
 func (s *EndpointService) SetPublish(userID int, inboundID int, publish bool) error {
@@ -286,7 +348,7 @@ func (s *EndpointService) GetLink(userID int, inboundID int) (string, error) {
 	return s.linkService.GenerateInboundLink(inbound, endpoint)
 }
 
-func (s *EndpointService) UpdateSettings(settings *entity.EndpointSettings) error {
+func (s *EndpointService) UpdateSettings(settings *entity.EndpointSettings, managementHost string) error {
 	endpointMutationLock.Lock()
 	defer endpointMutationLock.Unlock()
 
@@ -300,6 +362,9 @@ func (s *EndpointService) UpdateSettings(settings *entity.EndpointSettings) erro
 		return err
 	}
 	newDomain := normalizeDomain(settings.PublicBaseDomain)
+	if host := requestHostname(managementHost); hostBelongsToManagedZone(host, newDomain) {
+		return fmt.Errorf("management hostname %s must not belong to managed base domain %s", host, newDomain)
+	}
 	if count > 0 && newDomain != normalizeDomain(old.PublicBaseDomain) {
 		return fmt.Errorf("cannot change public base domain while active/draining endpoints exist")
 	}
@@ -310,18 +375,23 @@ func (s *EndpointService) UpdateSettings(settings *entity.EndpointSettings) erro
 		return err
 	}
 	if count == 0 {
+		setManagedStateHealthy(true)
 		return nil
 	}
 	if _, err := s.applyCurrentRoutes(); err != nil {
 		_ = s.settingService.UpdateEndpointSettings(old)
 		return err
 	}
+	setManagedStateHealthy(true)
 	return nil
 }
 
 func (s *EndpointService) RotateAll(userID int) (*RotationResult, error) {
 	endpointMutationLock.Lock()
 	defer endpointMutationLock.Unlock()
+	if !isManagedStateHealthy() {
+		return nil, ErrManagedStateUnhealthy
+	}
 
 	settings, err := s.settingService.GetEndpointSettings()
 	if err != nil {
@@ -393,24 +463,34 @@ func (s *EndpointService) RotateAll(userID int) (*RotationResult, error) {
 
 	oldContent, err := s.applyCurrentRoutes()
 	if err != nil {
-		s.deletePending(pendingIDs)
+		s.retirePending(pendingIDs)
 		return nil, err
 	}
 	for _, item := range items {
 		healthPath := managedHealthPath(transportMatchPath(item.spec.Path))
 		if err := s.checkManagedEndpointHealth(item.inbound, item.next, healthPath); err != nil {
 			restoreErr := s.restoreCaddy(oldContent)
-			s.deletePending(pendingIDs)
+			s.retirePending(pendingIDs)
 			if restoreErr != nil {
+				setManagedStateHealthy(false)
 				return nil, common.NewError("new endpoint real-chain health check failed: ", err, "; caddy rollback failed: ", restoreErr)
 			}
 			return nil, fmt.Errorf("new endpoint real-chain health check failed for %s: %w", item.next.Host, err)
+		}
+		if err := s.checkManagedPortalsHealth(item.inbound.Id, item.old.Host, item.next.Host); err != nil {
+			restoreErr := s.restoreCaddy(oldContent)
+			s.retirePending(pendingIDs)
+			if restoreErr != nil {
+				setManagedStateHealthy(false)
+				return nil, common.NewError("portal listener health check failed: ", err, "; caddy rollback failed: ", restoreErr)
+			}
+			return nil, err
 		}
 	}
 
 	retireAt := time.Now().Add(time.Duration(settings.EndpointDrainSeconds) * time.Second).Unix()
 	if err := s.commitRotation(items, retireAt); err != nil {
-		s.deletePending(pendingIDs)
+		s.retirePending(pendingIDs)
 		return nil, s.rollbackCaddy(oldContent, err)
 	}
 	result := &RotationResult{Items: make([]RotationPair, 0, len(items))}
@@ -423,6 +503,7 @@ func (s *EndpointService) RotateAll(userID int) (*RotationResult, error) {
 		})
 	}
 	result.Count = len(result.Items)
+	setManagedStateHealthy(true)
 	return result, nil
 }
 
@@ -612,6 +693,106 @@ func (s *EndpointService) checkManagedEndpointHealth(inbound *model.Inbound, end
 	return checkVLESSXHTTPEndpointHealth(inbound, endpoint, healthPath)
 }
 
+func (s *EndpointService) checkManagedPortalsHealth(inboundID int, hosts ...string) error {
+	wanted := make(map[string]bool, len(hosts))
+	for _, host := range hosts {
+		host = strings.ToLower(strings.TrimSpace(host))
+		if host != "" {
+			wanted[host] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+	var portals []*model.Tunnel
+	if err := database.GetDB().Where("enable = ? AND mode = ? AND portal_transport = ?", true, TunnelModePortal, PortalTransportXHTTP).
+		Find(&portals).Error; err != nil {
+		return err
+	}
+	for _, portal := range portals {
+		if !wanted[strings.ToLower(strings.TrimSpace(portal.RemoteAddress))] {
+			continue
+		}
+		var err error
+		if s.healthCheckPortalHook != nil {
+			err = s.healthCheckPortalHook(portal)
+		} else {
+			err = checkPortalListener(portal)
+		}
+		if err != nil {
+			return fmt.Errorf("inbound %d portal %d local listener check failed: %w", inboundID, portal.Id, err)
+		}
+	}
+	return nil
+}
+
+func checkPortalListener(portal *model.Tunnel) error {
+	if portal == nil || portal.PortalListenPort <= 0 || portal.PortalListenPort > 65535 {
+		return fmt.Errorf("invalid PortalListenPort")
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", portal.PortalListenPort)), 2*time.Second)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+func (s *EndpointService) requireAtomicInitialCoverage(userID int, selected map[int]bool) error {
+	var liveCount int64
+	if err := database.GetDB().Model(&model.PublicEndpoint{}).
+		Where("status IN ?", []string{model.EndpointStatusPending, model.EndpointStatusActive, model.EndpointStatusDraining}).
+		Count(&liveCount).Error; err != nil {
+		return err
+	}
+	if liveCount > 0 {
+		return nil
+	}
+	var inbounds []*model.Inbound
+	if err := database.GetDB().Where("user_id = ? AND enable = ?", userID, true).Order("id asc").Find(&inbounds).Error; err != nil {
+		return err
+	}
+	for _, inbound := range inbounds {
+		if _, err := validateManagedInbound(inbound); err != nil {
+			continue
+		}
+		if !selected[inbound.Id] {
+			return fmt.Errorf("first managed Caddy takeover must initialize all enabled eligible inbounds atomically; inbound %d is missing", inbound.Id)
+		}
+	}
+	return nil
+}
+
+func endpointIDs(items []rotationItem) []int {
+	ids := make([]int, 0, len(items))
+	for _, item := range items {
+		if item.next != nil && item.next.Id > 0 {
+			ids = append(ids, item.next.Id)
+		}
+	}
+	return ids
+}
+
+func (s *EndpointService) commitInitialization(items []rotationItem) error {
+	tx := database.GetDB().Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	for _, item := range items {
+		result := tx.Model(&model.PublicEndpoint{}).
+			Where("id = ? AND status = ?", item.next.Id, model.EndpointStatusPending).
+			Updates(map[string]interface{}{"status": model.EndpointStatusActive, "retire_at": 0})
+		if result.Error != nil {
+			tx.Rollback()
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			tx.Rollback()
+			return fmt.Errorf("pending endpoint %d changed before initialization commit", item.next.Id)
+		}
+	}
+	return tx.Commit().Error
+}
+
 func (s *EndpointService) commitRotation(items []rotationItem, retireAt int64) error {
 	if s.commitRotationHook != nil {
 		return s.commitRotationHook(items, retireAt)
@@ -642,13 +823,18 @@ func (s *EndpointService) commitRotation(items []rotationItem, retireAt int64) e
 }
 
 func (s *EndpointService) activeEndpoint(inboundID int) (*model.PublicEndpoint, error) {
-	endpoint := &model.PublicEndpoint{}
-	err := database.GetDB().Where("inbound_id = ? AND status = ?", inboundID, model.EndpointStatusActive).
-		Order("created_at desc, id desc").First(endpoint).Error
-	if err != nil {
+	var endpoints []*model.PublicEndpoint
+	if err := database.GetDB().Where("inbound_id = ? AND status = ?", inboundID, model.EndpointStatusActive).
+		Order("created_at desc, id desc").Find(&endpoints).Error; err != nil {
 		return nil, err
 	}
-	return endpoint, nil
+	if len(endpoints) == 0 {
+		return nil, fmt.Errorf("inbound %d has no active public endpoint", inboundID)
+	}
+	if len(endpoints) != 1 {
+		return nil, fmt.Errorf("inbound %d has %d active public endpoints", inboundID, len(endpoints))
+	}
+	return endpoints[0], nil
 }
 
 func (s *EndpointService) getOwnedInbound(userID int, inboundID int) (*model.Inbound, error) {
@@ -688,16 +874,17 @@ func (s *EndpointService) generateUniqueHost(baseDomain string, length int, rese
 	return "", fmt.Errorf("failed to allocate a unique random hostname")
 }
 
-func (s *EndpointService) deletePending(ids []int) {
+func (s *EndpointService) retirePending(ids []int) {
 	if len(ids) == 0 {
 		return
 	}
-	_ = database.GetDB().Where("id IN ? AND status = ?", ids, model.EndpointStatusPending).
-		Delete(&model.PublicEndpoint{}).Error
+	_ = database.GetDB().Model(&model.PublicEndpoint{}).Where("id IN ? AND status = ?", ids, model.EndpointStatusPending).
+		Updates(map[string]interface{}{"status": model.EndpointStatusRetired, "retire_at": time.Now().Unix()}).Error
 }
 
 func (s *EndpointService) rollbackCaddy(oldContent string, cause error) error {
 	if restoreErr := s.restoreCaddy(oldContent); restoreErr != nil {
+		setManagedStateHealthy(false)
 		return common.NewError("endpoint transaction failed: ", cause, "; caddy rollback failed: ", restoreErr)
 	}
 	return cause

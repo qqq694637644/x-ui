@@ -83,7 +83,7 @@ public -> internal            |
 - PublicEndpoint 只保存客户端公网 Host/Port 和生命周期；公网 TLS/SNI 固定为当前 Host，传输 path 继续由 Inbound 的 StreamSettings 提供。
 - Subscription 不保存第二份完整节点配置，而是动态读取 Inbound + active PublicEndpoint 生成。
 - Caddy route 由 PublicEndpoint 派生。
-- 一个 Inbound 正常只有一个 active Endpoint；轮换期间允许 pending / active / draining 并存。
+- 一个 Inbound 在数据库层最多只有一个 active Endpoint；轮换期间允许 pending / active / draining 并存。
 
 ## 5. 数据模型
 
@@ -115,8 +115,9 @@ type PublicEndpoint struct {
 建议约束：
 
 - `Host` 在全部 Endpoint 历史中必须唯一；retired hostname 永不重新分配。
-- 业务层保证同一 Inbound 最多一个 active Endpoint。
-- 删除 Inbound 时同步清理 Endpoint。
+- SQLite 使用 partial unique index 保证 `UNIQUE(inbound_id) WHERE status='active'`；业务层读取 active 时也要求数量严格等于 1。
+- 失败的 pending 不 DELETE，而是转成 retired，确保随机生成过的 hostname 也不会被重新分配。
+- 删除 Inbound 时保留 Endpoint 历史，继续占用已经使用过的 hostname。
 
 ### 5.2 Inbound 发布开关
 
@@ -136,6 +137,7 @@ V1 只提供一个默认订阅，复用现有 `Setting` 表：
 ```text
 subscriptionEnable
 subscriptionToken
+subscriptionBaseUrl
 publicBaseDomain
 publicPort
 hostRandomLength
@@ -145,6 +147,7 @@ endpointDrainSeconds
 示例：
 
 ```text
+subscriptionBaseUrl  = https://sub.example.net/xui
 publicBaseDomain     = asdasdasdas.shop
 publicPort           = 443
 hostRandomLength     = 10
@@ -209,7 +212,9 @@ Content-Type: text/plain; charset=utf-8
 Cache-Control: no-store
 ```
 
-订阅 URL 长期稳定；节点 hostname 可以变化，但 path 保持与 Inbound 当前配置一致，token 默认保持不变。
+订阅 URL 使用显式配置的 `subscriptionBaseUrl + /sub/:token`，不依赖管理页面当前的 `location.origin`。节点 hostname 可以变化，但 path 保持与 Inbound 当前配置一致，token 默认保持不变。
+
+严格部署规则：管理面板和稳定订阅入口的 hostname 都不得属于 managed `publicBaseDomain` 区域。保存 Endpoint 设置时，如果当前管理请求 Host 落在该 zone，直接拒绝；`subscriptionBaseUrl` 的 hostname 落在该 zone 也直接拒绝。这样破坏式接管 `*.publicBaseDomain` 时不会把面板/订阅入口一起删除。
 
 ## 9. Caddy 管理
 
@@ -236,6 +241,8 @@ Caddy 使用对应 wildcard origin certificate，并长期接受 `*.asdasdasdas.
 ```
 
 对于当前 `publicBaseDomain`，x-ui 采用破坏式所有权：首次托管时删除该域名下旧的 exact-host 站点块以及旧 `*.publicBaseDomain` wildcard 站点块，之后只保留数据库生成的唯一 managed wildcard 站点。其他无关域名的 Caddy 配置保留。更新继续复用现有 `CaddyService` 的 validate -> backup/write -> reload -> rollback。
+
+启动恢复采用 fail-closed：如果数据库存在 active/draining Endpoint，或上次中断留下 pending Endpoint，启动时必须先把 pending 转 retired 并重新生成/应用完整 managed Caddy。reconcile 失败时标记 managed state unhealthy；公开订阅返回 503，轮换和首次初始化也拒绝继续，直到一次完整 Caddy 同步成功。
 
 ### 9.3 固定 path
 
@@ -274,7 +281,7 @@ V1 的主操作不是逐条修改，而是“全部随机一次”。点击一�
 
 - validate 失败：不修改当前 active。
 - reload 失败：依赖现有 CaddyService 回滚。
-- reload 成功但健康检查失败：恢复前一版 managed block，清理 pending。
+- reload 成功但健康检查失败：恢复前一版 managed block，pending 全部转 retired 并永久保留 hostname 历史。
 - DB active 切换失败：恢复旧 Caddy managed block，避免 Caddy 与订阅状态分裂。
 
 正常轮换不修改 Cloudflare DNS、UUID、内部端口、XHTTP path，因此无需 Restart Xray。
@@ -304,6 +311,7 @@ V1 默认任意关键 Endpoint 失败就整批回滚，避免出现不可预期�
 - 临时客户端通过新 hostname 建立 `TLS/XHTTP -> Cloudflare -> Caddy -> h2c -> 本地 Xray` 连接。
 - 再通过该真实代理链路访问仅用于验证的 204 URL；只有整条 VLESS/XHTTP 链路可用才算成功。
 - 临时 Xray 进程、配置文件和本地代理端口均在探测后清理。
+- 同 hostname group 关联的 Portal XHTTP route 至少检查对应 `PortalListenPort` 是否正在 `127.0.0.1` 监听；任一 Portal 监听不可达则整批轮换失败并回滚。
 
 检查应有明确超时、有限重试，并避免在错误信息中泄露 token/credential。
 
@@ -322,6 +330,7 @@ Portal route /portal-path -> 127.0.0.1:26418
 
 - 普通代理 Inbound route 可以进入 Subscription。
 - Portal/Tunnel route 可以跟随同一 hostname group 一起轮换，但绝不进入客户端订阅。
+- hostname 切换前必须检查关联 Portal XHTTP 的本地 `PortalListenPort`；普通代理真实链路成功但 Portal 本地监听失败时不得提交轮换。
 
 实现时预留 route group / binding 概念，并根据当前 Tunnel 的 `RemoteAddress`、`PortalListenPort`、`XHttpPath` 数据流确定最终绑定方式。
 
@@ -335,6 +344,7 @@ POST /xui/subscription/settings
 POST /xui/subscription/token/regenerate
 
 GET  /xui/endpoint/list
+POST /xui/endpoint/init-batch
 POST /xui/endpoint/rotate-all
 POST /xui/endpoint/:id/retire
 ```
@@ -356,13 +366,13 @@ GET /sub/:token
 - 查看 active / pending / draining 状态。
 - 手工 retire 旧 Endpoint。
 
-页面顶部提供主要操作“全部随机一次”。点击后整批更新所有已发布代理的 hostname，不修改任何 path。
+页面顶部提供“批量初始化当前入口”和主要操作“全部随机一次”。首次接管时批量初始化会一次列出所有启用且符合严格托管约束、尚未初始化的 Inbound，要求管理员全部填写当前 Host 后再提交；不再提供单节点 Initialize。
 
 ## 16. 首次启用与迁移
 
 新增模型继续使用 GORM `AutoMigrate`。
 
-首次启用时不要自动猜测 Inbound 与公网 Host 的关系。提供显式初始化，让管理员为已有严格 VLESS/XHTTP Inbound 填写当前公网 Host、Port；公网 TLS/SNI 固定跟随 Host，path 直接读取 Inbound 当前 StreamSettings。第一次应用时同时破坏式接管 `publicBaseDomain` 对应 Caddy 站点。
+首次启用时不要自动猜测 Inbound 与公网 Host 的关系。首次接管必须是批量原子操作：管理员一次填写所有启用且符合严格 VLESS/XHTTP 约束的 Inbound -> 当前公网 Host/Port 映射，服务端先在一个数据库事务中批量写 pending，然后一次生成完整 Caddy、一次 validate/reload，逐项完成普通 VLESS/XHTTP 与关联 Portal 健康检查，全部成功后再用一个数据库事务统一切 active。任何节点失败都恢复接管前 Caddy，全部 pending 转 retired。单节点 Initialize 不存在。
 
 ## 17. 测试计划
 
@@ -379,6 +389,9 @@ GET /sub/:token
 - `a.y.z -> d.y.z` 后订阅立即反映新值。
 - draining Endpoint 不进入新订阅。
 - 任意已发布节点缺 endpoint 或链接生成失败时，整个订阅请求失败，不返回残缺订阅。
+- 任意已发布 Inbound 的 active Endpoint 数量不是恰好 1 时整个订阅失败。
+- managed startup reconcile 失败时订阅返回 503。
+- 稳定订阅 URL 使用显式 `subscriptionBaseUrl`，并拒绝落在 managed zone。
 - 多 Inbound 顺序稳定。
 - Base64 可正确解码为多行链接。
 - 无效 token 被拒绝。
@@ -400,7 +413,11 @@ GET /sub/:token
 - rotate-all 全成功只 reload 一次。
 - rotate-all 任意失败保持旧 active。
 - Caddy apply 成功但真实 XHTTP 探测失败时恢复旧 Caddy。
-- DB 状态切换失败时恢复旧 Caddy 并清理 pending。
+- DB 状态切换失败时恢复旧 Caddy，并把本批 pending 转为 retired 保留 hostname 历史。
+- 首次批量初始化少录任一启用且符合托管条件的 Inbound 时，在 Caddy apply 之前拒绝。
+- 首次批量初始化全部映射只 apply/reload 一次，全部健康后才统一 active。
+- 关联 PortalListenPort 不可达时整批回滚。
+- 轮换失败产生的 pending 转 retired，不删除 hostname 历史。
 
 ## 18. 实施阶段
 

@@ -44,6 +44,7 @@ type AllSetting struct {
 type EndpointSettings struct {
 	SubscriptionEnable   bool   `json:"subscriptionEnable" form:"subscriptionEnable"`
 	SubscriptionToken    string `json:"subscriptionToken" form:"-"`
+	SubscriptionBaseURL  string `json:"subscriptionBaseUrl" form:"subscriptionBaseUrl"`
 	PublicBaseDomain     string `json:"publicBaseDomain" form:"publicBaseDomain"`
 	PublicPort           int    `json:"publicPort" form:"publicPort"`
 	HostRandomLength     int    `json:"hostRandomLength" form:"hostRandomLength"`

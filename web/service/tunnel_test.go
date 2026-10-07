@@ -160,6 +160,52 @@ func TestNormalizeTunnelDefaultsLegacyRecordToDirect(t *testing.T) {
 	}
 }
 
+func TestNormalizePortalXHTTPRemoteAddressToLowercase(t *testing.T) {
+	tunnel := &model.Tunnel{
+		Mode:            TunnelModePortal,
+		PortalTransport: PortalTransportXHTTP,
+		RemoteAddress:   "CDN.ASDASDASDAS.SHOP",
+	}
+	(&TunnelService{}).normalizeTunnel(tunnel)
+	if got, want := tunnel.RemoteAddress, "cdn.asdasdasdas.shop"; got != want {
+		t.Fatalf("Portal XHTTP RemoteAddress = %q, want %q", got, want)
+	}
+}
+
+func TestPortalXHTTPRejectsNonFixedManagedPaths(t *testing.T) {
+	paths := []string{"/foo*", "/foo bar", "/foo{", "/__xui_health"}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			tunnel := &model.Tunnel{
+				Mode:                TunnelModePortal,
+				ListenPort:          18081,
+				Network:             "tcp",
+				TargetAddress:       "127.0.0.1",
+				TargetPort:          18081,
+				RemoteAddress:       "CDN.ASDASDASDAS.SHOP",
+				RemotePort:          443,
+				Protocol:            "vless",
+				UUID:                "11111111-1111-1111-1111-111111111111",
+				PortalTransport:     PortalTransportXHTTP,
+				PortalListenPort:    26418,
+				XHttpPath:           path,
+				KcpFinalMaskType:    "none",
+				KcpMtu:              1350,
+				KcpTti:              20,
+				KcpUplinkCapacity:   5,
+				KcpDownlinkCapacity: 20,
+				KcpReadBufferSize:   2,
+				KcpWriteBufferSize:  2,
+			}
+			service := &TunnelService{}
+			service.normalizeTunnel(tunnel)
+			if err := service.checkTunnel(tunnel); err == nil {
+				t.Fatalf("Portal XHTTP path %q unexpectedly passed strict managed validation", path)
+			}
+		})
+	}
+}
+
 func TestLegacyDirectTunnelShortIDCanStillBeEdited(t *testing.T) {
 	tunnel := &model.Tunnel{
 		Mode:                TunnelModeDirect,

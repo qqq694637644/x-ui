@@ -38,6 +38,17 @@ type managedVLESSSettings struct {
 	Fallbacks  []json.RawMessage `json:"fallbacks"`
 }
 
+func validateManagedFixedPath(value string) (string, error) {
+	path := strings.TrimSpace(value)
+	if path == "" || !strings.HasPrefix(path, "/") {
+		return "", fmt.Errorf("managed XHTTP path must start with /")
+	}
+	if strings.ContainsAny(path, "?#{* \t\r\n") || strings.Contains(path, "/"+managedHealthLeaf) {
+		return "", fmt.Errorf("managed XHTTP path must be a plain fixed path without query, wildcard, whitespace, or reserved health segment")
+	}
+	return path, nil
+}
+
 func validateManagedInbound(inbound *model.Inbound) (*managedInboundSpec, error) {
 	if inbound == nil {
 		return nil, fmt.Errorf("inbound is required")
@@ -65,12 +76,9 @@ func validateManagedInbound(inbound *model.Inbound) (*managedInboundSpec, error)
 	if strings.TrimSpace(stream.XHTTP.Host) != "" {
 		return nil, fmt.Errorf("managed VLESS/XHTTP inbound xhttpSettings.host must be empty")
 	}
-	path := strings.TrimSpace(stream.XHTTP.Path)
-	if path == "" || !strings.HasPrefix(path, "/") {
-		return nil, fmt.Errorf("managed VLESS/XHTTP inbound path must start with /")
-	}
-	if strings.ContainsAny(path, "?#{* \t\r\n") || strings.Contains(path, "/"+managedHealthLeaf) {
-		return nil, fmt.Errorf("managed VLESS/XHTTP inbound path must be a plain fixed path without query, wildcard, whitespace, or reserved health segment")
+	path, err := validateManagedFixedPath(stream.XHTTP.Path)
+	if err != nil {
+		return nil, fmt.Errorf("managed VLESS/XHTTP inbound path is invalid: %w", err)
 	}
 	mode := strings.TrimSpace(stream.XHTTP.Mode)
 	if mode == "" {
@@ -133,6 +141,7 @@ func (s *LinkService) GenerateInboundLink(inbound *model.Inbound, endpoint *mode
 	params.Set("host", host)
 	params.Set("mode", spec.Mode)
 	params.Set("sni", host)
+	params.Set("alpn", "http/1.1")
 
 	base := fmt.Sprintf("vless://%s@%s", spec.ClientID, joinHostPort(host, endpoint.Port))
 	return base + "?" + params.Encode() + "#" + escapeFragment(inbound.Remark), nil

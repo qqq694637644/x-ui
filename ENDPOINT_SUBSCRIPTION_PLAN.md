@@ -242,7 +242,9 @@ Caddy 使用对应 wildcard origin certificate，并长期接受 `*.asdasdasdas.
 
 对于当前 `publicBaseDomain`，x-ui 采用破坏式所有权：首次托管时删除该域名下旧的 exact-host 站点块以及旧 `*.publicBaseDomain` wildcard 站点块，之后只保留数据库生成的唯一 managed wildcard 站点。其他无关域名的 Caddy 配置保留。更新继续复用现有 `CaddyService` 的 validate -> backup/write -> reload -> rollback。
 
-启动恢复采用 fail-closed：如果数据库存在 active/draining Endpoint，或上次中断留下 pending Endpoint，启动时必须先把 pending 转 retired 并重新生成/应用完整 managed Caddy。reconcile 失败时标记 managed state unhealthy；公开订阅返回 503，轮换和首次初始化也拒绝继续，直到一次完整 Caddy 同步成功。
+一旦 `public_endpoints` 出现任何历史记录，`publicBaseDomain` 与 `publicPort` 视为 managed zone 身份的一部分，不再允许修改；即使当前只剩 retired 历史也一样。这样 retired-only 启动恢复永远能够清理同一个 zone，不会因为设置漂移留下旧域名 Caddy route。
+
+启动恢复采用 fail-closed：`public_endpoints` 只要存在任何历史记录（包括仅剩 retired），启动时都必须重新生成/应用一次完整 managed Caddy；上次中断留下的 pending 先转 retired。这样即使进程恰好在 DB `draining -> retired` 后、Caddy 更新前掉电，重启也会把旧 hostname route 清掉。reconcile 失败时标记 managed state unhealthy；公开订阅返回 503，轮换和首次初始化也拒绝继续，直到一次完整 Caddy 同步成功。
 
 ### 9.3 固定 path
 
@@ -283,6 +285,7 @@ V1 的主操作不是逐条修改，而是“全部随机一次”。点击一�
 - reload 失败：依赖现有 CaddyService 回滚。
 - reload 成功但健康检查失败：恢复前一版 managed block，pending 全部转 retired 并永久保留 hostname 历史。
 - DB active 切换失败：恢复旧 Caddy managed block，避免 Caddy 与订阅状态分裂。
+- 任一失败路径如果 pending -> retired 清理本身失败，立即把 managed state 标记为 unhealthy，并同时返回原始错误与 cleanup 错误，不允许静默遗留 pending。
 
 正常轮换不修改 Cloudflare DNS、UUID、内部端口、XHTTP path，因此无需 Restart Xray。
 
@@ -308,6 +311,7 @@ V1 默认任意关键 Endpoint 失败就整批回滚，避免出现不可预期�
 发布前必须做真实传输链路探测，而不是只检查 Caddy 自己返回 204：
 
 - 临时启动一个使用同 UUID/path/mode 的 Xray VLESS/XHTTP 客户端。
+- managed 公网 TLS 固定使用 HTTP/1.1：客户端订阅写入 `alpn=http/1.1`，临时健康检查的 `tlsSettings.alpn` 固定为 `["http/1.1"]`，两边必须一致。
 - 临时客户端通过新 hostname 建立 `TLS/XHTTP -> Cloudflare -> Caddy -> h2c -> 本地 Xray` 连接。
 - 再通过该真实代理链路访问仅用于验证的 204 URL；只有整条 VLESS/XHTTP 链路可用才算成功。
 - 临时 Xray 进程、配置文件和本地代理端口均在探测后清理。
@@ -331,6 +335,8 @@ Portal route /portal-path -> 127.0.0.1:26418
 - 普通代理 Inbound route 可以进入 Subscription。
 - Portal/Tunnel route 可以跟随同一 hostname group 一起轮换，但绝不进入客户端订阅。
 - hostname 切换前必须检查关联 Portal XHTTP 的本地 `PortalListenPort`；普通代理真实链路成功但 Portal 本地监听失败时不得提交轮换。
+- Portal XHTTP `RemoteAddress` 保存时统一转小写；轮换兼容历史大小写记录，并校验实际更新行数。
+- Portal XHTTP path 与普通 managed Inbound 复用同一套 fixed-path validator，禁止 query、wildcard、空白、`{` 和 `__xui_health` 保留段。
 
 实现时预留 route group / binding 概念，并根据当前 Tunnel 的 `RemoteAddress`、`PortalListenPort`、`XHttpPath` 数据流确定最终绑定方式。
 
@@ -390,6 +396,7 @@ GET /sub/:token
 - draining Endpoint 不进入新订阅。
 - 任意已发布节点缺 endpoint 或链接生成失败时，整个订阅请求失败，不返回残缺订阅。
 - 任意已发布 Inbound 的 active Endpoint 数量不是恰好 1 时整个订阅失败。
+- `Enable + Publish` 数量为 0 是合法状态：返回 HTTP 200 + 空订阅正文，让客户端能够同步删除全部旧节点；只有存在 published 节点但其状态不满足不变量时才返回 503。
 - managed startup reconcile 失败时订阅返回 503。
 - 稳定订阅 URL 使用显式 `subscriptionBaseUrl`，并拒绝落在 managed zone。
 - 多 Inbound 顺序稳定。
@@ -418,6 +425,11 @@ GET /sub/:token
 - 首次批量初始化全部映射只 apply/reload 一次，全部健康后才统一 active。
 - 关联 PortalListenPort 不可达时整批回滚。
 - 轮换失败产生的 pending 转 retired，不删除 hostname 历史。
+- retired-only 历史启动时仍必须执行一次 Caddy reconcile。
+- pending cleanup 数据库失败时 fail-close 并同时报告原始错误与 cleanup 错误。
+- Portal RemoteAddress 历史大写值也必须随 rotation 正确切换。
+- Inbound 因流量/到期自动 disable 时，如其存在 live managed Endpoint，必须同步 Caddy；Caddy 同步失败则恢复 enable 状态并 fail-close。
+- Portal XHTTP path 使用与普通 managed Inbound 完全相同的 strict fixed-path 校验。
 
 ## 18. 实施阶段
 

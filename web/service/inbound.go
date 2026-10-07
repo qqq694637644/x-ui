@@ -15,6 +15,7 @@ import (
 )
 
 type InboundService struct {
+	syncManagedRoutesHook func() error
 }
 
 func validateInboundTransport(inbound *model.Inbound) error {
@@ -320,12 +321,59 @@ func (s *InboundService) AddTraffic(traffics []*xray.Traffic) (err error) {
 }
 
 func (s *InboundService) DisableInvalidInbounds() (int64, error) {
+	endpointMutationLock.Lock()
+	defer endpointMutationLock.Unlock()
+
 	db := database.GetDB()
 	now := time.Now().Unix() * 1000
-	result := db.Model(model.Inbound{}).
+	var invalid []*model.Inbound
+	if err := db.Model(model.Inbound{}).
 		Where("((total > 0 and up + down >= total) or (expiry_time > 0 and expiry_time <= ?)) and enable = ?", now, true).
-		Update("enable", false)
-	err := result.Error
-	count := result.RowsAffected
-	return count, err
+		Find(&invalid).Error; err != nil {
+		return 0, err
+	}
+	if len(invalid) == 0 {
+		return 0, nil
+	}
+	ids := make([]int, 0, len(invalid))
+	for _, inbound := range invalid {
+		ids = append(ids, inbound.Id)
+	}
+	result := db.Model(&model.Inbound{}).Where("id IN ? AND enable = ?", ids, true).Update("enable", false)
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return 0, nil
+	}
+
+	var managedEndpointCount int64
+	if err := db.Model(&model.PublicEndpoint{}).
+		Where("inbound_id IN ? AND status IN ?", ids, []string{model.EndpointStatusPending, model.EndpointStatusActive, model.EndpointStatusDraining}).
+		Count(&managedEndpointCount).Error; err != nil {
+		if rollbackErr := db.Model(&model.Inbound{}).Where("id IN ?", ids).Update("enable", true).Error; rollbackErr != nil {
+			setManagedStateHealthy(false)
+			return 0, common.NewError("自动禁用入站后检查托管 Endpoint 失败: ", err, "; 数据恢复失败: ", rollbackErr)
+		}
+		return 0, err
+	}
+	if managedEndpointCount == 0 {
+		return result.RowsAffected, nil
+	}
+
+	var syncErr error
+	if s.syncManagedRoutesHook != nil {
+		syncErr = s.syncManagedRoutesHook()
+	} else {
+		_, syncErr = (&EndpointService{}).applyCurrentRoutes()
+	}
+	if syncErr == nil {
+		setManagedStateHealthy(true)
+		return result.RowsAffected, nil
+	}
+	setManagedStateHealthy(false)
+	if rollbackErr := db.Model(&model.Inbound{}).Where("id IN ?", ids).Update("enable", true).Error; rollbackErr != nil {
+		return 0, common.NewError("自动禁用入站后的 Caddy 同步失败: ", syncErr, "; 数据恢复失败: ", rollbackErr)
+	}
+	return 0, common.NewError("自动禁用入站后的 Caddy 同步失败，数据库已恢复: ", syncErr)
 }

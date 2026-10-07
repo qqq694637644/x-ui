@@ -48,6 +48,7 @@ func TestGenerateManagedVLESSXHTTPLinkUsesPublicHostAndFixedPath(t *testing.T) {
 		"host":     endpoint.Host,
 		"security": "tls",
 		"sni":      endpoint.Host,
+		"alpn":     "http/1.1",
 	}
 	for key, want := range checks {
 		if got := query.Get(key); got != want {

@@ -96,8 +96,7 @@ func (s *EndpointService) StartupReconcile() error {
 	if err := database.GetDB().Where("status = ?", model.EndpointStatusPending).Find(&pending).Error; err != nil {
 		return err
 	}
-	hadPending := len(pending) > 0
-	if hadPending {
+	if len(pending) > 0 {
 		ids := make([]int, 0, len(pending))
 		for _, endpoint := range pending {
 			ids = append(ids, endpoint.Id)
@@ -108,13 +107,11 @@ func (s *EndpointService) StartupReconcile() error {
 		}
 	}
 
-	var liveCount int64
-	if err := database.GetDB().Model(&model.PublicEndpoint{}).
-		Where("status IN ?", []string{model.EndpointStatusActive, model.EndpointStatusDraining}).
-		Count(&liveCount).Error; err != nil {
+	var historyCount int64
+	if err := database.GetDB().Model(&model.PublicEndpoint{}).Count(&historyCount).Error; err != nil {
 		return err
 	}
-	if liveCount == 0 && !hadPending {
+	if historyCount == 0 {
 		setManagedStateHealthy(true)
 		return nil
 	}
@@ -277,34 +274,24 @@ func (s *EndpointService) InitializeBatch(userID int, form *EndpointBatchInit) (
 
 	oldContent, err := s.applyCurrentRoutes()
 	if err != nil {
-		s.retirePending(pendingIDs)
-		return nil, err
+		return nil, s.finishFailedPendingMutation(err, pendingIDs, nil)
 	}
 	for _, item := range items {
 		healthPath := managedHealthPath(transportMatchPath(item.spec.Path))
 		if err := s.checkManagedEndpointHealth(item.inbound, item.next, healthPath); err != nil {
 			restoreErr := s.restoreCaddy(oldContent)
-			s.retirePending(pendingIDs)
-			if restoreErr != nil {
-				setManagedStateHealthy(false)
-				return nil, common.NewError("初始化公网入口真实链路探测失败: ", err, "; Caddy 回滚失败: ", restoreErr)
-			}
-			return nil, fmt.Errorf("initial endpoint real-chain health check failed for %s: %w", item.next.Host, err)
+			cause := fmt.Errorf("initial endpoint real-chain health check failed for %s: %w", item.next.Host, err)
+			return nil, s.finishFailedPendingMutation(cause, pendingIDs, restoreErr)
 		}
 		if err := s.checkManagedPortalsHealth(item.inbound.Id, item.next.Host); err != nil {
 			restoreErr := s.restoreCaddy(oldContent)
-			s.retirePending(pendingIDs)
-			if restoreErr != nil {
-				setManagedStateHealthy(false)
-				return nil, common.NewError("初始化 Portal 监听探测失败: ", err, "; Caddy 回滚失败: ", restoreErr)
-			}
-			return nil, err
+			return nil, s.finishFailedPendingMutation(err, pendingIDs, restoreErr)
 		}
 	}
 
 	if err := s.commitInitialization(items); err != nil {
-		s.retirePending(pendingIDs)
-		return nil, s.rollbackCaddy(oldContent, err)
+		restoreErr := s.restoreCaddy(oldContent)
+		return nil, s.finishFailedPendingMutation(common.NewError("endpoint initialization transaction failed: ", err), pendingIDs, restoreErr)
 	}
 	result := &EndpointInitResult{Count: len(items), Items: make([]*model.PublicEndpoint, 0, len(items))}
 	for _, item := range items {
@@ -356,25 +343,24 @@ func (s *EndpointService) UpdateSettings(settings *entity.EndpointSettings, mana
 	if err != nil {
 		return err
 	}
-	var count int64
-	if err := database.GetDB().Model(model.PublicEndpoint{}).
-		Where("status != ?", model.EndpointStatusRetired).Count(&count).Error; err != nil {
+	var historyCount int64
+	if err := database.GetDB().Model(model.PublicEndpoint{}).Count(&historyCount).Error; err != nil {
 		return err
 	}
 	newDomain := normalizeDomain(settings.PublicBaseDomain)
 	if host := requestHostname(managementHost); hostBelongsToManagedZone(host, newDomain) {
 		return fmt.Errorf("management hostname %s must not belong to managed base domain %s", host, newDomain)
 	}
-	if count > 0 && newDomain != normalizeDomain(old.PublicBaseDomain) {
-		return fmt.Errorf("cannot change public base domain while active/draining endpoints exist")
+	if historyCount > 0 && newDomain != normalizeDomain(old.PublicBaseDomain) {
+		return fmt.Errorf("cannot change public base domain after managed endpoint history exists")
 	}
-	if count > 0 && settings.PublicPort != old.PublicPort {
-		return fmt.Errorf("cannot change public port while active/draining endpoints exist")
+	if historyCount > 0 && settings.PublicPort != old.PublicPort {
+		return fmt.Errorf("cannot change public port after managed endpoint history exists")
 	}
 	if err := s.settingService.UpdateEndpointSettings(settings); err != nil {
 		return err
 	}
-	if count == 0 {
+	if historyCount == 0 {
 		setManagedStateHealthy(true)
 		return nil
 	}
@@ -463,35 +449,25 @@ func (s *EndpointService) RotateAll(userID int) (*RotationResult, error) {
 
 	oldContent, err := s.applyCurrentRoutes()
 	if err != nil {
-		s.retirePending(pendingIDs)
-		return nil, err
+		return nil, s.finishFailedPendingMutation(err, pendingIDs, nil)
 	}
 	for _, item := range items {
 		healthPath := managedHealthPath(transportMatchPath(item.spec.Path))
 		if err := s.checkManagedEndpointHealth(item.inbound, item.next, healthPath); err != nil {
 			restoreErr := s.restoreCaddy(oldContent)
-			s.retirePending(pendingIDs)
-			if restoreErr != nil {
-				setManagedStateHealthy(false)
-				return nil, common.NewError("new endpoint real-chain health check failed: ", err, "; caddy rollback failed: ", restoreErr)
-			}
-			return nil, fmt.Errorf("new endpoint real-chain health check failed for %s: %w", item.next.Host, err)
+			cause := fmt.Errorf("new endpoint real-chain health check failed for %s: %w", item.next.Host, err)
+			return nil, s.finishFailedPendingMutation(cause, pendingIDs, restoreErr)
 		}
 		if err := s.checkManagedPortalsHealth(item.inbound.Id, item.old.Host, item.next.Host); err != nil {
 			restoreErr := s.restoreCaddy(oldContent)
-			s.retirePending(pendingIDs)
-			if restoreErr != nil {
-				setManagedStateHealthy(false)
-				return nil, common.NewError("portal listener health check failed: ", err, "; caddy rollback failed: ", restoreErr)
-			}
-			return nil, err
+			return nil, s.finishFailedPendingMutation(err, pendingIDs, restoreErr)
 		}
 	}
 
 	retireAt := time.Now().Add(time.Duration(settings.EndpointDrainSeconds) * time.Second).Unix()
 	if err := s.commitRotation(items, retireAt); err != nil {
-		s.retirePending(pendingIDs)
-		return nil, s.rollbackCaddy(oldContent, err)
+		restoreErr := s.restoreCaddy(oldContent)
+		return nil, s.finishFailedPendingMutation(common.NewError("endpoint rotation transaction failed: ", err), pendingIDs, restoreErr)
 	}
 	result := &RotationResult{Items: make([]RotationPair, 0, len(items))}
 	for _, item := range items {
@@ -531,10 +507,14 @@ func (s *EndpointService) Retire(userID int, endpointID int) error {
 		return err
 	}
 	if _, err := s.applyCurrentRoutes(); err != nil {
-		_ = database.GetDB().Model(&endpoint).
-			Updates(map[string]interface{}{"status": oldStatus, "retire_at": oldRetireAt}).Error
+		if restoreErr := database.GetDB().Model(&endpoint).
+			Updates(map[string]interface{}{"status": oldStatus, "retire_at": oldRetireAt}).Error; restoreErr != nil {
+			setManagedStateHealthy(false)
+			return common.NewError("retire endpoint Caddy sync failed: ", err, "; database restore failed: ", restoreErr)
+		}
 		return err
 	}
+	setManagedStateHealthy(true)
 	return nil
 }
 
@@ -560,10 +540,14 @@ func (s *EndpointService) RetireExpired() error {
 		return err
 	}
 	if _, err := s.applyCurrentRoutes(); err != nil {
-		_ = database.GetDB().Model(&model.PublicEndpoint{}).Where("id IN ?", ids).
-			Update("status", model.EndpointStatusDraining).Error
+		if restoreErr := database.GetDB().Model(&model.PublicEndpoint{}).Where("id IN ?", ids).
+			Update("status", model.EndpointStatusDraining).Error; restoreErr != nil {
+			setManagedStateHealthy(false)
+			return common.NewError("retire expired endpoints Caddy sync failed: ", err, "; database restore failed: ", restoreErr)
+		}
 		return err
 	}
+	setManagedStateHealthy(true)
 	return nil
 }
 
@@ -656,9 +640,13 @@ func (s *EndpointService) managedRoutes() ([]ManagedRoute, error) {
 			Kind:         "inbound",
 		})
 		for _, portal := range portalByInbound[inbound.Id] {
+			portalPath, err := validateManagedFixedPath(portal.XHttpPath)
+			if err != nil {
+				return nil, fmt.Errorf("managed Portal XHTTP %d path is invalid: %w", portal.Id, err)
+			}
 			routes = append(routes, ManagedRoute{
 				Host:         endpoint.Host,
-				Path:         transportMatchPath(portal.XHttpPath),
+				Path:         transportMatchPath(portalPath),
 				UpstreamHost: "127.0.0.1",
 				UpstreamPort: portal.PortalListenPort,
 				Kind:         "portal",
@@ -802,21 +790,43 @@ func (s *EndpointService) commitRotation(items []rotationItem, retireAt int64) e
 		return tx.Error
 	}
 	for _, item := range items {
-		if err := tx.Model(&model.PublicEndpoint{}).Where("id = ?", item.old.Id).
-			Updates(map[string]interface{}{"status": model.EndpointStatusDraining, "retire_at": retireAt}).Error; err != nil {
+		oldResult := tx.Model(&model.PublicEndpoint{}).
+			Where("id = ? AND status = ?", item.old.Id, model.EndpointStatusActive).
+			Updates(map[string]interface{}{"status": model.EndpointStatusDraining, "retire_at": retireAt})
+		if oldResult.Error != nil {
+			tx.Rollback()
+			return oldResult.Error
+		}
+		if oldResult.RowsAffected != 1 {
+			tx.Rollback()
+			return fmt.Errorf("active endpoint %d changed before rotation commit", item.old.Id)
+		}
+		nextResult := tx.Model(&model.PublicEndpoint{}).
+			Where("id = ? AND status = ?", item.next.Id, model.EndpointStatusPending).
+			Updates(map[string]interface{}{"status": model.EndpointStatusActive, "retire_at": 0})
+		if nextResult.Error != nil {
+			tx.Rollback()
+			return nextResult.Error
+		}
+		if nextResult.RowsAffected != 1 {
+			tx.Rollback()
+			return fmt.Errorf("pending endpoint %d changed before rotation commit", item.next.Id)
+		}
+		portalWhere := "mode = ? AND portal_transport = ? AND LOWER(TRIM(remote_address)) = ?"
+		portalArgs := []interface{}{TunnelModePortal, PortalTransportXHTTP, strings.ToLower(item.old.Host)}
+		var portalCount int64
+		if err := tx.Model(&model.Tunnel{}).Where(portalWhere, portalArgs...).Count(&portalCount).Error; err != nil {
 			tx.Rollback()
 			return err
 		}
-		if err := tx.Model(&model.PublicEndpoint{}).Where("id = ?", item.next.Id).
-			Updates(map[string]interface{}{"status": model.EndpointStatusActive, "retire_at": 0}).Error; err != nil {
+		result := tx.Model(&model.Tunnel{}).Where(portalWhere, portalArgs...).Update("remote_address", strings.ToLower(item.next.Host))
+		if result.Error != nil {
 			tx.Rollback()
-			return err
+			return result.Error
 		}
-		if err := tx.Model(&model.Tunnel{}).
-			Where("mode = ? AND portal_transport = ? AND remote_address = ?", TunnelModePortal, PortalTransportXHTTP, item.old.Host).
-			Update("remote_address", item.next.Host).Error; err != nil {
+		if result.RowsAffected != portalCount {
 			tx.Rollback()
-			return err
+			return fmt.Errorf("updated %d Portal XHTTP rows for %s, expected %d", result.RowsAffected, item.old.Host, portalCount)
 		}
 	}
 	return tx.Commit().Error
@@ -874,18 +884,34 @@ func (s *EndpointService) generateUniqueHost(baseDomain string, length int, rese
 	return "", fmt.Errorf("failed to allocate a unique random hostname")
 }
 
-func (s *EndpointService) retirePending(ids []int) {
+func (s *EndpointService) retirePending(ids []int) error {
 	if len(ids) == 0 {
-		return
+		return nil
 	}
-	_ = database.GetDB().Model(&model.PublicEndpoint{}).Where("id IN ? AND status = ?", ids, model.EndpointStatusPending).
-		Updates(map[string]interface{}{"status": model.EndpointStatusRetired, "retire_at": time.Now().Unix()}).Error
+	result := database.GetDB().Model(&model.PublicEndpoint{}).Where("id IN ? AND status = ?", ids, model.EndpointStatusPending).
+		Updates(map[string]interface{}{"status": model.EndpointStatusRetired, "retire_at": time.Now().Unix()})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != int64(len(ids)) {
+		return fmt.Errorf("retired %d pending endpoints, expected %d", result.RowsAffected, len(ids))
+	}
+	return nil
 }
 
-func (s *EndpointService) rollbackCaddy(oldContent string, cause error) error {
-	if restoreErr := s.restoreCaddy(oldContent); restoreErr != nil {
+func (s *EndpointService) finishFailedPendingMutation(cause error, pendingIDs []int, caddyRollbackErr error) error {
+	cleanupErr := s.retirePending(pendingIDs)
+	if caddyRollbackErr != nil || cleanupErr != nil {
 		setManagedStateHealthy(false)
-		return common.NewError("endpoint transaction failed: ", cause, "; caddy rollback failed: ", restoreErr)
+	}
+	if caddyRollbackErr != nil && cleanupErr != nil {
+		return common.NewError(cause, "; caddy rollback failed: ", caddyRollbackErr, "; pending cleanup failed: ", cleanupErr)
+	}
+	if caddyRollbackErr != nil {
+		return common.NewError(cause, "; caddy rollback failed: ", caddyRollbackErr)
+	}
+	if cleanupErr != nil {
+		return common.NewError(cause, "; pending cleanup failed: ", cleanupErr)
 	}
 	return cause
 }

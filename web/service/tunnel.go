@@ -144,6 +144,9 @@ func (s *TunnelService) normalizeTunnel(tunnel *model.Tunnel) {
 	if tunnel.PortalTransport == "" {
 		tunnel.PortalTransport = PortalTransportMkcp
 	}
+	if tunnel.Mode == TunnelModePortal && tunnel.PortalTransport == PortalTransportXHTTP {
+		tunnel.RemoteAddress = strings.ToLower(tunnel.RemoteAddress)
+	}
 	if tunnel.Protocol == "" {
 		if tunnel.Mode == TunnelModePortal {
 			if tunnel.PortalTransport == PortalTransportXHTTP {
@@ -233,9 +236,11 @@ func (s *TunnelService) checkTunnel(tunnel *model.Tunnel) error {
 			if tunnel.PortalListenPort <= 0 || tunnel.PortalListenPort > 65535 {
 				return common.NewError("Portal XHTTP 本地监听端口不合法:", tunnel.PortalListenPort)
 			}
-			if !strings.HasPrefix(tunnel.XHttpPath, "/") {
-				return common.NewError("Portal XHTTP 路径必须以 / 开头")
+			path, err := validateManagedFixedPath(tunnel.XHttpPath)
+			if err != nil {
+				return common.NewError("Portal XHTTP 路径不合法: ", err)
 			}
+			tunnel.XHttpPath = path
 		default:
 			return common.NewError("Portal 传输仅支持 mkcp 或 xhttp:", tunnel.PortalTransport)
 		}

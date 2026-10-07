@@ -114,6 +114,35 @@ func TestSubscriptionRejectsWrongToken(t *testing.T) {
 	}
 }
 
+func TestSubscriptionAllowsEmptyPublishedSet(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "subscription-empty.db")); err != nil {
+		t.Fatal(err)
+	}
+	setManagedStateHealthy(true)
+	settingService := &SettingService{}
+	initial, err := settingService.GetEndpointSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settingService.UpdateEndpointSettings(&entity.EndpointSettings{
+		SubscriptionEnable:   true,
+		SubscriptionBaseURL:  "https://sub.example.net/xui",
+		PublicBaseDomain:     "asdasdasdas.shop",
+		PublicPort:           443,
+		HostRandomLength:     10,
+		EndpointDrainSeconds: 1800,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := (&SubscriptionService{}).Generate(initial.SubscriptionToken)
+	if err != nil {
+		t.Fatalf("Generate() empty published set error = %v", err)
+	}
+	if body != "" {
+		t.Fatalf("Generate() empty published set body = %q, want empty HTTP 200 body", body)
+	}
+}
+
 func TestSubscriptionFailsClosedWhenPublishedInboundHasNoActiveEndpoint(t *testing.T) {
 	if err := database.InitDB(filepath.Join(t.TempDir(), "subscription-missing-endpoint.db")); err != nil {
 		t.Fatal(err)

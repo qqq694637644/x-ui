@@ -181,6 +181,7 @@ func buildEndpointHealthCheckConfig(spec *managedInboundSpec, endpoint *model.Pu
 					"security": "tls",
 					"tlsSettings": map[string]interface{}{
 						"serverName": endpoint.Host,
+						"alpn":       []string{"http/1.1"},
 					},
 					"xhttpSettings": map[string]interface{}{
 						"path": spec.Path,

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"x-ui/database"
 	"x-ui/database/model"
@@ -361,6 +362,170 @@ func TestStartupReconcileFailureMarksManagedStateUnhealthy(t *testing.T) {
 		t.Fatal("managed state remained healthy after startup reconcile failure")
 	}
 	defer setManagedStateHealthy(true)
+}
+
+func TestStartupReconcileAppliesCaddyWhenOnlyRetiredHistoryRemains(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "startup-retired-only.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	retired := &model.PublicEndpoint{
+		InboundId: 999,
+		Host:      "retired.asdasdasdas.shop",
+		Port:      443,
+		Status:    model.EndpointStatusRetired,
+		CreatedAt: 1,
+		RetireAt:  2,
+	}
+	if err := database.GetDB().Create(retired).Error; err != nil {
+		t.Fatal(err)
+	}
+	applyCalls := 0
+	service := &EndpointService{applyManagedSiteHook: func(baseDomain string, block string) (string, error) {
+		applyCalls++
+		if strings.Contains(block, retired.Host) {
+			t.Fatalf("retired host leaked into reconciled Caddy block:\n%s", block)
+		}
+		return "stale-caddy-containing-retired-host", nil
+	}}
+	if err := service.StartupReconcile(); err != nil {
+		t.Fatalf("StartupReconcile() error = %v", err)
+	}
+	if applyCalls != 1 {
+		t.Fatalf("StartupReconcile() Caddy apply calls = %d, want 1", applyCalls)
+	}
+	if !isManagedStateHealthy() {
+		t.Fatal("managed state remained unhealthy after retired-only reconcile")
+	}
+}
+
+func TestEndpointSettingsKeepManagedZoneStableAfterRetiredHistoryExists(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "settings-retired-history.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	retired := &model.PublicEndpoint{
+		InboundId: 999,
+		Host:      "retired.asdasdasdas.shop",
+		Port:      443,
+		Status:    model.EndpointStatusRetired,
+		CreatedAt: 1,
+		RetireAt:  2,
+	}
+	if err := database.GetDB().Create(retired).Error; err != nil {
+		t.Fatal(err)
+	}
+	settings, err := (&SettingService{}).GetEndpointSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyCalls := 0
+	service := &EndpointService{applyManagedSiteHook: func(baseDomain string, block string) (string, error) {
+		applyCalls++
+		return "old-caddy", nil
+	}}
+	updated := *settings
+	updated.HostRandomLength++
+	if err := service.UpdateSettings(&updated, "panel.example.net"); err != nil {
+		t.Fatalf("UpdateSettings() non-zone change error = %v", err)
+	}
+	if applyCalls != 1 {
+		t.Fatalf("UpdateSettings() retired-only Caddy applies = %d, want 1", applyCalls)
+	}
+
+	changedZone := updated
+	changedZone.PublicBaseDomain = "other.example.net"
+	if err := service.UpdateSettings(&changedZone, "panel.example.net"); err == nil || !strings.Contains(err.Error(), "managed endpoint history") {
+		t.Fatalf("UpdateSettings() managed-zone change error = %v", err)
+	}
+}
+
+func TestFailedMutationReportsPendingCleanupFailureAndFailsClosed(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "pending-cleanup-fail.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	inbound := validManagedInboundForTest(0, "cleanup-fail", 26417, "/cleanup")
+	inbound.Tag = "pending-cleanup-fail"
+	if err := database.GetDB().Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+	trigger := `CREATE TRIGGER fail_pending_retire
+BEFORE UPDATE OF status ON public_endpoints
+WHEN OLD.status = 'pending' AND NEW.status = 'retired'
+BEGIN
+    SELECT RAISE(ABORT, 'injected pending cleanup failure');
+END;`
+	if err := database.GetDB().Exec(trigger).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := &EndpointService{applyManagedSiteHook: func(baseDomain string, block string) (string, error) {
+		return "", errors.New("injected Caddy apply failure")
+	}}
+	_, err := service.InitializeBatch(1, &EndpointBatchInit{Items: []*EndpointInit{
+		{InboundId: inbound.Id, Host: "cleanup.asdasdasdas.shop", Port: 443},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "injected Caddy apply failure") || !strings.Contains(err.Error(), "pending cleanup failed") {
+		t.Fatalf("InitializeBatch() cleanup failure error = %v", err)
+	}
+	if isManagedStateHealthy() {
+		t.Fatal("managed state stayed healthy after pending cleanup failure")
+	}
+	defer setManagedStateHealthy(true)
+	var pendingCount int64
+	if err := database.GetDB().Model(&model.PublicEndpoint{}).Where("status = ?", model.EndpointStatusPending).Count(&pendingCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if pendingCount != 1 {
+		t.Fatalf("pending endpoint count = %d, want 1 after injected cleanup failure", pendingCount)
+	}
+}
+
+func TestCommitRotationUpdatesLegacyUppercasePortalHost(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "portal-uppercase.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	inbound, old := createPublishedManagedInboundForTest(t, "portal-uppercase", "portal-uppercase", 26417, "/fixed", "cdn.asdasdasdas.shop")
+	next := &model.PublicEndpoint{
+		InboundId: inbound.Id,
+		Host:      "next.asdasdasdas.shop",
+		Port:      443,
+		Status:    model.EndpointStatusPending,
+		CreatedAt: old.CreatedAt + 1,
+	}
+	if err := database.GetDB().Create(next).Error; err != nil {
+		t.Fatal(err)
+	}
+	portal := &model.Tunnel{
+		UserId:           1,
+		Enable:           true,
+		Mode:             TunnelModePortal,
+		RemoteAddress:    "CDN.ASDASDASDAS.SHOP",
+		RemotePort:       443,
+		Protocol:         "vless",
+		UUID:             "55555555-5555-5555-5555-555555555555",
+		PortalTransport:  PortalTransportXHTTP,
+		PortalListenPort: 26418,
+		XHttpPath:        "/portal-fixed",
+	}
+	if err := database.GetDB().Create(portal).Error; err != nil {
+		t.Fatal(err)
+	}
+	spec, err := validateManagedInbound(inbound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&EndpointService{}).commitRotation([]rotationItem{{inbound: inbound, old: old, next: next, spec: spec}}, time.Now().Add(time.Minute).Unix()); err != nil {
+		t.Fatalf("commitRotation() error = %v", err)
+	}
+	var stored model.Tunnel
+	if err := database.GetDB().First(&stored, portal.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.RemoteAddress != next.Host {
+		t.Fatalf("Portal RemoteAddress = %q, want %q", stored.RemoteAddress, next.Host)
+	}
 }
 
 func TestRotateAllDBSwitchFailureRestoresCaddyAndKeepsOldActive(t *testing.T) {

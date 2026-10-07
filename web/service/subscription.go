@@ -79,10 +79,6 @@ func (s *SubscriptionService) Generate(token string) (string, error) {
 		}
 		links = append(links, link)
 	}
-	if len(links) == 0 {
-		return "", fmt.Errorf("subscription has no publishable endpoints")
-	}
-
 	body := strings.Join(links, "\n")
 	return base64.StdEncoding.EncodeToString([]byte(body)), nil
 }

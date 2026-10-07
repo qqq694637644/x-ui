@@ -38,6 +38,10 @@ func TestBuildEndpointHealthCheckConfigUsesSameXHTTPPathAndPublicTLSHost(t *test
 	if tlsSettings["serverName"] != endpoint.Host {
 		t.Fatalf("health-check TLS serverName = %#v, want %s", tlsSettings["serverName"], endpoint.Host)
 	}
+	alpn, ok := tlsSettings["alpn"].([]interface{})
+	if !ok || len(alpn) != 1 || alpn[0] != "http/1.1" {
+		t.Fatalf("health-check TLS alpn = %#v, want [http/1.1]", tlsSettings["alpn"])
+	}
 }
 
 func TestEndpointHealthCheckConfigAcceptedByConfiguredXray(t *testing.T) {

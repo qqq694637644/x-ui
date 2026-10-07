@@ -326,9 +326,9 @@ func TestRotateAllPortalListenerFailureRollsBackWholeBatch(t *testing.T) {
 	}
 	restoreCalls := 0
 	service := &EndpointService{
-		applyManagedSiteHook: func(baseDomain string, block string) (string, error) { return "old-caddy", nil },
+		applyManagedSiteHook:    func(baseDomain string, block string) (string, error) { return "old-caddy", nil },
 		healthCheckEndpointHook: func(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error { return nil },
-		healthCheckPortalHook: func(portal *model.Tunnel) error { return errors.New("portal listener unavailable") },
+		healthCheckPortalHook:   func(portal *model.Tunnel) error { return errors.New("portal listener unavailable") },
 		restoreCaddyHook: func(content string) error {
 			restoreCalls++
 			return nil

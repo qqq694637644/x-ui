@@ -32,7 +32,9 @@
             <a-spin :spinning="spinning" :delay="500" tip="loading">
                 <transition name="list" appear>
                     <a-card hoverable style="margin-bottom: 20px;">
-                        <a-alert type="info" show-icon message="Caddyfile 管理"
+                        <a-alert v-if="managedReadOnly" type="warning" show-icon message="Managed Endpoint 已接管 Caddy"
+                                 description="存在 pending / active / draining PublicEndpoint 时，本页只允许读取配置和校验草稿；路径、保存、Reload 均由后端锁定。"></a-alert>
+                        <a-alert v-else type="info" show-icon message="Caddyfile 管理"
                                  description="只需要填写 Caddy 目录。面板会自动使用该目录下的 caddy 和 Caddyfile，保存前会校验，保存并 Reload 失败时会恢复旧 Caddyfile。"></a-alert>
                     </a-card>
                 </transition>
@@ -43,12 +45,12 @@
                             <a-row :gutter="16">
                                 <a-col :xs="24" :md="16">
                                     <a-form-item label="Caddy 目录">
-                                        <a-input v-model="caddyPath" placeholder="例如 /opt/caddy"></a-input>
+                                        <a-input v-model="caddyPath" :disabled="managedReadOnly" placeholder="例如 /opt/caddy"></a-input>
                                     </a-form-item>
                                 </a-col>
                                 <a-col :xs="24" :md="8">
                                     <a-form-item label=" ">
-                                        <a-button type="primary" @click="savePath">保存路径并读取</a-button>
+                                        <a-button type="primary" :disabled="managedReadOnly" @click="savePath">保存路径并读取</a-button>
                                         <a-button style="margin-left: 8px" @click="getConfig">读取</a-button>
                                     </a-form-item>
                                 </a-col>
@@ -70,9 +72,9 @@
                         <div slot="title">
                             <a-space>
                                 <a-button @click="validateConfig">校验</a-button>
-                                <a-button type="primary" @click="saveConfig">保存</a-button>
-                                <a-button type="danger" @click="saveReloadConfig">保存并 Reload</a-button>
-                                <a-button @click="reloadConfig">Reload 当前配置</a-button>
+                                <a-button type="primary" :disabled="managedReadOnly" @click="saveConfig">保存</a-button>
+                                <a-button type="danger" :disabled="managedReadOnly" @click="saveReloadConfig">保存并 Reload</a-button>
+                                <a-button :disabled="managedReadOnly" @click="reloadConfig">Reload 当前配置</a-button>
                             </a-space>
                         </div>
                         <a-textarea
@@ -129,6 +131,7 @@
             caddyEditorHeight: getSavedCaddyEditorHeight(),
             stdout: '',
             stderr: '',
+            managedReadOnly: false,
         },
         methods: {
             loading(spinning = true) {
@@ -145,6 +148,7 @@
                 this.caddyBin = config.caddyBin || '';
                 this.caddyfile = config.caddyfile || '';
                 this.content = config.content || '';
+                this.managedReadOnly = !!config.managedReadOnly;
             },
             saveEditorHeight() {
                 this.$nextTick(() => {

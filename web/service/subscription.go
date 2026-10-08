@@ -32,13 +32,6 @@ func (s *SubscriptionService) Generate(token string) (string, error) {
 	if subtle.ConstantTimeCompare([]byte(token), []byte(settings.SubscriptionToken)) != 1 {
 		return "", ErrSubscriptionToken
 	}
-	if strings.TrimSpace(settings.SubscriptionBaseURL) == "" {
-		return "", fmt.Errorf("stable subscription base URL is not configured")
-	}
-	if !isManagedStateHealthy() {
-		return "", ErrManagedStateUnhealthy
-	}
-
 	db := database.GetDB()
 	var inbounds []*model.Inbound
 	if err := db.Model(model.Inbound{}).
@@ -46,6 +39,15 @@ func (s *SubscriptionService) Generate(token string) (string, error) {
 		Order("id asc").
 		Find(&inbounds).Error; err != nil {
 		return "", err
+	}
+	if len(inbounds) == 0 {
+		return "", nil
+	}
+	if strings.TrimSpace(settings.SubscriptionBaseURL) == "" {
+		return "", fmt.Errorf("stable subscription base URL is not configured")
+	}
+	if !isManagedStateHealthy() {
+		return "", ErrManagedStateUnhealthy
 	}
 
 	var endpoints []*model.PublicEndpoint

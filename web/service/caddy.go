@@ -10,14 +10,18 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"x-ui/database"
+	"x-ui/database/model"
 	"x-ui/util/common"
 )
 
 type CaddyConfig struct {
-	Path      string `json:"path"`
-	CaddyBin  string `json:"caddyBin"`
-	Caddyfile string `json:"caddyfile"`
-	Content   string `json:"content"`
+	Path            string `json:"path"`
+	CaddyBin        string `json:"caddyBin"`
+	Caddyfile       string `json:"caddyfile"`
+	Content         string `json:"content"`
+	ManagedReadOnly bool   `json:"managedReadOnly"`
 }
 
 type CaddyCommandResult struct {
@@ -27,6 +31,28 @@ type CaddyCommandResult struct {
 
 type CaddyService struct {
 	settingService SettingService
+}
+
+func (s *CaddyService) ManualMutationLocked() (bool, error) {
+	var count int64
+	err := database.GetDB().Model(&model.PublicEndpoint{}).
+		Where("status IN ?", []string{model.EndpointStatusPending, model.EndpointStatusActive, model.EndpointStatusDraining}).
+		Count(&count).Error
+	if err != nil {
+		return true, err
+	}
+	return count > 0, nil
+}
+
+func (s *CaddyService) EnsureManualMutationAllowed() error {
+	locked, err := s.ManualMutationLocked()
+	if err != nil {
+		return err
+	}
+	if locked {
+		return common.NewError("存在 live PublicEndpoint 时 Caddy 由 managed endpoint 独占管理；禁止修改路径、保存或 reload")
+	}
+	return nil
 }
 
 func (s *CaddyService) GetPath() (string, error) {

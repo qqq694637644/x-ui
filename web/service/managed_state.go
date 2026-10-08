@@ -22,6 +22,14 @@ func isManagedStateHealthy() bool {
 	return managedDataHealthy.Load() && managedCaddyHealthy.Load() && managedXrayHealthy.Load()
 }
 
+func isManagedDataHealthy() bool {
+	return managedDataHealthy.Load()
+}
+
+func isManagedCaddyHealthy() bool {
+	return managedCaddyHealthy.Load()
+}
+
 func setManagedStateHealthy(healthy bool) {
 	managedDataHealthy.Store(healthy)
 	managedCaddyHealthy.Store(healthy)

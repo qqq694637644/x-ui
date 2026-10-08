@@ -118,7 +118,8 @@ func TestSubscriptionAllowsEmptyPublishedSet(t *testing.T) {
 	if err := database.InitDB(filepath.Join(t.TempDir(), "subscription-empty.db")); err != nil {
 		t.Fatal(err)
 	}
-	setManagedStateHealthy(true)
+	setManagedStateHealthy(false)
+	defer setManagedStateHealthy(true)
 	settingService := &SettingService{}
 	initial, err := settingService.GetEndpointSettings()
 	if err != nil {
@@ -136,7 +137,7 @@ func TestSubscriptionAllowsEmptyPublishedSet(t *testing.T) {
 	}
 	body, err := (&SubscriptionService{}).Generate(initial.SubscriptionToken)
 	if err != nil {
-		t.Fatalf("Generate() empty published set error = %v", err)
+		t.Fatalf("Generate() empty published set while managed state unhealthy error = %v", err)
 	}
 	if body != "" {
 		t.Fatalf("Generate() empty published set body = %q, want empty HTTP 200 body", body)
@@ -231,6 +232,22 @@ func TestSubscriptionFailsClosedWhenManagedStateIsUnhealthy(t *testing.T) {
 		HostRandomLength:     10,
 		EndpointDrainSeconds: 1800,
 	}); err != nil {
+		t.Fatal(err)
+	}
+	inbound := validManagedInboundForTest(0, "unhealthy", 26417, "/fixed")
+	inbound.Publish = true
+	inbound.Tag = "subscription-unhealthy"
+	if err := database.GetDB().Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+	endpoint := &model.PublicEndpoint{
+		InboundId: inbound.Id,
+		Host:      "unhealthy.asdasdasdas.shop",
+		Port:      443,
+		Status:    model.EndpointStatusActive,
+		CreatedAt: 1,
+	}
+	if err := database.GetDB().Create(endpoint).Error; err != nil {
 		t.Fatal(err)
 	}
 	setManagedStateHealthy(false)

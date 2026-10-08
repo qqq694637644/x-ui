@@ -117,7 +117,7 @@ type PublicEndpoint struct {
 
 - `Host` 在全部 Endpoint 历史中必须唯一；retired hostname 永不重新分配。
 - SQLite 使用 partial unique index 保证 `UNIQUE(inbound_id) WHERE status='active'`；业务层读取 active 时也要求数量严格等于 1。
-- 失败的 pending 不 DELETE，而是转成 retired，确保随机生成过的 hostname 也不会被重新分配。
+- 从未成功切换为 active 的 pending 失败时直接 DELETE；只有真正进入过 active/draining 生命周期的 hostname 才永久保留为 retired 并禁止复用。这样首次配置失败不会因为无效历史锁死 managed zone 设置。
 - 删除 Inbound 时保留 Endpoint 历史，继续占用已经使用过的 hostname。
 
 ### 5.2 Inbound 发布开关
@@ -249,7 +249,9 @@ Caddy 使用对应 wildcard origin certificate，并长期接受 `*.asdasdasdas.
 
 一旦 `public_endpoints` 出现任何历史记录，`publicBaseDomain`、`publicPort`、`caddyTlsCertFile`、`caddyTlsKeyFile` 视为 managed zone 身份的一部分，不再允许修改；即使当前只剩 retired 历史也一样。这样 retired-only 启动恢复永远能够清理同一个 zone，也避免在没有真实链路验证的情况下热切换 wildcard 证书。
 
-启动恢复采用 fail-closed：`public_endpoints` 只要存在任何历史记录（包括仅剩 retired），启动时都必须重新生成/应用一次完整 managed Caddy；上次中断留下的 pending 先转 retired。这样即使进程恰好在 DB `draining -> retired` 后、Caddy 更新前掉电，重启也会把旧 hostname route 清掉。
+启动恢复采用 fail-closed：`public_endpoints` 只要存在任何历史记录（包括仅剩 retired），启动时都必须重新生成/应用一次完整 managed Caddy；上次中断留下的 pending 视为从未正式启用并直接删除，但仍强制执行一次完整 Caddy reconcile，把可能已写入 Caddy 的 pending route 清掉。这样即使进程恰好在 DB `draining -> retired` 后、Caddy 更新前掉电，重启也会把旧 hostname route 清掉。
+
+原有 Caddy 编辑页面不能绕过 managed state：只要数据库存在 pending / active / draining PublicEndpoint，后端拒绝 `/caddy/path`、`/caddy/save`、`/caddy/reload`、`/caddy/saveReload`，页面同步进入只读模式；只保留读取当前配置和 `validate` 草稿。retired-only 历史不锁页面，因为已经没有 live managed route。
 
 managed state 拆成三个独立条件：数据库/状态机不变量、Caddy 全量同步状态、Xray 运行状态。公开订阅、轮换和首次初始化只有三者同时 healthy 才开放。任何 managed Caddy apply/sync 失败立即把 Caddy 状态置 unhealthy；即使随后成功恢复旧 Caddy 内容，也只代表回滚完成，不会重新打开订阅/轮换闸门，必须再完成一次明确成功的全量 managed reconcile 才能把 Caddy 状态恢复为 healthy。任何数据库 rollback/cleanup 失败立即把数据状态置 unhealthy；Xray 启动或重启失败立即把 Xray 状态置 unhealthy。只要某次配置修改调用 `SetToNeedRestart()`，也立即把 Xray 状态置 unhealthy，避免等待 10 秒重启 cron 的窗口继续下发已经领先于运行中 Xray 的配置。只有完整 `StartupReconcile` 可以重新确认数据不变量，只有成功的全量 Caddy reconcile 可以重新确认 Caddy，只有成功启动/重启且进程实际运行才能重新确认 Xray。
 
@@ -290,9 +292,9 @@ V1 的主操作不是逐条修改，而是“全部随机一次”。点击一�
 
 - validate 失败：不修改当前 active。
 - reload 失败：依赖现有 CaddyService 回滚。
-- reload 成功但健康检查失败：恢复前一版 managed block，pending 全部转 retired 并永久保留 hostname 历史。
+- reload 成功但健康检查失败：恢复前一版 managed block，删除本批从未 active 的 pending。
 - DB active 切换失败：恢复旧 Caddy managed block，避免 Caddy 与订阅状态分裂。
-- 任一失败路径如果 pending -> retired 清理本身失败，立即把 managed state 标记为 unhealthy，并同时返回原始错误与 cleanup 错误，不允许静默遗留 pending。
+- 任一失败路径如果 pending DELETE 清理本身失败，立即把 managed state 标记为 unhealthy，并同时返回原始错误与 cleanup 错误，不允许静默遗留 pending。
 
 正常轮换不修改 Cloudflare DNS、UUID、内部端口、XHTTP path，因此无需 Restart Xray。
 
@@ -387,7 +389,7 @@ GET /sub/:token
 
 新增模型继续使用 GORM `AutoMigrate`。
 
-首次启用时不要自动猜测 Inbound 与公网 Host 的关系。首次接管必须是批量原子操作：管理员一次填写所有启用且符合严格 VLESS/XHTTP 约束的 Inbound -> 当前公网 Host/Port 映射，服务端先在一个数据库事务中批量写 pending，然后一次生成完整 Caddy、一次 validate/reload，逐项完成普通 VLESS/XHTTP 与关联 Portal 健康检查，全部成功后再用一个数据库事务统一切 active。任何节点失败都恢复接管前 Caddy，全部 pending 转 retired。单节点 Initialize 不存在。
+首次启用时不要自动猜测 Inbound 与公网 Host 的关系。首次接管必须是批量原子操作：管理员一次填写所有启用且符合严格 VLESS/XHTTP 约束的 Inbound -> 当前公网 Host/Port 映射，服务端先在一个数据库事务中批量写 pending，然后一次生成完整 Caddy、一次 validate/reload，逐项完成普通 VLESS/XHTTP 与关联 Portal 健康检查，全部成功后再用一个数据库事务统一切 active。任何节点失败都恢复接管前 Caddy，并删除全部从未 active 的 pending，因此首次配置错误后仍可直接修正 base/cert/key 等设置并重试。单节点 Initialize 不存在。
 
 ## 17. 测试计划
 
@@ -429,16 +431,18 @@ GET /sub/:token
 - rotate-all 全成功只 reload 一次。
 - rotate-all 任意失败保持旧 active。
 - Caddy apply 成功但真实 XHTTP 探测失败时恢复旧 Caddy。
-- DB 状态切换失败时恢复旧 Caddy，并把本批 pending 转为 retired 保留 hostname 历史。
+- DB 状态切换失败时恢复旧 Caddy，并删除本批从未 active 的 pending。
 - 首次批量初始化少录任一启用且符合托管条件的 Inbound 时，在 Caddy apply 之前拒绝。
 - 首次批量初始化全部映射只 apply/reload 一次，全部健康后才统一 active。
 - 关联 PortalListenPort 不可达时整批回滚。
-- 轮换失败产生的 pending 转 retired，不删除 hostname 历史。
+- 轮换失败产生的 pending 直接删除；曾经成功 active 的 hostname 仍通过 draining -> retired 永久保留。
 - retired-only 历史启动时仍必须执行一次 Caddy reconcile。
 - pending cleanup 数据库失败时 fail-close 并同时报告原始错误与 cleanup 错误。
 - Portal RemoteAddress 历史大写值也必须随 rotation 正确切换。
 - Inbound 因流量/到期自动 disable 时，如其存在 live managed Endpoint，必须同步 Caddy；Caddy 同步失败则恢复 enable 状态并 fail-close。
 - Portal XHTTP path 使用与普通 managed Inbound 完全相同的 strict fixed-path 校验。
+- Enable + Publish 数量为 0 时，不受 managed Data/Caddy/Xray healthy 状态影响，订阅必须返回 HTTP 200 空正文，让客户端清掉旧节点；只有实际存在待下发节点时才执行 fail-closed healthy 检查。
+- 存在 Endpoint 历史后可编辑的 `subscriptionEnable`、`subscriptionBaseUrl`、`hostRandomLength`、`endpointDrainSeconds` 都不会改变 Caddy route，因此保存这些设置不得触发 Caddy validate/reload。唯一例外是首次初始化失败后已经删除全部 never-active pending、当前 history=0 且 Data/Caddy 仍处于 fail-closed 状态：保存修正后的设置会执行一次空 managed 全量 reconcile，成功后才允许重新初始化；不能仅凭设置保存直接把 Caddy 判回 healthy。
 
 ## 18. 实施阶段
 

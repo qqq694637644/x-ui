@@ -185,6 +185,94 @@ func TestInitializeBatchRejectsPartialFirstTakeoverBeforeCaddyApply(t *testing.T
 	assertNoPendingEndpointsForTest(t)
 }
 
+func TestInitializeBatchFailureDeletesNeverActiveEndpointsAndAllowsSettingsCorrection(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "initialize-failure-recovery.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	inbound := validManagedInboundForTest(0, "recoverable", 26417, "/recoverable")
+	inbound.Tag = "initialize-failure-recovery"
+	if err := database.GetDB().Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+	service := &EndpointService{applyManagedSiteHook: func(baseDomain string, block string) (string, error) {
+		return "", errors.New("injected initial Caddy failure")
+	}}
+	if _, err := service.InitializeBatch(1, &EndpointBatchInit{Items: []*EndpointInit{
+		{InboundId: inbound.Id, Host: "recoverable.asdasdasdas.shop", Port: 443},
+	}}); err == nil {
+		t.Fatal("InitializeBatch() unexpectedly succeeded")
+	}
+	var historyCount int64
+	if err := database.GetDB().Model(&model.PublicEndpoint{}).Count(&historyCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if historyCount != 0 {
+		t.Fatalf("failed initialization left %d endpoint history rows, want 0", historyCount)
+	}
+	reconcileCalls := 0
+	service.applyManagedSiteHook = func(baseDomain string, block string) (string, error) {
+		reconcileCalls++
+		if strings.Contains(block, "recoverable.asdasdasdas.shop") {
+			t.Fatalf("never-active failed host leaked into recovery reconcile:\n%s", block)
+		}
+		return "stale-caddy", nil
+	}
+	settings, err := (&SettingService{}).GetEndpointSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.CaddyTLSCertFile = "/etc/caddy/corrected.crt"
+	settings.CaddyTLSKeyFile = "/etc/caddy/corrected.key"
+	if err := service.UpdateSettings(settings, "panel.example.net"); err != nil {
+		t.Fatalf("UpdateSettings() after never-active initialization failure = %v", err)
+	}
+	if reconcileCalls != 1 {
+		t.Fatalf("UpdateSettings() recovery reconcile calls = %d, want 1", reconcileCalls)
+	}
+	if !isManagedStateHealthy() {
+		t.Fatal("zero-history settings correction did not reopen managed state for initialization retry")
+	}
+}
+
+func TestStartupReconcileDeletesCrashPendingAndStillAppliesCaddy(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "startup-pending-only.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	pending := &model.PublicEndpoint{
+		InboundId: 999,
+		Host:      "crash-pending.asdasdasdas.shop",
+		Port:      443,
+		Status:    model.EndpointStatusPending,
+		CreatedAt: 1,
+	}
+	if err := database.GetDB().Create(pending).Error; err != nil {
+		t.Fatal(err)
+	}
+	applyCalls := 0
+	service := &EndpointService{applyManagedSiteHook: func(baseDomain string, block string) (string, error) {
+		applyCalls++
+		if strings.Contains(block, pending.Host) {
+			t.Fatalf("crash pending host leaked into reconciled Caddy block:\n%s", block)
+		}
+		return "stale-caddy-containing-pending-host", nil
+	}}
+	if err := service.StartupReconcile(); err != nil {
+		t.Fatalf("StartupReconcile() pending-only error = %v", err)
+	}
+	if applyCalls != 1 {
+		t.Fatalf("StartupReconcile() pending-only Caddy applies = %d, want 1", applyCalls)
+	}
+	var historyCount int64
+	if err := database.GetDB().Model(&model.PublicEndpoint{}).Count(&historyCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if historyCount != 0 {
+		t.Fatalf("StartupReconcile() kept %d never-active pending rows, want 0", historyCount)
+	}
+}
+
 func TestRotateAllSuccessSwitchesWholeBatchAfterOneCaddyApply(t *testing.T) {
 	if err := database.InitDB(filepath.Join(t.TempDir(), "rotate-success.db")); err != nil {
 		t.Fatal(err)
@@ -301,7 +389,7 @@ func TestRotateAllHealthCheckFailureRollsBackWholeBatch(t *testing.T) {
 	assertEndpointStatusForTest(t, oldA.Id, model.EndpointStatusActive)
 	assertEndpointStatusForTest(t, oldB.Id, model.EndpointStatusActive)
 	assertNoPendingEndpointsForTest(t)
-	assertRetiredEndpointCountForTest(t, 2)
+	assertRetiredEndpointCountForTest(t, 0)
 	if isManagedStateHealthy() {
 		t.Fatal("managed state became healthy again after failed Caddy generation path merely rolled back old content")
 	}
@@ -347,7 +435,7 @@ func TestRotateAllPortalListenerFailureRollsBackWholeBatch(t *testing.T) {
 	}
 	assertEndpointStatusForTest(t, old.Id, model.EndpointStatusActive)
 	assertNoPendingEndpointsForTest(t)
-	assertRetiredEndpointCountForTest(t, 1)
+	assertRetiredEndpointCountForTest(t, 0)
 	if isManagedStateHealthy() {
 		t.Fatal("managed state became healthy again after Portal validation failure merely rolled back old Caddy content")
 	}
@@ -437,8 +525,8 @@ func TestEndpointSettingsKeepManagedZoneStableAfterRetiredHistoryExists(t *testi
 	if err := service.UpdateSettings(&updated, "panel.example.net"); err != nil {
 		t.Fatalf("UpdateSettings() non-zone change error = %v", err)
 	}
-	if applyCalls != 1 {
-		t.Fatalf("UpdateSettings() retired-only Caddy applies = %d, want 1", applyCalls)
+	if applyCalls != 0 {
+		t.Fatalf("UpdateSettings() non-Caddy change unexpectedly applied Caddy %d times", applyCalls)
 	}
 
 	changedZone := updated
@@ -458,9 +546,9 @@ func TestFailedMutationReportsPendingCleanupFailureAndFailsClosed(t *testing.T) 
 	if err := database.GetDB().Create(inbound).Error; err != nil {
 		t.Fatal(err)
 	}
-	trigger := `CREATE TRIGGER fail_pending_retire
-BEFORE UPDATE OF status ON public_endpoints
-WHEN OLD.status = 'pending' AND NEW.status = 'retired'
+	trigger := `CREATE TRIGGER fail_pending_delete
+BEFORE DELETE ON public_endpoints
+WHEN OLD.status = 'pending'
 BEGIN
     SELECT RAISE(ABORT, 'injected pending cleanup failure');
 END;`
@@ -569,7 +657,7 @@ func TestRotateAllDBSwitchFailureRestoresCaddyAndKeepsOldActive(t *testing.T) {
 	assertEndpointStatusForTest(t, oldA.Id, model.EndpointStatusActive)
 	assertEndpointStatusForTest(t, oldB.Id, model.EndpointStatusActive)
 	assertNoPendingEndpointsForTest(t)
-	assertRetiredEndpointCountForTest(t, 2)
+	assertRetiredEndpointCountForTest(t, 0)
 }
 
 func TestCommitRotationDatabaseTransactionRollsBackPartialUpdates(t *testing.T) {
@@ -828,7 +916,7 @@ func TestEndpointSettingsLockTLSPathsAfterHistoryExists(t *testing.T) {
 	}
 }
 
-func TestEndpointSettingsCaddyFailureRestoresAndFailsClosed(t *testing.T) {
+func TestEndpointSettingsNonCaddyChangeDoesNotReloadCaddy(t *testing.T) {
 	if err := database.InitDB(filepath.Join(t.TempDir(), "endpoint-settings-caddy-fail.db")); err != nil {
 		t.Fatal(err)
 	}
@@ -850,24 +938,25 @@ func TestEndpointSettingsCaddyFailureRestoresAndFailsClosed(t *testing.T) {
 	}
 	oldHostLength := settings.HostRandomLength
 	settings.HostRandomLength++
+	applyCalls := 0
 	service := &EndpointService{applyManagedSiteHook: func(baseDomain string, block string) (string, error) {
-		return "", errors.New("injected settings Caddy apply failure")
+		applyCalls++
+		return "", errors.New("non-Caddy settings update must not reach Caddy")
 	}}
 	err = service.UpdateSettings(settings, "panel.example.net")
-	if err == nil {
-		t.Fatal("UpdateSettings() unexpectedly succeeded")
+	if err != nil {
+		t.Fatalf("UpdateSettings() non-Caddy change error = %v", err)
 	}
 	stored, err := settingService.GetEndpointSettings()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.HostRandomLength != oldHostLength {
-		t.Fatalf("Endpoint settings rollback failed: hostRandomLength=%d want %d", stored.HostRandomLength, oldHostLength)
+	if stored.HostRandomLength != oldHostLength+1 {
+		t.Fatalf("Endpoint settings update not persisted: hostRandomLength=%d want %d", stored.HostRandomLength, oldHostLength+1)
 	}
-	if isManagedStateHealthy() {
-		t.Fatal("managed state stayed healthy after Endpoint settings Caddy failure")
+	if applyCalls != 0 {
+		t.Fatalf("non-Caddy Endpoint settings change applied Caddy %d times", applyCalls)
 	}
-	defer setManagedStateHealthy(true)
 }
 
 func assertEndpointStatusForTest(t *testing.T, id int, want string) {

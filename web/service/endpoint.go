@@ -94,13 +94,14 @@ func (s *EndpointService) StartupReconcile() error {
 	if err := database.GetDB().Where("status = ?", model.EndpointStatusPending).Find(&pending).Error; err != nil {
 		return err
 	}
+	hadPending := len(pending) > 0
 	if len(pending) > 0 {
 		ids := make([]int, 0, len(pending))
 		for _, endpoint := range pending {
 			ids = append(ids, endpoint.Id)
 		}
-		if err := database.GetDB().Model(&model.PublicEndpoint{}).Where("id IN ?", ids).
-			Updates(map[string]interface{}{"status": model.EndpointStatusRetired, "retire_at": time.Now().Unix()}).Error; err != nil {
+		if err := s.deletePending(ids); err != nil {
+			setManagedDataHealthy(false)
 			return err
 		}
 	}
@@ -109,7 +110,7 @@ func (s *EndpointService) StartupReconcile() error {
 	if err := database.GetDB().Model(&model.PublicEndpoint{}).Count(&historyCount).Error; err != nil {
 		return err
 	}
-	if historyCount == 0 {
+	if historyCount == 0 && !hadPending {
 		setManagedDataHealthy(true)
 		setManagedCaddyHealthy(true)
 		return nil
@@ -365,14 +366,12 @@ func (s *EndpointService) UpdateSettings(settings *entity.EndpointSettings, mana
 		return err
 	}
 	if historyCount == 0 {
-		return nil
-	}
-	if _, err := s.applyCurrentRoutes(); err != nil {
-		if restoreErr := s.settingService.UpdateEndpointSettings(old); restoreErr != nil {
-			setManagedDataHealthy(false)
-			return common.NewError("更新 Endpoint 设置后的 Caddy 同步失败: ", err, "; 设置恢复失败: ", restoreErr)
+		if !isManagedDataHealthy() || !isManagedCaddyHealthy() {
+			if _, err := s.applyCurrentRoutes(); err != nil {
+				return common.NewError("修正 Endpoint 设置后的空 managed Caddy reconcile 失败: ", err)
+			}
 		}
-		return err
+		setManagedDataHealthy(true)
 	}
 	return nil
 }
@@ -895,23 +894,23 @@ func (s *EndpointService) generateUniqueHost(baseDomain string, length int, rese
 	return "", fmt.Errorf("failed to allocate a unique random hostname")
 }
 
-func (s *EndpointService) retirePending(ids []int) error {
+func (s *EndpointService) deletePending(ids []int) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	result := database.GetDB().Model(&model.PublicEndpoint{}).Where("id IN ? AND status = ?", ids, model.EndpointStatusPending).
-		Updates(map[string]interface{}{"status": model.EndpointStatusRetired, "retire_at": time.Now().Unix()})
+	result := database.GetDB().Where("id IN ? AND status = ?", ids, model.EndpointStatusPending).
+		Delete(&model.PublicEndpoint{})
 	if result.Error != nil {
 		return result.Error
 	}
 	if result.RowsAffected != int64(len(ids)) {
-		return fmt.Errorf("retired %d pending endpoints, expected %d", result.RowsAffected, len(ids))
+		return fmt.Errorf("deleted %d pending endpoints, expected %d", result.RowsAffected, len(ids))
 	}
 	return nil
 }
 
 func (s *EndpointService) finishFailedPendingMutation(cause error, pendingIDs []int, caddyRollbackErr error) error {
-	cleanupErr := s.retirePending(pendingIDs)
+	cleanupErr := s.deletePending(pendingIDs)
 	if cleanupErr != nil {
 		setManagedDataHealthy(false)
 	}

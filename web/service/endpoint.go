@@ -81,16 +81,14 @@ func (s *EndpointService) SyncManagedRoutes() error {
 	endpointMutationLock.Lock()
 	defer endpointMutationLock.Unlock()
 	_, err := s.applyCurrentRoutes()
-	if err == nil {
-		setManagedStateHealthy(true)
-	}
 	return err
 }
 
 func (s *EndpointService) StartupReconcile() error {
 	endpointMutationLock.Lock()
 	defer endpointMutationLock.Unlock()
-	setManagedStateHealthy(false)
+	setManagedDataHealthy(false)
+	setManagedCaddyHealthy(false)
 
 	var pending []*model.PublicEndpoint
 	if err := database.GetDB().Where("status = ?", model.EndpointStatusPending).Find(&pending).Error; err != nil {
@@ -112,13 +110,14 @@ func (s *EndpointService) StartupReconcile() error {
 		return err
 	}
 	if historyCount == 0 {
-		setManagedStateHealthy(true)
+		setManagedDataHealthy(true)
+		setManagedCaddyHealthy(true)
 		return nil
 	}
 	if _, err := s.applyCurrentRoutes(); err != nil {
 		return err
 	}
-	setManagedStateHealthy(true)
+	setManagedDataHealthy(true)
 	return nil
 }
 
@@ -298,7 +297,6 @@ func (s *EndpointService) InitializeBatch(userID int, form *EndpointBatchInit) (
 		item.next.Status = model.EndpointStatusActive
 		result.Items = append(result.Items, item.next)
 	}
-	setManagedStateHealthy(true)
 	return result, nil
 }
 
@@ -357,18 +355,25 @@ func (s *EndpointService) UpdateSettings(settings *entity.EndpointSettings, mana
 	if historyCount > 0 && settings.PublicPort != old.PublicPort {
 		return fmt.Errorf("cannot change public port after managed endpoint history exists")
 	}
+	if historyCount > 0 && strings.TrimSpace(settings.CaddyTLSCertFile) != strings.TrimSpace(old.CaddyTLSCertFile) {
+		return fmt.Errorf("cannot change Caddy TLS certificate path after managed endpoint history exists")
+	}
+	if historyCount > 0 && strings.TrimSpace(settings.CaddyTLSKeyFile) != strings.TrimSpace(old.CaddyTLSKeyFile) {
+		return fmt.Errorf("cannot change Caddy TLS key path after managed endpoint history exists")
+	}
 	if err := s.settingService.UpdateEndpointSettings(settings); err != nil {
 		return err
 	}
 	if historyCount == 0 {
-		setManagedStateHealthy(true)
 		return nil
 	}
 	if _, err := s.applyCurrentRoutes(); err != nil {
-		_ = s.settingService.UpdateEndpointSettings(old)
+		if restoreErr := s.settingService.UpdateEndpointSettings(old); restoreErr != nil {
+			setManagedDataHealthy(false)
+			return common.NewError("更新 Endpoint 设置后的 Caddy 同步失败: ", err, "; 设置恢复失败: ", restoreErr)
+		}
 		return err
 	}
-	setManagedStateHealthy(true)
 	return nil
 }
 
@@ -479,7 +484,6 @@ func (s *EndpointService) RotateAll(userID int) (*RotationResult, error) {
 		})
 	}
 	result.Count = len(result.Items)
-	setManagedStateHealthy(true)
 	return result, nil
 }
 
@@ -509,12 +513,11 @@ func (s *EndpointService) Retire(userID int, endpointID int) error {
 	if _, err := s.applyCurrentRoutes(); err != nil {
 		if restoreErr := database.GetDB().Model(&endpoint).
 			Updates(map[string]interface{}{"status": oldStatus, "retire_at": oldRetireAt}).Error; restoreErr != nil {
-			setManagedStateHealthy(false)
+			setManagedDataHealthy(false)
 			return common.NewError("retire endpoint Caddy sync failed: ", err, "; database restore failed: ", restoreErr)
 		}
 		return err
 	}
-	setManagedStateHealthy(true)
 	return nil
 }
 
@@ -542,16 +545,16 @@ func (s *EndpointService) RetireExpired() error {
 	if _, err := s.applyCurrentRoutes(); err != nil {
 		if restoreErr := database.GetDB().Model(&model.PublicEndpoint{}).Where("id IN ?", ids).
 			Update("status", model.EndpointStatusDraining).Error; restoreErr != nil {
-			setManagedStateHealthy(false)
+			setManagedDataHealthy(false)
 			return common.NewError("retire expired endpoints Caddy sync failed: ", err, "; database restore failed: ", restoreErr)
 		}
 		return err
 	}
-	setManagedStateHealthy(true)
 	return nil
 }
 
 func (s *EndpointService) applyCurrentRoutes() (string, error) {
+	setManagedCaddyHealthy(false)
 	settings, err := s.settingService.GetEndpointSettings()
 	if err != nil {
 		return "", err
@@ -568,6 +571,7 @@ func (s *EndpointService) applyCurrentRoutes() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	setManagedCaddyHealthy(true)
 	return oldContent, nil
 }
 
@@ -668,10 +672,19 @@ func (s *EndpointService) applyManagedSite(baseDomain string, block string) (str
 }
 
 func (s *EndpointService) restoreCaddy(content string) error {
+	setManagedCaddyHealthy(false)
 	if s.restoreCaddyHook != nil {
-		return s.restoreCaddyHook(content)
+		if err := s.restoreCaddyHook(content); err != nil {
+			return err
+		}
+		setManagedCaddyHealthy(true)
+		return nil
 	}
-	return s.caddyService.RestoreContent(content)
+	if err := s.caddyService.RestoreContent(content); err != nil {
+		return err
+	}
+	setManagedCaddyHealthy(true)
+	return nil
 }
 
 func (s *EndpointService) checkManagedEndpointHealth(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error {
@@ -901,8 +914,8 @@ func (s *EndpointService) retirePending(ids []int) error {
 
 func (s *EndpointService) finishFailedPendingMutation(cause error, pendingIDs []int, caddyRollbackErr error) error {
 	cleanupErr := s.retirePending(pendingIDs)
-	if caddyRollbackErr != nil || cleanupErr != nil {
-		setManagedStateHealthy(false)
+	if cleanupErr != nil {
+		setManagedDataHealthy(false)
 	}
 	if caddyRollbackErr != nil && cleanupErr != nil {
 		return common.NewError(cause, "; caddy rollback failed: ", caddyRollbackErr, "; pending cleanup failed: ", cleanupErr)

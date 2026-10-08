@@ -658,6 +658,208 @@ func TestPublishedInboundUpdateRejectsUnsupportedShapeBeforeSave(t *testing.T) {
 	}
 }
 
+func TestManagedInboundWithLiveEndpointRejectsConnectionCriticalChanges(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "managed-inbound-critical-lock.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	inbound, _ := createPublishedManagedInboundForTest(t, "critical-lock", "critical", 26417, "/fixed", "critical.asdasdasdas.shop")
+
+	tests := []struct {
+		name   string
+		mutate func(*model.Inbound)
+	}{
+		{name: "listen", mutate: func(candidate *model.Inbound) { candidate.Listen = "0.0.0.0" }},
+		{name: "port", mutate: func(candidate *model.Inbound) { candidate.Port++ }},
+		{name: "settings", mutate: func(candidate *model.Inbound) {
+			candidate.Settings = `{"clients":[{"id":"22222222-2222-2222-2222-222222222222","flow":""}],"decryption":"none"}`
+		}},
+		{name: "streamSettings", mutate: func(candidate *model.Inbound) {
+			candidate.StreamSettings = `{"network":"xhttp","security":"none","xhttpSettings":{"path":"/changed","host":"","mode":"auto"}}`
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			candidate := *inbound
+			tt.mutate(&candidate)
+			err := (&InboundService{}).UpdateInbound(&candidate)
+			if err == nil || !strings.Contains(err.Error(), "连接关键字段") {
+				t.Fatalf("UpdateInbound() critical change error = %v", err)
+			}
+			stored := &model.Inbound{}
+			if err := database.GetDB().First(stored, inbound.Id).Error; err != nil {
+				t.Fatal(err)
+			}
+			if stored.Listen != inbound.Listen || stored.Port != inbound.Port || stored.Settings != inbound.Settings || stored.StreamSettings != inbound.StreamSettings {
+				t.Fatalf("critical managed inbound fields changed despite lock: %#v", stored)
+			}
+		})
+	}
+}
+
+func TestManagedInboundWithLiveEndpointAllowsNonCriticalChanges(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "managed-inbound-noncritical.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	inbound, _ := createPublishedManagedInboundForTest(t, "noncritical", "before", 26417, "/fixed", "noncritical.asdasdasdas.shop")
+	candidate := *inbound
+	candidate.Remark = "after"
+	candidate.Total = 12345
+	candidate.ExpiryTime = time.Now().Add(time.Hour).UnixMilli()
+	candidate.Settings = `{ "decryption":"none", "clients":[ { "flow":"", "id":"11111111-1111-1111-1111-111111111111" } ] }`
+
+	syncCalls := 0
+	service := &InboundService{syncManagedRoutesHook: func() error {
+		syncCalls++
+		return nil
+	}}
+	if err := service.UpdateInbound(&candidate); err != nil {
+		t.Fatalf("UpdateInbound() non-critical change error = %v", err)
+	}
+	if syncCalls != 1 {
+		t.Fatalf("managed Caddy sync calls = %d, want 1", syncCalls)
+	}
+	stored := &model.Inbound{}
+	if err := database.GetDB().First(stored, inbound.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Remark != candidate.Remark || stored.Total != candidate.Total || stored.ExpiryTime != candidate.ExpiryTime {
+		t.Fatalf("non-critical changes were not saved: %#v", stored)
+	}
+}
+
+func TestManagedInboundUpdateCaddyFailureRestoresAndFailsClosed(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "managed-inbound-update-caddy-fail.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	inbound, _ := createPublishedManagedInboundForTest(t, "update-caddy-fail", "before", 26417, "/fixed", "update-fail.asdasdasdas.shop")
+	candidate := *inbound
+	candidate.Remark = "after"
+	service := &InboundService{syncManagedRoutesHook: func() error {
+		return errors.New("injected Caddy sync failure")
+	}}
+	err := service.UpdateInbound(&candidate)
+	if err == nil || !strings.Contains(err.Error(), "Caddy") {
+		t.Fatalf("UpdateInbound() Caddy failure error = %v", err)
+	}
+	stored := &model.Inbound{}
+	if err := database.GetDB().First(stored, inbound.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Remark != inbound.Remark {
+		t.Fatalf("Inbound rollback failed: remark=%q want %q", stored.Remark, inbound.Remark)
+	}
+	if isManagedStateHealthy() {
+		t.Fatal("managed state stayed healthy after Inbound Caddy sync failure")
+	}
+	defer setManagedStateHealthy(true)
+}
+
+func TestSyncManagedRoutesFailureFailsClosed(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "sync-managed-fail-closed.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	service := &EndpointService{applyManagedSiteHook: func(baseDomain string, block string) (string, error) {
+		return "", errors.New("injected managed Caddy apply failure")
+	}}
+	if err := service.SyncManagedRoutes(); err == nil {
+		t.Fatal("SyncManagedRoutes() unexpectedly succeeded")
+	}
+	if isManagedStateHealthy() {
+		t.Fatal("managed state stayed healthy after Caddy sync failure")
+	}
+	defer setManagedStateHealthy(true)
+}
+
+func TestStartupReconcileDoesNotBecomeHealthyBeforeXray(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "startup-waits-xray.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	setManagedXrayHealthy(false)
+	if err := (&EndpointService{}).StartupReconcile(); err != nil {
+		t.Fatalf("StartupReconcile() error = %v", err)
+	}
+	if isManagedStateHealthy() {
+		t.Fatal("managed state became healthy before Xray start succeeded")
+	}
+	setManagedXrayHealthy(true)
+	if !isManagedStateHealthy() {
+		t.Fatal("managed state did not become healthy after Caddy reconcile and Xray success")
+	}
+}
+
+func TestEndpointSettingsLockTLSPathsAfterHistoryExists(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "endpoint-tls-lock.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	if err := database.GetDB().Create(&model.PublicEndpoint{
+		InboundId: 999,
+		Host:      "history.asdasdasdas.shop",
+		Port:      443,
+		Status:    model.EndpointStatusRetired,
+		CreatedAt: 1,
+		RetireAt:  2,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	settings, err := (&SettingService{}).GetEndpointSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.CaddyTLSCertFile = "/new/fullchain.pem"
+	settings.CaddyTLSKeyFile = "/new/privkey.pem"
+	if err := (&EndpointService{}).UpdateSettings(settings, "panel.example.net"); err == nil || !strings.Contains(err.Error(), "certificate path") {
+		t.Fatalf("UpdateSettings() TLS path lock error = %v", err)
+	}
+}
+
+func TestEndpointSettingsCaddyFailureRestoresAndFailsClosed(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "endpoint-settings-caddy-fail.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	if err := database.GetDB().Create(&model.PublicEndpoint{
+		InboundId: 999,
+		Host:      "history-settings.asdasdasdas.shop",
+		Port:      443,
+		Status:    model.EndpointStatusRetired,
+		CreatedAt: 1,
+		RetireAt:  2,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	settingService := &SettingService{}
+	settings, err := settingService.GetEndpointSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldHostLength := settings.HostRandomLength
+	settings.HostRandomLength++
+	service := &EndpointService{applyManagedSiteHook: func(baseDomain string, block string) (string, error) {
+		return "", errors.New("injected settings Caddy apply failure")
+	}}
+	err = service.UpdateSettings(settings, "panel.example.net")
+	if err == nil {
+		t.Fatal("UpdateSettings() unexpectedly succeeded")
+	}
+	stored, err := settingService.GetEndpointSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.HostRandomLength != oldHostLength {
+		t.Fatalf("Endpoint settings rollback failed: hostRandomLength=%d want %d", stored.HostRandomLength, oldHostLength)
+	}
+	if isManagedStateHealthy() {
+		t.Fatal("managed state stayed healthy after Endpoint settings Caddy failure")
+	}
+	defer setManagedStateHealthy(true)
+}
+
 func assertEndpointStatusForTest(t *testing.T, id int, want string) {
 	t.Helper()
 	var endpoint model.PublicEndpoint

@@ -84,6 +84,7 @@ public -> internal            |
 - Subscription 不保存第二份完整节点配置，而是动态读取 Inbound + active PublicEndpoint 生成。
 - Caddy route 由 PublicEndpoint 派生。
 - 一个 Inbound 在数据库层最多只有一个 active Endpoint；轮换期间允许 pending / active / draining 并存。
+- Inbound 一旦存在 pending/active/draining PublicEndpoint，`Listen`、`Port`、`Protocol`、`Settings`、`StreamSettings` 视为连接关键字段并锁定；Remark、流量、到期时间、Enable 等非关键字段仍可修改。要改变 UUID/path/内部端口等关键参数，直接删除并重新建立节点。
 
 ## 5. 数据模型
 
@@ -153,6 +154,10 @@ publicPort           = 443
 hostRandomLength     = 10
 endpointDrainSeconds = 1800
 ```
+
+`endpointDrainSeconds` 最小值固定为 60 秒。V1 不提供“0 秒立即下线”，避免为了立即 retire 再增加第二次 Caddy reload。
+
+CLI `setting -reset` 在存在任何 `PublicEndpoint` 历史时直接拒绝。V1 不实现“只清 Settings、保留 Endpoint/Caddy ownership”的半重置，也不隐式执行破坏性 Endpoint 清理。
 
 以后需要多个订阅分组时，再增加 Subscription / SubscriptionInbound 关联表。
 
@@ -242,9 +247,11 @@ Caddy 使用对应 wildcard origin certificate，并长期接受 `*.asdasdasdas.
 
 对于当前 `publicBaseDomain`，x-ui 采用破坏式所有权：首次托管时删除该域名下旧的 exact-host 站点块以及旧 `*.publicBaseDomain` wildcard 站点块，之后只保留数据库生成的唯一 managed wildcard 站点。其他无关域名的 Caddy 配置保留。更新继续复用现有 `CaddyService` 的 validate -> backup/write -> reload -> rollback。
 
-一旦 `public_endpoints` 出现任何历史记录，`publicBaseDomain` 与 `publicPort` 视为 managed zone 身份的一部分，不再允许修改；即使当前只剩 retired 历史也一样。这样 retired-only 启动恢复永远能够清理同一个 zone，不会因为设置漂移留下旧域名 Caddy route。
+一旦 `public_endpoints` 出现任何历史记录，`publicBaseDomain`、`publicPort`、`caddyTlsCertFile`、`caddyTlsKeyFile` 视为 managed zone 身份的一部分，不再允许修改；即使当前只剩 retired 历史也一样。这样 retired-only 启动恢复永远能够清理同一个 zone，也避免在没有真实链路验证的情况下热切换 wildcard 证书。
 
-启动恢复采用 fail-closed：`public_endpoints` 只要存在任何历史记录（包括仅剩 retired），启动时都必须重新生成/应用一次完整 managed Caddy；上次中断留下的 pending 先转 retired。这样即使进程恰好在 DB `draining -> retired` 后、Caddy 更新前掉电，重启也会把旧 hostname route 清掉。reconcile 失败时标记 managed state unhealthy；公开订阅返回 503，轮换和首次初始化也拒绝继续，直到一次完整 Caddy 同步成功。
+启动恢复采用 fail-closed：`public_endpoints` 只要存在任何历史记录（包括仅剩 retired），启动时都必须重新生成/应用一次完整 managed Caddy；上次中断留下的 pending 先转 retired。这样即使进程恰好在 DB `draining -> retired` 后、Caddy 更新前掉电，重启也会把旧 hostname route 清掉。
+
+managed state 拆成三个独立条件：数据库/状态机不变量、Caddy 全量同步状态、Xray 运行状态。公开订阅、轮换和首次初始化只有三者同时 healthy 才开放。任何 managed Caddy apply/sync 失败立即把 Caddy 状态置 unhealthy；任何数据库 rollback/cleanup 失败立即把数据状态置 unhealthy；Xray 启动或重启失败立即把 Xray 状态置 unhealthy。只有完整 `StartupReconcile` 可以重新确认数据不变量，只有成功的全量 Caddy reconcile 可以重新确认 Caddy，只有成功启动/重启且进程实际运行才能重新确认 Xray。
 
 ### 9.3 固定 path
 
@@ -288,6 +295,8 @@ V1 的主操作不是逐条修改，而是“全部随机一次”。点击一�
 - 任一失败路径如果 pending -> retired 清理本身失败，立即把 managed state 标记为 unhealthy，并同时返回原始错误与 cleanup 错误，不允许静默遗留 pending。
 
 正常轮换不修改 Cloudflare DNS、UUID、内部端口、XHTTP path，因此无需 Restart Xray。
+
+反过来，已存在 live PublicEndpoint 的 Inbound 不允许通过普通 Inbound 编辑入口修改 UUID、path、内部监听端口等连接关键字段，避免出现“DB/Caddy/订阅已切新配置，但 Xray 仍运行旧配置”的时间窗。需要变更这些字段时必须删除/重建节点，再重新初始化 Endpoint。
 
 ## 11. 批量原子性
 

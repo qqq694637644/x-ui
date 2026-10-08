@@ -37,6 +37,16 @@ type tunnelCheckStatus struct {
 var tunnelCheckStatuses sync.Map
 
 type TunnelService struct {
+	syncManagedRoutesHook func() error
+}
+
+func (s *TunnelService) syncManagedRoutes() error {
+	if s.syncManagedRoutesHook != nil {
+		err := s.syncManagedRoutesHook()
+		setManagedCaddyHealthy(err == nil)
+		return err
+	}
+	return (&EndpointService{}).SyncManagedRoutes()
 }
 
 func (s *TunnelService) GetTunnels(userId int) ([]*model.Tunnel, error) {
@@ -300,12 +310,18 @@ func (s *TunnelService) AddTunnel(tunnel *model.Tunnel) error {
 	}
 	managed, err := s.needsManagedCaddy(tunnel)
 	if err != nil {
-		_ = db.Delete(tunnel).Error
+		if rollbackErr := db.Delete(tunnel).Error; rollbackErr != nil {
+			setManagedDataHealthy(false)
+			return common.NewError("检查 Portal XHTTP 托管状态失败: ", err, "; 数据恢复失败: ", rollbackErr)
+		}
 		return err
 	}
 	if managed {
-		if err := (&EndpointService{}).SyncManagedRoutes(); err != nil {
-			_ = db.Delete(tunnel).Error
+		if err := s.syncManagedRoutes(); err != nil {
+			if rollbackErr := db.Delete(tunnel).Error; rollbackErr != nil {
+				setManagedDataHealthy(false)
+				return common.NewError("保存 Portal XHTTP 后 Caddy 同步失败: ", err, "; 数据恢复失败: ", rollbackErr)
+			}
 			return common.NewError("保存 Portal XHTTP 后 Caddy 同步失败，数据库已恢复: ", err)
 		}
 	}
@@ -331,8 +347,9 @@ func (s *TunnelService) DelTunnel(id int, userId int) error {
 	}
 	tunnelCheckStatuses.Delete(id)
 	if managed {
-		if err := (&EndpointService{}).SyncManagedRoutes(); err != nil {
+		if err := s.syncManagedRoutes(); err != nil {
 			if restoreErr := db.Save(oldTunnel).Error; restoreErr != nil {
+				setManagedDataHealthy(false)
 				return common.NewError("删除 Portal XHTTP 后 Caddy 同步失败: ", err, "; 数据恢复失败: ", restoreErr)
 			}
 			return common.NewError("删除 Portal XHTTP 后 Caddy 同步失败，数据库已恢复: ", err)
@@ -410,12 +427,16 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	}
 	newManaged, err := s.needsManagedCaddy(oldTunnel)
 	if err != nil {
-		_ = db.Save(&previous).Error
+		if restoreErr := db.Save(&previous).Error; restoreErr != nil {
+			setManagedDataHealthy(false)
+			return common.NewError("检查更新后的 Portal XHTTP 托管状态失败: ", err, "; 数据恢复失败: ", restoreErr)
+		}
 		return err
 	}
 	if oldManaged || newManaged {
-		if err := (&EndpointService{}).SyncManagedRoutes(); err != nil {
+		if err := s.syncManagedRoutes(); err != nil {
 			if restoreErr := db.Save(&previous).Error; restoreErr != nil {
+				setManagedDataHealthy(false)
 				return common.NewError("更新 Portal XHTTP 后 Caddy 同步失败: ", err, "; 数据恢复失败: ", restoreErr)
 			}
 			return common.NewError("更新 Portal XHTTP 后 Caddy 同步失败，数据库已恢复: ", err)

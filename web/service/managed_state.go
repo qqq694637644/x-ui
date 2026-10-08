@@ -7,17 +7,35 @@ import (
 
 var (
 	ErrManagedStateUnhealthy = errors.New("managed endpoint state is not healthy")
-	managedStateHealthy      atomic.Bool
+	managedDataHealthy       atomic.Bool
+	managedCaddyHealthy      atomic.Bool
+	managedXrayHealthy       atomic.Bool
 )
 
 func init() {
-	managedStateHealthy.Store(true)
+	managedDataHealthy.Store(false)
+	managedCaddyHealthy.Store(false)
+	managedXrayHealthy.Store(false)
 }
 
 func isManagedStateHealthy() bool {
-	return managedStateHealthy.Load()
+	return managedDataHealthy.Load() && managedCaddyHealthy.Load() && managedXrayHealthy.Load()
 }
 
 func setManagedStateHealthy(healthy bool) {
-	managedStateHealthy.Store(healthy)
+	managedDataHealthy.Store(healthy)
+	managedCaddyHealthy.Store(healthy)
+	managedXrayHealthy.Store(healthy)
+}
+
+func setManagedDataHealthy(healthy bool) {
+	managedDataHealthy.Store(healthy)
+}
+
+func setManagedCaddyHealthy(healthy bool) {
+	managedCaddyHealthy.Store(healthy)
+}
+
+func setManagedXrayHealthy(healthy bool) {
+	managedXrayHealthy.Store(healthy)
 }

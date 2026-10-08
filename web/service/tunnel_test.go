@@ -3,7 +3,12 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"x-ui/database"
 	"x-ui/database/model"
 	"x-ui/util/json_util"
 )
@@ -204,6 +209,50 @@ func TestPortalXHTTPRejectsNonFixedManagedPaths(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAddManagedPortalCaddyFailureRollsBackAndFailsClosed(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "portal-add-caddy-fail.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	_, endpoint := createPublishedManagedInboundForTest(t, "portal-add-caddy-fail", "portal-owner", 26417, "/fixed", "portal-owner.asdasdasdas.shop")
+	tunnel := &model.Tunnel{
+		UserId:           1,
+		Enable:           true,
+		Mode:             TunnelModePortal,
+		Remark:           "managed-portal",
+		Listen:           "127.0.0.1",
+		ListenPort:       18081,
+		Network:          "tcp",
+		TargetAddress:    "127.0.0.1",
+		TargetPort:       18082,
+		RemoteAddress:    endpoint.Host,
+		RemotePort:       443,
+		Protocol:         "vless",
+		UUID:             "77777777-7777-7777-7777-777777777777",
+		PortalTransport:  PortalTransportXHTTP,
+		PortalListenPort: 26418,
+		XHttpPath:        "/portal-fixed",
+	}
+	service := &TunnelService{syncManagedRoutesHook: func() error {
+		return errors.New("injected managed Caddy failure")
+	}}
+	err := service.AddTunnel(tunnel)
+	if err == nil || !strings.Contains(err.Error(), "Caddy") {
+		t.Fatalf("AddTunnel() Caddy failure error = %v", err)
+	}
+	var count int64
+	if err := database.GetDB().Model(&model.Tunnel{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("managed Portal persisted after failed Caddy sync: count=%d", count)
+	}
+	if isManagedStateHealthy() {
+		t.Fatal("managed state stayed healthy after Portal Caddy sync failure")
+	}
+	defer setManagedStateHealthy(true)
 }
 
 func TestLegacyDirectTunnelShortIDCanStillBeEdited(t *testing.T) {

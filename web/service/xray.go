@@ -23,7 +23,11 @@ type XrayService struct {
 }
 
 func (s *XrayService) IsXrayRunning() bool {
-	return p != nil && p.IsRunning()
+	running := p != nil && p.IsRunning()
+	if !running {
+		setManagedXrayHealthy(false)
+	}
+	return running
 }
 
 func (s *XrayService) GetXrayErr() error {
@@ -91,9 +95,12 @@ func (s *XrayService) GetXrayTraffic() ([]*xray.Traffic, error) {
 	return p.GetTraffic(true)
 }
 
-func (s *XrayService) RestartXray(isForce bool) error {
+func (s *XrayService) RestartXray(isForce bool) (err error) {
 	lock.Lock()
 	defer lock.Unlock()
+	defer func() {
+		setManagedXrayHealthy(err == nil && p != nil && p.IsRunning())
+	}()
 	logger.Debug("restart xray, force:", isForce)
 
 	xrayConfig, err := s.GetXrayConfig()
@@ -137,6 +144,7 @@ func (s *XrayService) RestartXray(isForce bool) error {
 func (s *XrayService) StopXray() error {
 	lock.Lock()
 	defer lock.Unlock()
+	setManagedXrayHealthy(false)
 	logger.Debug("stop xray")
 	if s.IsXrayRunning() {
 		return p.Stop()

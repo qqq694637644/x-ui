@@ -85,7 +85,7 @@
                             </a-col>
                             <a-col :xs="24" :md="8">
                                 <a-form-item label="旧入口保留秒数">
-                                    <a-input-number style="width: 100%" :min="0" :max="604800" v-model="settings.endpointDrainSeconds"></a-input-number>
+                                    <a-input-number style="width: 100%" :min="60" :max="604800" v-model="settings.endpointDrainSeconds"></a-input-number>
                                 </a-form-item>
                             </a-col>
                         </a-row>

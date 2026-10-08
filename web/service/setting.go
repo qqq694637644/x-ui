@@ -129,6 +129,13 @@ func (s *SettingService) GetAllSetting() (*entity.AllSetting, error) {
 
 func (s *SettingService) ResetSettings() error {
 	db := database.GetDB()
+	var endpointHistoryCount int64
+	if err := db.Model(&model.PublicEndpoint{}).Count(&endpointHistoryCount).Error; err != nil {
+		return err
+	}
+	if endpointHistoryCount > 0 {
+		return common.NewError("存在 PublicEndpoint 历史记录时禁止 setting -reset；请先显式清理托管 Endpoint 状态")
+	}
 	return db.Where("1 = 1").Delete(model.Setting{}).Error
 }
 
@@ -289,8 +296,8 @@ func (s *SettingService) UpdateEndpointSettings(settings *entity.EndpointSetting
 	if settings.HostRandomLength < 4 || settings.HostRandomLength > 32 {
 		return common.NewError("随机子域名长度必须在 4 到 32 之间")
 	}
-	if settings.EndpointDrainSeconds < 0 || settings.EndpointDrainSeconds > 7*24*60*60 {
-		return common.NewError("旧入口保留时间必须在 0 到 604800 秒之间")
+	if settings.EndpointDrainSeconds < 60 || settings.EndpointDrainSeconds > 7*24*60*60 {
+		return common.NewError("旧入口保留时间必须在 60 到 604800 秒之间")
 	}
 	if (settings.CaddyTLSCertFile == "") != (settings.CaddyTLSKeyFile == "") {
 		return common.NewError("Caddy TLS 证书与私钥路径必须同时填写或同时留空")

@@ -666,25 +666,26 @@ func TestManagedInboundWithLiveEndpointRejectsConnectionCriticalChanges(t *testi
 	inbound, _ := createPublishedManagedInboundForTest(t, "critical-lock", "critical", 26417, "/fixed", "critical.asdasdasdas.shop")
 
 	tests := []struct {
-		name   string
-		mutate func(*model.Inbound)
+		name        string
+		mutate      func(*model.Inbound)
+		wantMessage string
 	}{
-		{name: "listen", mutate: func(candidate *model.Inbound) { candidate.Listen = "0.0.0.0" }},
-		{name: "port", mutate: func(candidate *model.Inbound) { candidate.Port++ }},
-		{name: "protocol", mutate: func(candidate *model.Inbound) { candidate.Protocol = model.VMess }},
+		{name: "listen", mutate: func(candidate *model.Inbound) { candidate.Listen = "0.0.0.0" }, wantMessage: "连接关键字段"},
+		{name: "port", mutate: func(candidate *model.Inbound) { candidate.Port++ }, wantMessage: "连接关键字段"},
+		{name: "protocol", mutate: func(candidate *model.Inbound) { candidate.Protocol = model.VMess }, wantMessage: "XHTTP 传输仅支持 VLESS"},
 		{name: "settings", mutate: func(candidate *model.Inbound) {
 			candidate.Settings = `{"clients":[{"id":"22222222-2222-2222-2222-222222222222","flow":""}],"decryption":"none"}`
-		}},
+		}, wantMessage: "连接关键字段"},
 		{name: "streamSettings", mutate: func(candidate *model.Inbound) {
 			candidate.StreamSettings = `{"network":"xhttp","security":"none","xhttpSettings":{"path":"/changed","host":"","mode":"auto"}}`
-		}},
+		}, wantMessage: "连接关键字段"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			candidate := *inbound
 			tt.mutate(&candidate)
 			err := (&InboundService{}).UpdateInbound(&candidate)
-			if err == nil || !strings.Contains(err.Error(), "连接关键字段") {
+			if err == nil || !strings.Contains(err.Error(), tt.wantMessage) {
 				t.Fatalf("UpdateInbound() critical change error = %v", err)
 			}
 			stored := &model.Inbound{}

@@ -677,13 +677,11 @@ func (s *EndpointService) restoreCaddy(content string) error {
 		if err := s.restoreCaddyHook(content); err != nil {
 			return err
 		}
-		setManagedCaddyHealthy(true)
 		return nil
 	}
 	if err := s.caddyService.RestoreContent(content); err != nil {
 		return err
 	}
-	setManagedCaddyHealthy(true)
 	return nil
 }
 

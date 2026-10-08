@@ -302,6 +302,10 @@ func TestRotateAllHealthCheckFailureRollsBackWholeBatch(t *testing.T) {
 	assertEndpointStatusForTest(t, oldB.Id, model.EndpointStatusActive)
 	assertNoPendingEndpointsForTest(t)
 	assertRetiredEndpointCountForTest(t, 2)
+	if isManagedStateHealthy() {
+		t.Fatal("managed state became healthy again after failed Caddy generation path merely rolled back old content")
+	}
+	defer setManagedStateHealthy(true)
 }
 
 func TestRotateAllPortalListenerFailureRollsBackWholeBatch(t *testing.T) {
@@ -344,6 +348,10 @@ func TestRotateAllPortalListenerFailureRollsBackWholeBatch(t *testing.T) {
 	assertEndpointStatusForTest(t, old.Id, model.EndpointStatusActive)
 	assertNoPendingEndpointsForTest(t)
 	assertRetiredEndpointCountForTest(t, 1)
+	if isManagedStateHealthy() {
+		t.Fatal("managed state became healthy again after Portal validation failure merely rolled back old Caddy content")
+	}
+	defer setManagedStateHealthy(true)
 }
 
 func TestStartupReconcileFailureMarksManagedStateUnhealthy(t *testing.T) {

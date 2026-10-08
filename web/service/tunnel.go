@@ -518,8 +518,11 @@ func (s *TunnelService) validateAllEnabledPortalBindings() error {
 	}
 	for _, tunnel := range tunnels {
 		s.normalizeTunnel(tunnel)
-		if err := s.checkTunnel(tunnel); err != nil {
-			return common.NewError("Portal XHTTP #", tunnel.Id, " 配置不合法: ", err)
+		if tunnel.RemotePort != managedPublicPort {
+			return common.NewError("Portal XHTTP #", tunnel.Id, " 公网端口必须固定为 443")
+		}
+		if _, err := validateManagedFixedPath(tunnel.XHttpPath); err != nil {
+			return common.NewError("Portal XHTTP #", tunnel.Id, " path 不合法: ", err)
 		}
 		if err := s.requireLivePortalEndpoint(tunnel); err != nil {
 			return common.NewError("Portal XHTTP #", tunnel.Id, " 未绑定 live PublicEndpoint: ", err)

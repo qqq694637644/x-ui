@@ -50,7 +50,7 @@ func TestCaddyManualMutationLockOnlyForLiveManagedEndpoints(t *testing.T) {
 	}
 }
 
-func TestCaddyManualMutationAllowsRetiredOnlyHistory(t *testing.T) {
+func TestCaddyManualMutationRemainsLockedForRetiredOnlyHistory(t *testing.T) {
 	if err := database.InitDB(filepath.Join(t.TempDir(), "caddy-retired-unlocked.db")); err != nil {
 		t.Fatal(err)
 	}
@@ -70,10 +70,10 @@ func TestCaddyManualMutationAllowsRetiredOnlyHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if locked {
-		t.Fatal("retired-only history incorrectly locked manual Caddy page")
+	if !locked {
+		t.Fatal("retired-only history unexpectedly released managed Caddy ownership")
 	}
-	if err := service.EnsureManualMutationAllowed(); err != nil {
-		t.Fatalf("retired-only history unexpectedly blocked manual Caddy mutation: %v", err)
+	if err := service.EnsureManualMutationAllowed(); err == nil {
+		t.Fatal("retired-only history unexpectedly allowed manual Caddy mutation")
 	}
 }

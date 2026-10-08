@@ -6,11 +6,13 @@ import (
 )
 
 var (
-	ErrManagedStateUnhealthy = errors.New("managed endpoint state is not healthy")
+	ErrManagedStateUnhealthy = errors.New("托管状态未通过校验；请重启 x-ui 面板完成全量校验后重试")
 	managedDataHealthy       atomic.Bool
 	managedCaddyHealthy      atomic.Bool
 	managedXrayHealthy       atomic.Bool
 )
+
+const managedPublicPort = 443
 
 func init() {
 	managedDataHealthy.Store(false)

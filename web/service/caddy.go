@@ -35,9 +35,7 @@ type CaddyService struct {
 
 func (s *CaddyService) ManualMutationLocked() (bool, error) {
 	var count int64
-	err := database.GetDB().Model(&model.PublicEndpoint{}).
-		Where("status IN ?", []string{model.EndpointStatusPending, model.EndpointStatusActive, model.EndpointStatusDraining}).
-		Count(&count).Error
+	err := database.GetDB().Model(&model.PublicEndpoint{}).Count(&count).Error
 	if err != nil {
 		return true, err
 	}
@@ -50,7 +48,7 @@ func (s *CaddyService) EnsureManualMutationAllowed() error {
 		return err
 	}
 	if locked {
-		return common.NewError("存在 live PublicEndpoint 时 Caddy 由 managed endpoint 独占管理；禁止修改路径、保存或 reload")
+		return common.NewError("存在 PublicEndpoint 历史时 managed zone 永久由 x-ui 独占管理；禁止修改 Caddy 路径、保存或 reload")
 	}
 	return nil
 }

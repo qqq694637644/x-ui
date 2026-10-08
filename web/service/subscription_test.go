@@ -26,7 +26,6 @@ func TestSubscriptionReflectsActiveEndpointRotationWithoutChangingPath(t *testin
 		SubscriptionEnable:   true,
 		SubscriptionBaseURL:  "https://sub.example.net/xui",
 		PublicBaseDomain:     "asdasdasdas.shop",
-		PublicPort:           443,
 		HostRandomLength:     10,
 		EndpointDrainSeconds: 1800,
 	}); err != nil {
@@ -103,7 +102,6 @@ func TestSubscriptionRejectsWrongToken(t *testing.T) {
 		SubscriptionEnable:   true,
 		SubscriptionBaseURL:  "https://sub.example.net/xui",
 		PublicBaseDomain:     "asdasdasdas.shop",
-		PublicPort:           443,
 		HostRandomLength:     10,
 		EndpointDrainSeconds: 1800,
 	}); err != nil {
@@ -129,7 +127,6 @@ func TestSubscriptionAllowsEmptyPublishedSet(t *testing.T) {
 		SubscriptionEnable:   true,
 		SubscriptionBaseURL:  "https://sub.example.net/xui",
 		PublicBaseDomain:     "asdasdasdas.shop",
-		PublicPort:           443,
 		HostRandomLength:     10,
 		EndpointDrainSeconds: 1800,
 	}); err != nil {
@@ -157,7 +154,6 @@ func TestSubscriptionFailsClosedWhenPublishedInboundHasNoActiveEndpoint(t *testi
 		SubscriptionEnable:   true,
 		SubscriptionBaseURL:  "https://sub.example.net/xui",
 		PublicBaseDomain:     "asdasdasdas.shop",
-		PublicPort:           443,
 		HostRandomLength:     10,
 		EndpointDrainSeconds: 1800,
 	}); err != nil {
@@ -187,7 +183,6 @@ func TestSubscriptionFailsClosedWhenPublishedInboundBecomesInvalid(t *testing.T)
 		SubscriptionEnable:   true,
 		SubscriptionBaseURL:  "https://sub.example.net/xui",
 		PublicBaseDomain:     "asdasdasdas.shop",
-		PublicPort:           443,
 		HostRandomLength:     10,
 		EndpointDrainSeconds: 1800,
 	}); err != nil {
@@ -228,7 +223,6 @@ func TestSubscriptionFailsClosedWhenManagedStateIsUnhealthy(t *testing.T) {
 		SubscriptionEnable:   true,
 		SubscriptionBaseURL:  "https://sub.example.net/xui",
 		PublicBaseDomain:     "asdasdasdas.shop",
-		PublicPort:           443,
 		HostRandomLength:     10,
 		EndpointDrainSeconds: 1800,
 	}); err != nil {
@@ -270,7 +264,6 @@ func TestSubscriptionRejectsMultipleActiveEndpointsForInbound(t *testing.T) {
 		SubscriptionEnable:   true,
 		SubscriptionBaseURL:  "https://sub.example.net/xui",
 		PublicBaseDomain:     "asdasdasdas.shop",
-		PublicPort:           443,
 		HostRandomLength:     10,
 		EndpointDrainSeconds: 1800,
 	}); err != nil {

@@ -32,7 +32,6 @@ type EndpointService struct {
 type EndpointInit struct {
 	InboundId int    `json:"inboundId" form:"inboundId"`
 	Host      string `json:"host" form:"host"`
-	Port      int    `json:"port" form:"port"`
 }
 
 type EndpointBatchInit struct {
@@ -234,17 +233,10 @@ func (s *EndpointService) InitializeBatch(userID int, form *EndpointBatchInit) (
 		if err := s.ensureHostAvailable(host); err != nil {
 			return nil, err
 		}
-		port := entry.Port
-		if port == 0 {
-			port = settings.PublicPort
-		}
-		if port != settings.PublicPort {
-			return nil, fmt.Errorf("public endpoint port must match configured public port %d", settings.PublicPort)
-		}
 		endpoint := &model.PublicEndpoint{
 			InboundId: inbound.Id,
 			Host:      host,
-			Port:      port,
+			Port:      managedPublicPort,
 			Status:    model.EndpointStatusPending,
 			CreatedAt: now,
 		}
@@ -271,6 +263,9 @@ func (s *EndpointService) InitializeBatch(userID int, form *EndpointBatchInit) (
 		return nil, err
 	}
 	pendingIDs := endpointIDs(items)
+	if err := (&TunnelService{}).validateAllEnabledPortalBindings(); err != nil {
+		return nil, s.finishFailedPendingMutation(common.NewError("首次接管前 Portal XHTTP 绑定校验失败: ", err), pendingIDs, nil)
+	}
 
 	oldContent, err := s.applyCurrentRoutes()
 	if err != nil {
@@ -353,9 +348,6 @@ func (s *EndpointService) UpdateSettings(settings *entity.EndpointSettings, mana
 	if historyCount > 0 && newDomain != normalizeDomain(old.PublicBaseDomain) {
 		return fmt.Errorf("cannot change public base domain after managed endpoint history exists")
 	}
-	if historyCount > 0 && settings.PublicPort != old.PublicPort {
-		return fmt.Errorf("cannot change public port after managed endpoint history exists")
-	}
 	if historyCount > 0 && strings.TrimSpace(settings.CaddyTLSCertFile) != strings.TrimSpace(old.CaddyTLSCertFile) {
 		return fmt.Errorf("cannot change Caddy TLS certificate path after managed endpoint history exists")
 	}
@@ -422,7 +414,7 @@ func (s *EndpointService) RotateAll(userID int) (*RotationResult, error) {
 		next := &model.PublicEndpoint{
 			InboundId: inbound.Id,
 			Host:      host,
-			Port:      settings.PublicPort,
+			Port:      managedPublicPort,
 			Status:    model.EndpointStatusPending,
 			CreatedAt: now,
 		}
@@ -562,7 +554,7 @@ func (s *EndpointService) applyCurrentRoutes() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	block, err := RenderManagedCaddy(settings.PublicBaseDomain, settings.PublicPort, settings.CaddyTLSCertFile, settings.CaddyTLSKeyFile, routes)
+	block, err := RenderManagedCaddy(settings.PublicBaseDomain, settings.CaddyTLSCertFile, settings.CaddyTLSKeyFile, routes)
 	if err != nil {
 		return "", err
 	}
@@ -575,6 +567,9 @@ func (s *EndpointService) applyCurrentRoutes() (string, error) {
 }
 
 func (s *EndpointService) managedRoutes() ([]ManagedRoute, error) {
+	if err := (&TunnelService{}).validateAllEnabledPortalBindings(); err != nil {
+		return nil, err
+	}
 	var endpoints []*model.PublicEndpoint
 	if err := database.GetDB().
 		Where("status IN ?", []string{model.EndpointStatusPending, model.EndpointStatusActive, model.EndpointStatusDraining}).
@@ -627,6 +622,9 @@ func (s *EndpointService) managedRoutes() ([]ManagedRoute, error) {
 
 	routes := make([]ManagedRoute, 0, len(endpoints)*2)
 	for _, endpoint := range endpoints {
+		if endpoint.Port != managedPublicPort {
+			return nil, fmt.Errorf("managed endpoint %d uses unsupported public port %d; only 443 is allowed", endpoint.Id, endpoint.Port)
+		}
 		inbound := inboundByID[endpoint.InboundId]
 		if inbound == nil || !inbound.Enable {
 			continue

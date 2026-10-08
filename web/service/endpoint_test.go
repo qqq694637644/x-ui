@@ -20,7 +20,6 @@ func configureEndpointSettingsForTest(t *testing.T) {
 		SubscriptionEnable:   true,
 		SubscriptionBaseURL:  "https://sub.example.net/xui",
 		PublicBaseDomain:     "asdasdasdas.shop",
-		PublicPort:           443,
 		HostRandomLength:     10,
 		EndpointDrainSeconds: 1800,
 		CaddyTLSCertFile:     "/etc/caddy/wildcard.crt",
@@ -140,8 +139,8 @@ func TestInitializeBatchTakesOverAllEligibleInboundsWithOneCaddyApply(t *testing
 		},
 	}
 	result, err := service.InitializeBatch(1, &EndpointBatchInit{Items: []*EndpointInit{
-		{InboundId: inboundA.Id, Host: "a.asdasdasdas.shop", Port: 443},
-		{InboundId: inboundB.Id, Host: "b.asdasdasdas.shop", Port: 443},
+		{InboundId: inboundA.Id, Host: "a.asdasdasdas.shop"},
+		{InboundId: inboundB.Id, Host: "b.asdasdasdas.shop"},
 	}})
 	if err != nil {
 		t.Fatalf("InitializeBatch() error = %v", err)
@@ -173,7 +172,7 @@ func TestInitializeBatchRejectsPartialFirstTakeoverBeforeCaddyApply(t *testing.T
 		return "", nil
 	}}
 	_, err := service.InitializeBatch(1, &EndpointBatchInit{Items: []*EndpointInit{
-		{InboundId: inboundA.Id, Host: "a.asdasdasdas.shop", Port: 443},
+		{InboundId: inboundA.Id, Host: "a.asdasdasdas.shop"},
 	}})
 	if err == nil || !strings.Contains(err.Error(), "must initialize all enabled eligible inbounds atomically") {
 		t.Fatalf("InitializeBatch() partial takeover error = %v", err)
@@ -183,6 +182,60 @@ func TestInitializeBatchRejectsPartialFirstTakeoverBeforeCaddyApply(t *testing.T
 	}
 	assertActiveEndpointCountForTest(t, 0)
 	assertNoPendingEndpointsForTest(t)
+}
+
+func TestInitializeBatchRejectsPreconfiguredPortalThatDoesNotMatchBatchHost(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "initialize-portal-binding.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	inbound := validManagedInboundForTest(0, "portal-binding", 26417, "/business")
+	inbound.Tag = "initialize-portal-binding"
+	if err := database.GetDB().Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+	portal := &model.Tunnel{
+		UserId:           1,
+		Enable:           true,
+		Mode:             TunnelModePortal,
+		Remark:           "preconfigured-portal",
+		Listen:           "127.0.0.1",
+		ListenPort:       18081,
+		Network:          "tcp",
+		TargetAddress:    "127.0.0.1",
+		TargetPort:       18082,
+		RemoteAddress:    "typo.asdasdasdas.shop",
+		RemotePort:       443,
+		Protocol:         "vless",
+		UUID:             "99999999-9999-9999-9999-999999999999",
+		PortalTransport:  PortalTransportXHTTP,
+		PortalListenPort: 26418,
+		XHttpPath:        "/portal-fixed",
+	}
+	if err := (&TunnelService{}).AddTunnel(portal); err != nil {
+		t.Fatalf("pre-ownership Portal should be storable before batch takeover: %v", err)
+	}
+	applyCalls := 0
+	service := &EndpointService{applyManagedSiteHook: func(baseDomain string, block string) (string, error) {
+		applyCalls++
+		return "legacy-caddy", nil
+	}}
+	_, err := service.InitializeBatch(1, &EndpointBatchInit{Items: []*EndpointInit{
+		{InboundId: inbound.Id, Host: "cdn.asdasdasdas.shop"},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "Portal XHTTP") {
+		t.Fatalf("InitializeBatch() unbound Portal error = %v", err)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("InitializeBatch() applied Caddy before rejecting unbound Portal: calls=%d", applyCalls)
+	}
+	var endpointCount int64
+	if err := database.GetDB().Model(&model.PublicEndpoint{}).Count(&endpointCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if endpointCount != 0 {
+		t.Fatalf("InitializeBatch() left pending endpoint history after Portal binding rejection: %d", endpointCount)
+	}
 }
 
 func TestInitializeBatchFailureDeletesNeverActiveEndpointsAndAllowsSettingsCorrection(t *testing.T) {
@@ -199,7 +252,7 @@ func TestInitializeBatchFailureDeletesNeverActiveEndpointsAndAllowsSettingsCorre
 		return "", errors.New("injected initial Caddy failure")
 	}}
 	if _, err := service.InitializeBatch(1, &EndpointBatchInit{Items: []*EndpointInit{
-		{InboundId: inbound.Id, Host: "recoverable.asdasdasdas.shop", Port: 443},
+		{InboundId: inbound.Id, Host: "recoverable.asdasdasdas.shop"},
 	}}); err == nil {
 		t.Fatal("InitializeBatch() unexpectedly succeeded")
 	}
@@ -559,7 +612,7 @@ END;`
 		return "", errors.New("injected Caddy apply failure")
 	}}
 	_, err := service.InitializeBatch(1, &EndpointBatchInit{Items: []*EndpointInit{
-		{InboundId: inbound.Id, Host: "cleanup.asdasdasdas.shop", Port: 443},
+		{InboundId: inbound.Id, Host: "cleanup.asdasdasdas.shop"},
 	}})
 	if err == nil || !strings.Contains(err.Error(), "injected Caddy apply failure") || !strings.Contains(err.Error(), "pending cleanup failed") {
 		t.Fatalf("InitializeBatch() cleanup failure error = %v", err)

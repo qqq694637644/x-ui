@@ -46,7 +46,6 @@ type EndpointSettings struct {
 	SubscriptionToken    string `json:"subscriptionToken" form:"-"`
 	SubscriptionBaseURL  string `json:"subscriptionBaseUrl" form:"subscriptionBaseUrl"`
 	PublicBaseDomain     string `json:"publicBaseDomain" form:"publicBaseDomain"`
-	PublicPort           int    `json:"publicPort" form:"publicPort"`
 	HostRandomLength     int    `json:"hostRandomLength" form:"hostRandomLength"`
 	EndpointDrainSeconds int    `json:"endpointDrainSeconds" form:"endpointDrainSeconds"`
 	CaddyTLSCertFile     string `json:"caddyTlsCertFile" form:"caddyTlsCertFile"`

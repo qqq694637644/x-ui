@@ -19,7 +19,6 @@ func TestResetSettingsRefusesManagedEndpointHistory(t *testing.T) {
 		SubscriptionEnable:   false,
 		SubscriptionBaseURL:  "https://sub.example.net/xui",
 		PublicBaseDomain:     "asdasdasdas.shop",
-		PublicPort:           443,
 		HostRandomLength:     10,
 		EndpointDrainSeconds: 1800,
 	}); err != nil {
@@ -55,7 +54,6 @@ func TestEndpointSettingsRejectDrainBelowOneMinute(t *testing.T) {
 		SubscriptionEnable:   false,
 		SubscriptionBaseURL:  "https://sub.example.net/xui",
 		PublicBaseDomain:     "asdasdasdas.shop",
-		PublicPort:           443,
 		HostRandomLength:     10,
 		EndpointDrainSeconds: 0,
 	})

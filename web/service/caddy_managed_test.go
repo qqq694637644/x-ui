@@ -8,7 +8,6 @@ import (
 func TestRenderManagedCaddyStrictXHTTPAndFixedPath(t *testing.T) {
 	block, err := RenderManagedCaddy(
 		"asdasdasdas.shop",
-		443,
 		"/etc/caddy/wildcard.crt",
 		"/etc/caddy/wildcard.key",
 		[]ManagedRoute{{
@@ -36,7 +35,7 @@ func TestRenderManagedCaddyStrictXHTTPAndFixedPath(t *testing.T) {
 }
 
 func TestRenderManagedCaddyRequiresWildcardTLS(t *testing.T) {
-	_, err := RenderManagedCaddy("asdasdasdas.shop", 443, "", "", []ManagedRoute{{
+	_, err := RenderManagedCaddy("asdasdasdas.shop", "", "", []ManagedRoute{{
 		Host: "abc.asdasdasdas.shop", Path: "/x", UpstreamHost: "127.0.0.1", UpstreamPort: 26417,
 	}})
 	if err == nil {
@@ -45,7 +44,7 @@ func TestRenderManagedCaddyRequiresWildcardTLS(t *testing.T) {
 }
 
 func TestRenderManagedCaddyLongestPathFirst(t *testing.T) {
-	block, err := RenderManagedCaddy("asdasdasdas.shop", 443, "/c", "/k", []ManagedRoute{
+	block, err := RenderManagedCaddy("asdasdasdas.shop", "/c", "/k", []ManagedRoute{
 		{Host: "abc.asdasdasdas.shop", Path: "/portal", UpstreamHost: "127.0.0.1", UpstreamPort: 26417},
 		{Host: "abc.asdasdasdas.shop", Path: "/portal-long", UpstreamHost: "127.0.0.1", UpstreamPort: 26418},
 	})
@@ -103,7 +102,7 @@ func TestReplaceOwnedManagedCaddyRejectsMixedSiteHeader(t *testing.T) {
 }
 
 func TestRenderManagedCaddyRejectsNonLocalUpstream(t *testing.T) {
-	_, err := RenderManagedCaddy("asdasdasdas.shop", 443, "/c", "/k", []ManagedRoute{{
+	_, err := RenderManagedCaddy("asdasdasdas.shop", "/c", "/k", []ManagedRoute{{
 		Host: "abc.asdasdasdas.shop", Path: "/x", UpstreamHost: "0.0.0.0", UpstreamPort: 26417,
 	}})
 	if err == nil {
@@ -113,7 +112,7 @@ func TestRenderManagedCaddyRejectsNonLocalUpstream(t *testing.T) {
 
 func TestRenderManagedCaddyRejectsNestedOrForeignHost(t *testing.T) {
 	for _, host := range []string{"nested.a.asdasdasdas.shop", "outside.example.net"} {
-		_, err := RenderManagedCaddy("asdasdasdas.shop", 443, "/c", "/k", []ManagedRoute{{
+		_, err := RenderManagedCaddy("asdasdasdas.shop", "/c", "/k", []ManagedRoute{{
 			Host: host, Path: "/x", UpstreamHost: "127.0.0.1", UpstreamPort: 26417,
 		}})
 		if err == nil {
@@ -123,7 +122,7 @@ func TestRenderManagedCaddyRejectsNestedOrForeignHost(t *testing.T) {
 }
 
 func TestRenderManagedCaddyAllowsEmptyRoutesWithoutDomain(t *testing.T) {
-	block, err := RenderManagedCaddy("", 443, "", "", nil)
+	block, err := RenderManagedCaddy("", "", "", nil)
 	if err != nil {
 		t.Fatalf("empty managed block returned error: %v", err)
 	}

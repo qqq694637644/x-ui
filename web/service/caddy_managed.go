@@ -22,16 +22,13 @@ type ManagedRoute struct {
 	Kind         string
 }
 
-func RenderManagedCaddy(baseDomain string, publicPort int, certFile string, keyFile string, routes []ManagedRoute) (string, error) {
+func RenderManagedCaddy(baseDomain string, certFile string, keyFile string, routes []ManagedRoute) (string, error) {
 	if len(routes) == 0 {
 		return managedCaddyBegin + "\n# no managed endpoints\n" + managedCaddyEnd, nil
 	}
 	baseDomain = normalizeDomain(baseDomain)
 	if !validDomain(baseDomain) {
 		return "", fmt.Errorf("invalid public base domain: %s", baseDomain)
-	}
-	if publicPort <= 0 || publicPort > 65535 {
-		return "", fmt.Errorf("invalid public port: %d", publicPort)
 	}
 	certFile = strings.TrimSpace(certFile)
 	keyFile = strings.TrimSpace(keyFile)
@@ -88,9 +85,6 @@ func RenderManagedCaddy(baseDomain string, publicPort int, certFile string, keyF
 	b.WriteString(managedCaddyBegin)
 	b.WriteString("\n")
 	site := "*." + baseDomain
-	if publicPort != 443 {
-		site = net.JoinHostPort(site, strconv.Itoa(publicPort))
-	}
 	b.WriteString(site)
 	b.WriteString(" {\n")
 	b.WriteString("    tls ")

@@ -211,6 +211,74 @@ func TestPortalXHTTPRejectsNonFixedManagedPaths(t *testing.T) {
 	}
 }
 
+func TestPortalXHTTPRejectsNon443PublicPort(t *testing.T) {
+	tunnel := &model.Tunnel{
+		Mode:                TunnelModePortal,
+		ListenPort:          18081,
+		Network:             "tcp",
+		TargetAddress:       "127.0.0.1",
+		TargetPort:          18081,
+		RemoteAddress:       "cdn.example.com",
+		RemotePort:          8443,
+		Protocol:            "vless",
+		UUID:                "11111111-1111-1111-1111-111111111111",
+		PortalTransport:     PortalTransportXHTTP,
+		PortalListenPort:    26418,
+		XHttpPath:           "/portal-xhttp",
+		KcpFinalMaskType:    "none",
+		KcpMtu:              1350,
+		KcpTti:              20,
+		KcpUplinkCapacity:   5,
+		KcpDownlinkCapacity: 20,
+		KcpReadBufferSize:   2,
+		KcpWriteBufferSize:  2,
+	}
+	service := &TunnelService{}
+	service.normalizeTunnel(tunnel)
+	if err := service.checkTunnel(tunnel); err == nil || !strings.Contains(err.Error(), "443") {
+		t.Fatalf("Portal XHTTP non-443 public port error = %v", err)
+	}
+}
+
+func TestAddPortalXHTTPRequiresLiveManagedEndpointAfterOwnershipExists(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "portal-binding.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	_, _ = createPublishedManagedInboundForTest(t, "portal-binding", "portal-binding", 26417, "/fixed", "cdn.asdasdasdas.shop")
+
+	tunnel := &model.Tunnel{
+		UserId:           1,
+		Enable:           true,
+		Mode:             TunnelModePortal,
+		Remark:           "typo-portal",
+		Listen:           "127.0.0.1",
+		ListenPort:       18081,
+		Network:          "tcp",
+		TargetAddress:    "127.0.0.1",
+		TargetPort:       18082,
+		RemoteAddress:    "typo.asdasdasdas.shop",
+		RemotePort:       443,
+		Protocol:         "vless",
+		UUID:             "88888888-8888-8888-8888-888888888888",
+		PortalTransport:  PortalTransportXHTTP,
+		PortalListenPort: 26418,
+		XHttpPath:        "/portal-fixed",
+	}
+	service := &TunnelService{}
+	err := service.AddTunnel(tunnel)
+	if err == nil || !strings.Contains(err.Error(), "live PublicEndpoint") {
+		t.Fatalf("AddTunnel() unbound managed Portal error = %v", err)
+	}
+	var count int64
+	if err := database.GetDB().Model(&model.Tunnel{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("unbound Portal persisted despite managed ownership: count=%d", count)
+	}
+}
+
 func TestAddManagedPortalCaddyFailureRollsBackAndFailsClosed(t *testing.T) {
 	if err := database.InitDB(filepath.Join(t.TempDir(), "portal-add-caddy-fail.db")); err != nil {
 		t.Fatal(err)

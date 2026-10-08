@@ -42,7 +42,6 @@ var defaultValueMap = map[string]string{
 	"subscriptionToken":    "",
 	"subscriptionBaseUrl":  "",
 	"publicBaseDomain":     "",
-	"publicPort":           "443",
 	"hostRandomLength":     "10",
 	"endpointDrainSeconds": "1800",
 	"caddyTlsCertFile":     "",
@@ -236,10 +235,6 @@ func (s *SettingService) GetEndpointSettings() (*entity.EndpointSettings, error)
 	if err != nil {
 		return nil, err
 	}
-	port, err := s.getInt("publicPort")
-	if err != nil {
-		return nil, err
-	}
 	hostLength, err := s.getInt("hostRandomLength")
 	if err != nil {
 		return nil, err
@@ -261,7 +256,6 @@ func (s *SettingService) GetEndpointSettings() (*entity.EndpointSettings, error)
 		SubscriptionToken:    token,
 		SubscriptionBaseURL:  subscriptionBaseURL,
 		PublicBaseDomain:     domain,
-		PublicPort:           port,
 		HostRandomLength:     hostLength,
 		EndpointDrainSeconds: drainSeconds,
 		CaddyTLSCertFile:     certFile,
@@ -280,9 +274,6 @@ func (s *SettingService) UpdateEndpointSettings(settings *entity.EndpointSetting
 	settings.CaddyTLSKeyFile = strings.TrimSpace(settings.CaddyTLSKeyFile)
 	if settings.PublicBaseDomain != "" && !validDomain(settings.PublicBaseDomain) {
 		return common.NewError("公网基础域名不合法: ", settings.PublicBaseDomain)
-	}
-	if settings.PublicPort <= 0 || settings.PublicPort > 65535 {
-		return common.NewError("公网端口不合法: ", settings.PublicPort)
 	}
 	if settings.SubscriptionEnable && settings.SubscriptionBaseURL == "" {
 		return common.NewError("启用客户端订阅时必须配置稳定订阅基础 URL")
@@ -306,7 +297,6 @@ func (s *SettingService) UpdateEndpointSettings(settings *entity.EndpointSetting
 		"subscriptionEnable":   strconv.FormatBool(settings.SubscriptionEnable),
 		"subscriptionBaseUrl":  settings.SubscriptionBaseURL,
 		"publicBaseDomain":     settings.PublicBaseDomain,
-		"publicPort":           strconv.Itoa(settings.PublicPort),
 		"hostRandomLength":     strconv.Itoa(settings.HostRandomLength),
 		"endpointDrainSeconds": strconv.Itoa(settings.EndpointDrainSeconds),
 		"caddyTlsCertFile":     settings.CaddyTLSCertFile,

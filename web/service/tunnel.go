@@ -156,6 +156,9 @@ func (s *TunnelService) normalizeTunnel(tunnel *model.Tunnel) {
 	}
 	if tunnel.Mode == TunnelModePortal && tunnel.PortalTransport == PortalTransportXHTTP {
 		tunnel.RemoteAddress = strings.ToLower(tunnel.RemoteAddress)
+		if tunnel.RemotePort == 0 {
+			tunnel.RemotePort = managedPublicPort
+		}
 	}
 	if tunnel.Protocol == "" {
 		if tunnel.Mode == TunnelModePortal {
@@ -240,8 +243,8 @@ func (s *TunnelService) checkTunnel(tunnel *model.Tunnel) error {
 			if tunnel.RemoteAddress == "" {
 				return common.NewError("Portal XHTTP CDN 域名不能为空")
 			}
-			if tunnel.RemotePort <= 0 || tunnel.RemotePort > 65535 {
-				return common.NewError("Portal XHTTP 公网端口不合法:", tunnel.RemotePort)
+			if tunnel.RemotePort != managedPublicPort {
+				return common.NewError("Portal XHTTP 公网端口固定为 443，不允许修改:", tunnel.RemotePort)
 			}
 			if tunnel.PortalListenPort <= 0 || tunnel.PortalListenPort > 65535 {
 				return common.NewError("Portal XHTTP 本地监听端口不合法:", tunnel.PortalListenPort)
@@ -292,6 +295,9 @@ func isValidKcpFinalMaskType(maskType string) bool {
 func (s *TunnelService) AddTunnel(tunnel *model.Tunnel) error {
 	s.normalizeTunnel(tunnel)
 	if err := s.checkTunnel(tunnel); err != nil {
+		return err
+	}
+	if err := s.validatePortalEndpointBinding(tunnel); err != nil {
 		return err
 	}
 	if err := checkTunnelListenerConflicts(tunnel, 0); err != nil {
@@ -373,6 +379,9 @@ func (s *TunnelService) GetTunnel(id int, userId int) (*model.Tunnel, error) {
 func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	s.normalizeTunnel(tunnel)
 	if err := s.checkTunnel(tunnel); err != nil {
+		return err
+	}
+	if err := s.validatePortalEndpointBinding(tunnel); err != nil {
 		return err
 	}
 	if err := checkTunnelListenerConflicts(tunnel, tunnel.Id); err != nil {
@@ -458,6 +467,65 @@ func (s *TunnelService) needsManagedCaddy(tunnel *model.Tunnel) (bool, error) {
 		Where("host = ? AND status IN ?", host, []string{model.EndpointStatusPending, model.EndpointStatusActive, model.EndpointStatusDraining}).
 		Count(&count).Error
 	return count > 0, err
+}
+
+func (s *TunnelService) validatePortalEndpointBinding(tunnel *model.Tunnel) error {
+	if tunnel == nil || !tunnel.Enable || tunnel.Mode != TunnelModePortal || tunnel.PortalTransport != PortalTransportXHTTP {
+		return nil
+	}
+	if tunnel.RemotePort != managedPublicPort {
+		return common.NewError("Portal XHTTP 公网端口固定为 443，不允许修改:", tunnel.RemotePort)
+	}
+	var historyCount int64
+	if err := database.GetDB().Model(&model.PublicEndpoint{}).Count(&historyCount).Error; err != nil {
+		return err
+	}
+	if historyCount == 0 {
+		return nil
+	}
+	return s.requireLivePortalEndpoint(tunnel)
+}
+
+func (s *TunnelService) requireLivePortalEndpoint(tunnel *model.Tunnel) error {
+	host := strings.ToLower(strings.TrimSpace(tunnel.RemoteAddress))
+	if host == "" {
+		return common.NewError("Portal XHTTP CDN 域名不能为空")
+	}
+	var count int64
+	if err := database.GetDB().Model(&model.PublicEndpoint{}).
+		Where("host = ? AND status IN ?", host, []string{model.EndpointStatusPending, model.EndpointStatusActive, model.EndpointStatusDraining}).
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if count != 1 {
+		return common.NewError("Portal XHTTP CDN 域名必须精确匹配一个 live PublicEndpoint: ", host)
+	}
+	return nil
+}
+
+func (s *TunnelService) validateAllEnabledPortalBindings() error {
+	var historyCount int64
+	if err := database.GetDB().Model(&model.PublicEndpoint{}).Count(&historyCount).Error; err != nil {
+		return err
+	}
+	if historyCount == 0 {
+		return nil
+	}
+	var tunnels []*model.Tunnel
+	if err := database.GetDB().Where("enable = ? AND mode = ? AND portal_transport = ?", true, TunnelModePortal, PortalTransportXHTTP).
+		Order("id asc").Find(&tunnels).Error; err != nil {
+		return err
+	}
+	for _, tunnel := range tunnels {
+		s.normalizeTunnel(tunnel)
+		if err := s.checkTunnel(tunnel); err != nil {
+			return common.NewError("Portal XHTTP #", tunnel.Id, " 配置不合法: ", err)
+		}
+		if err := s.requireLivePortalEndpoint(tunnel); err != nil {
+			return common.NewError("Portal XHTTP #", tunnel.Id, " 未绑定 live PublicEndpoint: ", err)
+		}
+	}
+	return nil
 }
 
 func (s *TunnelService) applyCheckStatus(tunnel *model.Tunnel) {

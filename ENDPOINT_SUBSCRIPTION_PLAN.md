@@ -140,7 +140,6 @@ subscriptionEnable
 subscriptionToken
 subscriptionBaseUrl
 publicBaseDomain
-publicPort
 hostRandomLength
 endpointDrainSeconds
 ```
@@ -150,7 +149,6 @@ endpointDrainSeconds
 ```text
 subscriptionBaseUrl  = https://sub.example.net/xui
 publicBaseDomain     = asdasdasdas.shop
-publicPort           = 443
 hostRandomLength     = 10
 endpointDrainSeconds = 1800
 ```
@@ -247,13 +245,15 @@ Caddy 使用对应 wildcard origin certificate，并长期接受 `*.asdasdasdas.
 
 对于当前 `publicBaseDomain`，x-ui 采用破坏式所有权：首次托管时删除该域名下旧的 exact-host 站点块以及旧 `*.publicBaseDomain` wildcard 站点块，之后只保留数据库生成的唯一 managed wildcard 站点。其他无关域名的 Caddy 配置保留。更新继续复用现有 `CaddyService` 的 validate -> backup/write -> reload -> rollback。
 
-一旦 `public_endpoints` 出现任何历史记录，`publicBaseDomain`、`publicPort`、`caddyTlsCertFile`、`caddyTlsKeyFile` 视为 managed zone 身份的一部分，不再允许修改；即使当前只剩 retired 历史也一样。这样 retired-only 启动恢复永远能够清理同一个 zone，也避免在没有真实链路验证的情况下热切换 wildcard 证书。
+公网端口不再作为设置项存在，managed Endpoint 与 Portal XHTTP 永久固定使用 443。一旦 `public_endpoints` 出现任何历史记录，`publicBaseDomain`、`caddyTlsCertFile`、`caddyTlsKeyFile` 视为 managed zone 身份的一部分，不再允许修改；即使当前只剩 retired 历史也一样。这样 retired-only 启动恢复永远能够清理同一个 zone，也避免在没有真实链路验证的情况下热切换 wildcard 证书。
 
 启动恢复采用 fail-closed：`public_endpoints` 只要存在任何历史记录（包括仅剩 retired），启动时都必须重新生成/应用一次完整 managed Caddy；上次中断留下的 pending 视为从未正式启用并直接删除，但仍强制执行一次完整 Caddy reconcile，把可能已写入 Caddy 的 pending route 清掉。这样即使进程恰好在 DB `draining -> retired` 后、Caddy 更新前掉电，重启也会把旧 hostname route 清掉。
 
-原有 Caddy 编辑页面不能绕过 managed state：只要数据库存在 pending / active / draining PublicEndpoint，后端拒绝 `/caddy/path`、`/caddy/save`、`/caddy/reload`、`/caddy/saveReload`，页面同步进入只读模式；只保留读取当前配置和 `validate` 草稿。retired-only 历史不锁页面，因为已经没有 live managed route。
+原有 Caddy 编辑页面不能绕过 managed state：只要数据库存在任意 PublicEndpoint 历史（包括全部 retired），后端永久拒绝 `/caddy/path`、`/caddy/save`、`/caddy/reload`、`/caddy/saveReload`，页面同步进入只读模式；只保留读取当前配置和 `validate` 草稿。managed zone ownership 与 Endpoint history 同生命周期，不能因为暂时没有 live route 就隐式释放所有权。
 
 managed state 拆成三个独立条件：数据库/状态机不变量、Caddy 全量同步状态、Xray 运行状态。公开订阅、轮换和首次初始化只有三者同时 healthy 才开放。任何 managed Caddy apply/sync 失败立即把 Caddy 状态置 unhealthy；即使随后成功恢复旧 Caddy 内容，也只代表回滚完成，不会重新打开订阅/轮换闸门，必须再完成一次明确成功的全量 managed reconcile 才能把 Caddy 状态恢复为 healthy。任何数据库 rollback/cleanup 失败立即把数据状态置 unhealthy；Xray 启动或重启失败立即把 Xray 状态置 unhealthy。只要某次配置修改调用 `SetToNeedRestart()`，也立即把 Xray 状态置 unhealthy，避免等待 10 秒重启 cron 的窗口继续下发已经领先于运行中 Xray 的配置。只有完整 `StartupReconcile` 可以重新确认数据不变量，只有成功的全量 Caddy reconcile 可以重新确认 Caddy，只有成功启动/重启且进程实际运行才能重新确认 Xray。
+
+个人版不提供单独的“解除 fail-closed”按钮。除首次初始化失败且 history=0 的设置纠正流程外，一旦运行中的 managed state 进入 fail-closed，管理 API 直接提示“重启 x-ui 面板后重试”；重启通过 `StartupReconcile + Xray start` 重新证明 Data/Caddy/Xray 三态健康后才恢复订阅与轮换。
 
 ### 9.3 固定 path
 
@@ -346,6 +346,8 @@ Portal route /portal-path -> 127.0.0.1:26418
 - 普通代理 Inbound route 可以进入 Subscription。
 - Portal/Tunnel route 可以跟随同一 hostname group 一起轮换，但绝不进入客户端订阅。
 - hostname 切换前必须检查关联 Portal XHTTP 的本地 `PortalListenPort`；普通代理真实链路成功但 Portal 本地监听失败时不得提交轮换。
+- Portal XHTTP 公网端口固定为 443。进入 managed ownership 后，任何启用的 Portal XHTTP `RemoteAddress` 必须精确匹配一个 pending / active / draining PublicEndpoint；新增或修改时匹配不到直接拒绝保存。
+- 首次批量接管允许先预配置 Portal；pending 批量落库以后、第一次 Caddy apply 之前，必须校验所有启用 Portal XHTTP 都能匹配本批 live host 且端口为 443，任一 typo host 或错误端口都会整批拒绝并删除本批 pending。
 - Portal XHTTP `RemoteAddress` 保存时统一转小写；轮换兼容历史大小写记录，并校验实际更新行数。
 - Portal XHTTP path 与普通 managed Inbound 复用同一套 fixed-path validator，禁止 query、wildcard、空白、`{` 和 `__xui_health` 保留段。
 

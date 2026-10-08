@@ -33,7 +33,7 @@
                 <transition name="list" appear>
                     <a-card hoverable style="margin-bottom: 20px;">
                         <a-alert v-if="managedReadOnly" type="warning" show-icon message="Managed Endpoint 已接管 Caddy"
-                                 description="存在 pending / active / draining PublicEndpoint 时，本页只允许读取配置和校验草稿；路径、保存、Reload 均由后端锁定。"></a-alert>
+                                 description="只要存在任意 PublicEndpoint 历史（包括全部 retired），managed zone 就永久归 x-ui 所有；本页只允许读取配置和校验草稿，路径、保存、Reload 均由后端锁定。"></a-alert>
                         <a-alert v-else type="info" show-icon message="Caddyfile 管理"
                                  description="只需要填写 Caddy 目录。面板会自动使用该目录下的 caddy 和 Caddyfile，保存前会校验，保存并 Reload 失败时会恢复旧 Caddyfile。"></a-alert>
                     </a-card>

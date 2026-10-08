@@ -49,7 +49,7 @@
                         show-icon
                         style="margin-bottom: 16px;"
                         message="破坏式接管 Caddy wildcard 区域"
-                        description="首次初始化必须一次录入全部启用且符合严格托管条件的 Inbound 当前 Host，x-ui 批量写入 pending 后只应用一次完整 Caddy，再统一切 active。管理面板和稳定订阅入口必须位于托管基础域名之外。">
+                        description="首次初始化必须一次录入全部启用且符合严格托管条件的 Inbound 当前 Host，x-ui 批量写入 pending 后只应用一次完整 Caddy，再统一切 active。公网端口固定 443。管理面板和稳定订阅入口必须位于托管基础域名之外；托管状态 fail-closed 后请重启面板完成重新校验。">
                     </a-alert>
                     <a-form layout="vertical">
                         <a-row :gutter="16">
@@ -73,17 +73,12 @@
                             </a-col>
                         </a-row>
                         <a-row :gutter="16">
-                            <a-col :xs="24" :md="8">
-                                <a-form-item label="公网端口">
-                                    <a-input-number style="width: 100%" :min="1" :max="65535" v-model="settings.publicPort"></a-input-number>
-                                </a-form-item>
-                            </a-col>
-                            <a-col :xs="24" :md="8">
+                            <a-col :xs="24" :md="12">
                                 <a-form-item label="随机子域名长度">
                                     <a-input-number style="width: 100%" :min="4" :max="32" v-model="settings.hostRandomLength"></a-input-number>
                                 </a-form-item>
                             </a-col>
-                            <a-col :xs="24" :md="8">
+                            <a-col :xs="24" :md="12">
                                 <a-form-item label="旧入口保留秒数">
                                     <a-input-number style="width: 100%" :min="60" :max="604800" v-model="settings.endpointDrainSeconds"></a-input-number>
                                 </a-form-item>
@@ -236,11 +231,8 @@
         <div v-for="item in initModal.items" :key="item.inboundId" style="margin-bottom:16px;">
             <div style="margin-bottom:6px;"><strong>[[ item.remark || ('Inbound #' + item.inboundId) ]]</strong> · <code>[[ item.path ]]</code></div>
             <a-row :gutter="8">
-                <a-col :span="17">
+                <a-col :span="24">
                     <a-input v-model.trim="item.host" placeholder="cdn.example.com"></a-input>
-                </a-col>
-                <a-col :span="7">
-                    <a-input-number style="width:100%" :min="1" :max="65535" v-model="item.port"></a-input-number>
                 </a-col>
             </a-row>
         </div>
@@ -263,7 +255,6 @@
                 subscriptionToken: '',
                 subscriptionBaseUrl: '',
                 publicBaseDomain: '',
-                publicPort: 443,
                 hostRandomLength: 10,
                 endpointDrainSeconds: 1800,
                 caddyTlsCertFile: '',
@@ -374,7 +365,6 @@
                         remark: row.remark,
                         path: row.path,
                         host: '',
-                        port: this.settings.publicPort || 443,
                     }));
                 this.initModal.visible = true;
             },
@@ -389,7 +379,6 @@
                     const items = this.initModal.items.map(item => ({
                         inboundId: item.inboundId,
                         host: item.host,
-                        port: item.port,
                     }));
                     const msg = await HttpUtil.post('/xui/endpoint/init-batch', {items});
                     if (msg.success) {

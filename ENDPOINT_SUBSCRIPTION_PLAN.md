@@ -251,7 +251,7 @@ Caddy 使用对应 wildcard origin certificate，并长期接受 `*.asdasdasdas.
 
 启动恢复采用 fail-closed：`public_endpoints` 只要存在任何历史记录（包括仅剩 retired），启动时都必须重新生成/应用一次完整 managed Caddy；上次中断留下的 pending 先转 retired。这样即使进程恰好在 DB `draining -> retired` 后、Caddy 更新前掉电，重启也会把旧 hostname route 清掉。
 
-managed state 拆成三个独立条件：数据库/状态机不变量、Caddy 全量同步状态、Xray 运行状态。公开订阅、轮换和首次初始化只有三者同时 healthy 才开放。任何 managed Caddy apply/sync 失败立即把 Caddy 状态置 unhealthy；任何数据库 rollback/cleanup 失败立即把数据状态置 unhealthy；Xray 启动或重启失败立即把 Xray 状态置 unhealthy。只有完整 `StartupReconcile` 可以重新确认数据不变量，只有成功的全量 Caddy reconcile 可以重新确认 Caddy，只有成功启动/重启且进程实际运行才能重新确认 Xray。
+managed state 拆成三个独立条件：数据库/状态机不变量、Caddy 全量同步状态、Xray 运行状态。公开订阅、轮换和首次初始化只有三者同时 healthy 才开放。任何 managed Caddy apply/sync 失败立即把 Caddy 状态置 unhealthy；任何数据库 rollback/cleanup 失败立即把数据状态置 unhealthy；Xray 启动或重启失败立即把 Xray 状态置 unhealthy。只要某次配置修改调用 `SetToNeedRestart()`，也立即把 Xray 状态置 unhealthy，避免等待 10 秒重启 cron 的窗口继续下发已经领先于运行中 Xray 的配置。只有完整 `StartupReconcile` 可以重新确认数据不变量，只有成功的全量 Caddy reconcile 可以重新确认 Caddy，只有成功启动/重启且进程实际运行才能重新确认 Xray。
 
 ### 9.3 固定 path
 

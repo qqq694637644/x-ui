@@ -153,6 +153,7 @@ func (s *XrayService) StopXray() error {
 }
 
 func (s *XrayService) SetToNeedRestart() {
+	setManagedXrayHealthy(false)
 	isNeedXrayRestart.Store(true)
 }
 

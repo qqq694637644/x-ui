@@ -671,6 +671,7 @@ func TestManagedInboundWithLiveEndpointRejectsConnectionCriticalChanges(t *testi
 	}{
 		{name: "listen", mutate: func(candidate *model.Inbound) { candidate.Listen = "0.0.0.0" }},
 		{name: "port", mutate: func(candidate *model.Inbound) { candidate.Port++ }},
+		{name: "protocol", mutate: func(candidate *model.Inbound) { candidate.Protocol = model.VMess }},
 		{name: "settings", mutate: func(candidate *model.Inbound) {
 			candidate.Settings = `{"clients":[{"id":"22222222-2222-2222-2222-222222222222","flow":""}],"decryption":"none"}`
 		}},

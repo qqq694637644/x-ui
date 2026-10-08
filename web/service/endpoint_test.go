@@ -106,6 +106,54 @@ func TestManagedRoutesCarryPortalAcrossEndpointHostGroup(t *testing.T) {
 	}
 }
 
+func TestManagedRoutesKeepPortalWhenOwningInboundIsDisabled(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "managed-routes-disabled-inbound.db")); err != nil {
+		t.Fatal(err)
+	}
+	inbound := validManagedInboundForTest(0, "disabled-business", 26417, "/business")
+	inbound.Tag = "portal-disabled-inbound-route"
+	inbound.Enable = false
+	if err := database.GetDB().Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+	endpoint := &model.PublicEndpoint{
+		InboundId: inbound.Id,
+		Host:      "portal-only.example.com",
+		Port:      443,
+		Status:    model.EndpointStatusActive,
+		CreatedAt: 1,
+	}
+	if err := database.GetDB().Create(endpoint).Error; err != nil {
+		t.Fatal(err)
+	}
+	portal := &model.Tunnel{
+		UserId:           1,
+		Enable:           true,
+		Mode:             TunnelModePortal,
+		RemoteAddress:    endpoint.Host,
+		RemotePort:       443,
+		Protocol:         "vless",
+		UUID:             "21212121-2121-2121-2121-212121212121",
+		PortalTransport:  PortalTransportXHTTP,
+		PortalListenPort: 26418,
+		XHttpPath:        "/portal-only",
+	}
+	if err := database.GetDB().Create(portal).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	routes, err := (&EndpointService{}).managedRoutes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("managed route count = %d, want portal-only route", len(routes))
+	}
+	if routes[0].Kind != "portal" || routes[0].Host != endpoint.Host || routes[0].Path != "/portal-only" {
+		t.Fatalf("unexpected portal-only route: %#v", routes[0])
+	}
+}
+
 func TestInitializeBatchTakesOverAllEligibleInboundsWithOneCaddyApply(t *testing.T) {
 	if err := database.InitDB(filepath.Join(t.TempDir(), "initialize-batch.db")); err != nil {
 		t.Fatal(err)
@@ -236,6 +284,68 @@ func TestInitializeBatchRejectsPreconfiguredPortalThatDoesNotMatchBatchHost(t *t
 	if endpointCount != 0 {
 		t.Fatalf("InitializeBatch() left pending endpoint history after Portal binding rejection: %d", endpointCount)
 	}
+}
+
+func TestInitializeBatchAllowsPreconfiguredPortalBoundToBatchPendingHost(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "initialize-portal-pending-binding.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	inbound := validManagedInboundForTest(0, "portal-pending-binding", 26417, "/business")
+	inbound.Tag = "initialize-portal-pending-binding"
+	if err := database.GetDB().Create(inbound).Error; err != nil {
+		t.Fatal(err)
+	}
+	portal := &model.Tunnel{
+		UserId:           1,
+		Enable:           true,
+		Mode:             TunnelModePortal,
+		Remark:           "preconfigured-pending-portal",
+		Listen:           "127.0.0.1",
+		ListenPort:       18081,
+		Network:          "tcp",
+		TargetAddress:    "127.0.0.1",
+		TargetPort:       18082,
+		RemoteAddress:    "cdn.asdasdasdas.shop",
+		RemotePort:       443,
+		Protocol:         "vless",
+		UUID:             "23232323-2323-2323-2323-232323232323",
+		PortalTransport:  PortalTransportXHTTP,
+		PortalListenPort: 26418,
+		XHttpPath:        "/portal-fixed",
+	}
+	if err := (&TunnelService{}).AddTunnel(portal); err != nil {
+		t.Fatalf("pre-ownership Portal should be storable before batch takeover: %v", err)
+	}
+	applyCalls := 0
+	service := &EndpointService{
+		applyManagedSiteHook: func(baseDomain string, block string) (string, error) {
+			applyCalls++
+			for _, expected := range []string{"cdn.asdasdasdas.shop", "path /business*", "path /portal-fixed*"} {
+				if !strings.Contains(block, expected) {
+					t.Fatalf("managed Caddy block missing %q:\n%s", expected, block)
+				}
+			}
+			return "legacy-caddy", nil
+		},
+		healthCheckEndpointHook: func(inbound *model.Inbound, endpoint *model.PublicEndpoint, healthPath string) error {
+			return nil
+		},
+		healthCheckPortalHook: func(portal *model.Tunnel) error {
+			return nil
+		},
+	}
+	result, err := service.InitializeBatch(1, &EndpointBatchInit{Items: []*EndpointInit{
+		{InboundId: inbound.Id, Host: "cdn.asdasdasdas.shop"},
+	}})
+	if err != nil {
+		t.Fatalf("InitializeBatch() matching pending Portal error = %v", err)
+	}
+	if result.Count != 1 || applyCalls != 1 {
+		t.Fatalf("InitializeBatch() result=%#v applyCalls=%d, want one active endpoint and one Caddy apply", result, applyCalls)
+	}
+	assertActiveEndpointCountForTest(t, 1)
+	assertNoPendingEndpointsForTest(t)
 }
 
 func TestInitializeBatchFailureDeletesNeverActiveEndpointsAndAllowsSettingsCorrection(t *testing.T) {
@@ -493,6 +603,58 @@ func TestRotateAllPortalListenerFailureRollsBackWholeBatch(t *testing.T) {
 		t.Fatal("managed state became healthy again after Portal validation failure merely rolled back old Caddy content")
 	}
 	defer setManagedStateHealthy(true)
+}
+
+func TestRetireExpiredSucceedsWhilePortalRemainsBoundToActiveEndpoint(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "retire-expired-portal-active.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	inbound, active := createPublishedManagedInboundForTest(t, "retire-portal-active", "retire-portal-active", 26417, "/business", "active.asdasdasdas.shop")
+	draining := &model.PublicEndpoint{
+		InboundId: inbound.Id,
+		Host:      "old.asdasdasdas.shop",
+		Port:      443,
+		Status:    model.EndpointStatusDraining,
+		CreatedAt: active.CreatedAt - 1,
+		RetireAt:  time.Now().Add(-time.Second).Unix(),
+	}
+	if err := database.GetDB().Create(draining).Error; err != nil {
+		t.Fatal(err)
+	}
+	portal := &model.Tunnel{
+		UserId:           1,
+		Enable:           true,
+		Mode:             TunnelModePortal,
+		RemoteAddress:    active.Host,
+		RemotePort:       443,
+		Protocol:         "vless",
+		UUID:             "24242424-2424-2424-2424-242424242424",
+		PortalTransport:  PortalTransportXHTTP,
+		PortalListenPort: 26418,
+		XHttpPath:        "/portal-fixed",
+	}
+	if err := database.GetDB().Create(portal).Error; err != nil {
+		t.Fatal(err)
+	}
+	applyCalls := 0
+	service := &EndpointService{applyManagedSiteHook: func(baseDomain string, block string) (string, error) {
+		applyCalls++
+		if strings.Contains(block, draining.Host) {
+			t.Fatalf("expired draining host remained in Caddy block:\n%s", block)
+		}
+		if !strings.Contains(block, active.Host) || !strings.Contains(block, "path /portal-fixed*") {
+			t.Fatalf("active Portal route missing after draining retirement:\n%s", block)
+		}
+		return "old-caddy", nil
+	}}
+	if err := service.RetireExpired(); err != nil {
+		t.Fatalf("RetireExpired() with active-bound Portal error = %v", err)
+	}
+	if applyCalls != 1 {
+		t.Fatalf("RetireExpired() Caddy apply calls = %d, want 1", applyCalls)
+	}
+	assertEndpointStatusForTest(t, draining.Id, model.EndpointStatusRetired)
 }
 
 func TestStartupReconcileFailureMarksManagedStateUnhealthy(t *testing.T) {
@@ -764,6 +926,26 @@ func TestEnsureHostAvailableNeverReusesRetiredHost(t *testing.T) {
 	}
 }
 
+func TestGenerateUniqueHostReturnsDatabaseErrorImmediately(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "host-db-error.db")); err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := database.GetDB().DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = (&EndpointService{}).generateUniqueHost("asdasdasdas.shop", 10, nil)
+	if err == nil {
+		t.Fatal("generateUniqueHost() unexpectedly hid database failure")
+	}
+	if strings.Contains(err.Error(), "failed to allocate a unique random hostname") {
+		t.Fatalf("generateUniqueHost() disguised database error as hostname collision exhaustion: %v", err)
+	}
+}
+
 func TestEndpointHistoryRemainsReservedAfterInboundRemoval(t *testing.T) {
 	if err := database.InitDB(filepath.Join(t.TempDir(), "delete-history.db")); err != nil {
 		t.Fatal(err)
@@ -868,8 +1050,8 @@ func TestManagedInboundWithLiveEndpointAllowsNonCriticalChanges(t *testing.T) {
 	if err := service.UpdateInbound(&candidate); err != nil {
 		t.Fatalf("UpdateInbound() non-critical change error = %v", err)
 	}
-	if syncCalls != 1 {
-		t.Fatalf("managed Caddy sync calls = %d, want 1", syncCalls)
+	if syncCalls != 0 {
+		t.Fatalf("non-Enable managed Inbound update synced Caddy %d times, want 0", syncCalls)
 	}
 	stored := &model.Inbound{}
 	if err := database.GetDB().First(stored, inbound.Id).Error; err != nil {
@@ -877,6 +1059,35 @@ func TestManagedInboundWithLiveEndpointAllowsNonCriticalChanges(t *testing.T) {
 	}
 	if stored.Remark != candidate.Remark || stored.Total != candidate.Total || stored.ExpiryTime != candidate.ExpiryTime {
 		t.Fatalf("non-critical changes were not saved: %#v", stored)
+	}
+}
+
+func TestManagedInboundEnableChangeSyncsManagedCaddy(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "managed-inbound-enable-sync.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	inbound, _ := createPublishedManagedInboundForTest(t, "enable-sync", "enabled", 26417, "/fixed", "enable-sync.asdasdasdas.shop")
+	candidate := *inbound
+	candidate.Enable = false
+
+	syncCalls := 0
+	service := &InboundService{syncManagedRoutesHook: func() error {
+		syncCalls++
+		return nil
+	}}
+	if err := service.UpdateInbound(&candidate); err != nil {
+		t.Fatalf("UpdateInbound() Enable change error = %v", err)
+	}
+	if syncCalls != 1 {
+		t.Fatalf("managed Inbound Enable change synced Caddy %d times, want 1", syncCalls)
+	}
+	stored := &model.Inbound{}
+	if err := database.GetDB().First(stored, inbound.Id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Enable {
+		t.Fatal("managed Inbound Enable change was not persisted")
 	}
 }
 
@@ -888,6 +1099,7 @@ func TestManagedInboundUpdateCaddyFailureRestoresAndFailsClosed(t *testing.T) {
 	inbound, _ := createPublishedManagedInboundForTest(t, "update-caddy-fail", "before", 26417, "/fixed", "update-fail.asdasdasdas.shop")
 	candidate := *inbound
 	candidate.Remark = "after"
+	candidate.Enable = false
 	service := &InboundService{syncManagedRoutesHook: func() error {
 		return errors.New("injected Caddy sync failure")
 	}}
@@ -899,8 +1111,8 @@ func TestManagedInboundUpdateCaddyFailureRestoresAndFailsClosed(t *testing.T) {
 	if err := database.GetDB().First(stored, inbound.Id).Error; err != nil {
 		t.Fatal(err)
 	}
-	if stored.Remark != inbound.Remark {
-		t.Fatalf("Inbound rollback failed: remark=%q want %q", stored.Remark, inbound.Remark)
+	if stored.Remark != inbound.Remark || stored.Enable != inbound.Enable {
+		t.Fatalf("Inbound rollback failed: stored=%#v want remark=%q enable=%v", stored, inbound.Remark, inbound.Enable)
 	}
 	if isManagedStateHealthy() {
 		t.Fatal("managed state stayed healthy after Inbound Caddy sync failure")

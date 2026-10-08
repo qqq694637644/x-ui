@@ -346,8 +346,9 @@ Portal route /portal-path -> 127.0.0.1:26418
 - 普通代理 Inbound route 可以进入 Subscription。
 - Portal/Tunnel route 可以跟随同一 hostname group 一起轮换，但绝不进入客户端订阅。
 - hostname 切换前必须检查关联 Portal XHTTP 的本地 `PortalListenPort`；普通代理真实链路成功但 Portal 本地监听失败时不得提交轮换。
-- Portal XHTTP 公网端口固定为 443。进入 managed ownership 后，任何启用的 Portal XHTTP `RemoteAddress` 必须精确匹配一个 pending / active / draining PublicEndpoint；新增或修改时匹配不到直接拒绝保存。
-- 首次批量接管允许先预配置 Portal；pending 批量落库以后、第一次 Caddy apply 之前，必须校验所有启用 Portal XHTTP 都能匹配本批 live host 且端口为 443，任一 typo host 或错误端口都会整批拒绝并删除本批 pending。
+- Portal XHTTP 公网端口固定为 443。进入 managed ownership 后，正常新增或编辑启用 Portal 时，`RemoteAddress` 必须精确匹配一个 **active** PublicEndpoint；draining 永远不能成为新的绑定目标。
+- 首次批量接管是唯一 pending 例外：允许先预配置 Portal；pending 批量落库以后、第一次 Caddy apply 之前，必须校验所有启用 Portal XHTTP 都能匹配一个 active 或本批 pending host 且端口为 443，任一 typo host 或错误端口都会整批拒绝并删除本批 pending。
+- Portal route 的存在只由 `Portal.Enable + Endpoint live 状态` 决定，不依赖对应普通 Inbound 的 `Enable`。因此临时 Disable 普通代理时会移除普通 route，但同 hostname group 下启用的 Portal route 继续保留。
 - Portal XHTTP `RemoteAddress` 保存时统一转小写；轮换兼容历史大小写记录，并校验实际更新行数。
 - Portal XHTTP path 与普通 managed Inbound 复用同一套 fixed-path validator，禁止 query、wildcard、空白、`{` 和 `__xui_health` 保留段。
 
@@ -442,7 +443,9 @@ GET /sub/:token
 - pending cleanup 数据库失败时 fail-close 并同时报告原始错误与 cleanup 错误。
 - Portal RemoteAddress 历史大写值也必须随 rotation 正确切换。
 - Inbound 因流量/到期自动 disable 时，如其存在 live managed Endpoint，必须同步 Caddy；Caddy 同步失败则恢复 enable 状态并 fail-close。
+- 已存在 live Endpoint 时，Inbound 非连接关键字段只有 `Enable` 变化会影响 managed Caddy；Remark、流量、Total、Expiry 等修改不得触发 Caddy validate/write/reload。
 - Portal XHTTP path 使用与普通 managed Inbound 完全相同的 strict fixed-path 校验。
+- 随机 hostname 分配必须区分“hostname 已占用”和数据库查询错误；真实 DB 错误立即原样返回，不能重试 64 次后伪装成随机域名耗尽。
 - Enable + Publish 数量为 0 时，不受 managed Data/Caddy/Xray healthy 状态影响，订阅必须返回 HTTP 200 空正文，让客户端清掉旧节点；只有实际存在待下发节点时才执行 fail-closed healthy 检查。
 - 存在 Endpoint 历史后可编辑的 `subscriptionEnable`、`subscriptionBaseUrl`、`hostRandomLength`、`endpointDrainSeconds` 都不会改变 Caddy route，因此保存这些设置不得触发 Caddy validate/reload。唯一例外是首次初始化失败后已经删除全部 never-active pending、当前 history=0 且 Data/Caddy 仍处于 fail-closed 状态：保存修正后的设置会执行一次空 managed 全量 reconcile，成功后才允许重新初始化；不能仅凭设置保存直接把 Caddy 判回 healthy。
 

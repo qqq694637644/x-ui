@@ -314,7 +314,7 @@ func (s *TunnelService) AddTunnel(tunnel *model.Tunnel) error {
 	if err := db.Save(tunnel).Error; err != nil {
 		return err
 	}
-	managed, err := s.needsManagedCaddy(tunnel)
+	managed, err := s.affectsManagedCaddy(tunnel)
 	if err != nil {
 		if rollbackErr := db.Delete(tunnel).Error; rollbackErr != nil {
 			setManagedDataHealthy(false)
@@ -340,7 +340,7 @@ func (s *TunnelService) DelTunnel(id int, userId int) error {
 	if err != nil {
 		return err
 	}
-	managed, err := s.needsManagedCaddy(oldTunnel)
+	managed, err := s.affectsManagedCaddy(oldTunnel)
 	if err != nil {
 		return err
 	}
@@ -400,7 +400,7 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 		return err
 	}
 	previous := *oldTunnel
-	oldManaged, err := s.needsManagedCaddy(oldTunnel)
+	oldManaged, err := s.affectsManagedCaddy(oldTunnel)
 	if err != nil {
 		return err
 	}
@@ -434,7 +434,7 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	if err := db.Save(oldTunnel).Error; err != nil {
 		return err
 	}
-	newManaged, err := s.needsManagedCaddy(oldTunnel)
+	newManaged, err := s.affectsManagedCaddy(oldTunnel)
 	if err != nil {
 		if restoreErr := db.Save(&previous).Error; restoreErr != nil {
 			setManagedDataHealthy(false)
@@ -454,7 +454,12 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	return nil
 }
 
-func (s *TunnelService) needsManagedCaddy(tunnel *model.Tunnel) (bool, error) {
+// affectsManagedCaddy answers whether an already-stored Portal currently has
+// a route in the managed Caddy zone. It deliberately includes pending and
+// draining endpoints so delete/update rollback can remove legacy routes. New
+// or edited Portal bindings are authorized separately by the active-only
+// validatePortalEndpointBinding check.
+func (s *TunnelService) affectsManagedCaddy(tunnel *model.Tunnel) (bool, error) {
 	if tunnel == nil || !tunnel.Enable || tunnel.Mode != TunnelModePortal || tunnel.PortalTransport != PortalTransportXHTTP {
 		return false, nil
 	}
@@ -483,27 +488,27 @@ func (s *TunnelService) validatePortalEndpointBinding(tunnel *model.Tunnel) erro
 	if historyCount == 0 {
 		return nil
 	}
-	return s.requireLivePortalEndpoint(tunnel)
+	return s.requirePortalEndpoint(tunnel, []string{model.EndpointStatusActive}, "active PublicEndpoint")
 }
 
-func (s *TunnelService) requireLivePortalEndpoint(tunnel *model.Tunnel) error {
+func (s *TunnelService) requirePortalEndpoint(tunnel *model.Tunnel, statuses []string, expectation string) error {
 	host := strings.ToLower(strings.TrimSpace(tunnel.RemoteAddress))
 	if host == "" {
 		return common.NewError("Portal XHTTP CDN 域名不能为空")
 	}
 	var count int64
 	if err := database.GetDB().Model(&model.PublicEndpoint{}).
-		Where("host = ? AND status IN ?", host, []string{model.EndpointStatusPending, model.EndpointStatusActive, model.EndpointStatusDraining}).
+		Where("host = ? AND status IN ?", host, statuses).
 		Count(&count).Error; err != nil {
 		return err
 	}
 	if count != 1 {
-		return common.NewError("Portal XHTTP CDN 域名必须精确匹配一个 live PublicEndpoint: ", host)
+		return common.NewError("Portal XHTTP CDN 域名必须精确匹配一个 ", expectation, ": ", host)
 	}
 	return nil
 }
 
-func (s *TunnelService) validateAllEnabledPortalBindings() error {
+func (s *TunnelService) validateAllEnabledPortalBindings(allowPending bool) error {
 	var historyCount int64
 	if err := database.GetDB().Model(&model.PublicEndpoint{}).Count(&historyCount).Error; err != nil {
 		return err
@@ -524,8 +529,14 @@ func (s *TunnelService) validateAllEnabledPortalBindings() error {
 		if _, err := validateManagedFixedPath(tunnel.XHttpPath); err != nil {
 			return common.NewError("Portal XHTTP #", tunnel.Id, " path 不合法: ", err)
 		}
-		if err := s.requireLivePortalEndpoint(tunnel); err != nil {
-			return common.NewError("Portal XHTTP #", tunnel.Id, " 未绑定 live PublicEndpoint: ", err)
+		statuses := []string{model.EndpointStatusActive}
+		expectation := "active PublicEndpoint"
+		if allowPending {
+			statuses = append(statuses, model.EndpointStatusPending)
+			expectation = "active 或本批 pending PublicEndpoint"
+		}
+		if err := s.requirePortalEndpoint(tunnel, statuses, expectation); err != nil {
+			return common.NewError("Portal XHTTP #", tunnel.Id, " 绑定不合法: ", err)
 		}
 	}
 	return nil

@@ -263,11 +263,11 @@ func (s *EndpointService) InitializeBatch(userID int, form *EndpointBatchInit) (
 		return nil, err
 	}
 	pendingIDs := endpointIDs(items)
-	if err := (&TunnelService{}).validateAllEnabledPortalBindings(); err != nil {
+	if err := (&TunnelService{}).validateAllEnabledPortalBindings(true); err != nil {
 		return nil, s.finishFailedPendingMutation(common.NewError("首次接管前 Portal XHTTP 绑定校验失败: ", err), pendingIDs, nil)
 	}
 
-	oldContent, err := s.applyCurrentRoutes()
+	oldContent, err := s.applyCurrentRoutesWithPortalPending(true)
 	if err != nil {
 		return nil, s.finishFailedPendingMutation(err, pendingIDs, nil)
 	}
@@ -545,12 +545,16 @@ func (s *EndpointService) RetireExpired() error {
 }
 
 func (s *EndpointService) applyCurrentRoutes() (string, error) {
+	return s.applyCurrentRoutesWithPortalPending(false)
+}
+
+func (s *EndpointService) applyCurrentRoutesWithPortalPending(allowPendingPortal bool) (string, error) {
 	setManagedCaddyHealthy(false)
 	settings, err := s.settingService.GetEndpointSettings()
 	if err != nil {
 		return "", err
 	}
-	routes, err := s.managedRoutes()
+	routes, err := s.managedRoutesWithPortalPending(allowPendingPortal)
 	if err != nil {
 		return "", err
 	}
@@ -567,7 +571,11 @@ func (s *EndpointService) applyCurrentRoutes() (string, error) {
 }
 
 func (s *EndpointService) managedRoutes() ([]ManagedRoute, error) {
-	if err := (&TunnelService{}).validateAllEnabledPortalBindings(); err != nil {
+	return s.managedRoutesWithPortalPending(false)
+}
+
+func (s *EndpointService) managedRoutesWithPortalPending(allowPendingPortal bool) ([]ManagedRoute, error) {
+	if err := (&TunnelService{}).validateAllEnabledPortalBindings(allowPendingPortal); err != nil {
 		return nil, err
 	}
 	var endpoints []*model.PublicEndpoint
@@ -626,21 +634,20 @@ func (s *EndpointService) managedRoutes() ([]ManagedRoute, error) {
 			return nil, fmt.Errorf("managed endpoint %d uses unsupported public port %d; only 443 is allowed", endpoint.Id, endpoint.Port)
 		}
 		inbound := inboundByID[endpoint.InboundId]
-		if inbound == nil || !inbound.Enable {
-			continue
+		if inbound != nil && inbound.Enable {
+			spec, err := validateManagedInbound(inbound)
+			if err != nil {
+				return nil, fmt.Errorf("managed inbound %d is invalid: %w", inbound.Id, err)
+			}
+			routes = append(routes, ManagedRoute{
+				Host:         endpoint.Host,
+				Path:         transportMatchPath(spec.Path),
+				UpstreamHost: "127.0.0.1",
+				UpstreamPort: inbound.Port,
+				Kind:         "inbound",
+			})
 		}
-		spec, err := validateManagedInbound(inbound)
-		if err != nil {
-			return nil, fmt.Errorf("managed inbound %d is invalid: %w", inbound.Id, err)
-		}
-		routes = append(routes, ManagedRoute{
-			Host:         endpoint.Host,
-			Path:         transportMatchPath(spec.Path),
-			UpstreamHost: "127.0.0.1",
-			UpstreamPort: inbound.Port,
-			Kind:         "inbound",
-		})
-		for _, portal := range portalByInbound[inbound.Id] {
+		for _, portal := range portalByInbound[endpoint.InboundId] {
 			portalPath, err := validateManagedFixedPath(portal.XHttpPath)
 			if err != nil {
 				return nil, fmt.Errorf("managed Portal XHTTP %d path is invalid: %w", portal.Id, err)
@@ -864,15 +871,23 @@ func (s *EndpointService) getOwnedInbound(userID int, inboundID int) (*model.Inb
 }
 
 func (s *EndpointService) ensureHostAvailable(host string) error {
-	var count int64
-	if err := database.GetDB().Model(model.PublicEndpoint{}).
-		Where("host = ?", host).Count(&count).Error; err != nil {
+	available, err := s.hostAvailable(host)
+	if err != nil {
 		return err
 	}
-	if count > 0 {
+	if !available {
 		return fmt.Errorf("public host is already in use: %s", host)
 	}
 	return nil
+}
+
+func (s *EndpointService) hostAvailable(host string) (bool, error) {
+	var count int64
+	if err := database.GetDB().Model(model.PublicEndpoint{}).
+		Where("host = ?", host).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count == 0, nil
 }
 
 func (s *EndpointService) generateUniqueHost(baseDomain string, length int, reserved map[string]bool) (string, error) {
@@ -885,7 +900,11 @@ func (s *EndpointService) generateUniqueHost(baseDomain string, length int, rese
 		if reserved != nil && reserved[host] {
 			continue
 		}
-		if err := s.ensureHostAvailable(host); err == nil {
+		available, err := s.hostAvailable(host)
+		if err != nil {
+			return "", err
+		}
+		if available {
 			return host, nil
 		}
 	}

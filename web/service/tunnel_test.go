@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"x-ui/database"
 	"x-ui/database/model"
@@ -240,7 +241,7 @@ func TestPortalXHTTPRejectsNon443PublicPort(t *testing.T) {
 	}
 }
 
-func TestAddPortalXHTTPRequiresLiveManagedEndpointAfterOwnershipExists(t *testing.T) {
+func TestAddPortalXHTTPRequiresActiveManagedEndpointAfterOwnershipExists(t *testing.T) {
 	if err := database.InitDB(filepath.Join(t.TempDir(), "portal-binding.db")); err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +268,7 @@ func TestAddPortalXHTTPRequiresLiveManagedEndpointAfterOwnershipExists(t *testin
 	}
 	service := &TunnelService{}
 	err := service.AddTunnel(tunnel)
-	if err == nil || !strings.Contains(err.Error(), "live PublicEndpoint") {
+	if err == nil || !strings.Contains(err.Error(), "active PublicEndpoint") {
 		t.Fatalf("AddTunnel() unbound managed Portal error = %v", err)
 	}
 	var count int64
@@ -276,6 +277,106 @@ func TestAddPortalXHTTPRequiresLiveManagedEndpointAfterOwnershipExists(t *testin
 	}
 	if count != 0 {
 		t.Fatalf("unbound Portal persisted despite managed ownership: count=%d", count)
+	}
+}
+
+func TestAddPortalXHTTPRejectsDrainingEndpointBinding(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "portal-draining-binding.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	inbound, _ := createPublishedManagedInboundForTest(t, "portal-draining-binding", "portal-draining", 26417, "/fixed", "active.asdasdasdas.shop")
+	draining := &model.PublicEndpoint{
+		InboundId: inbound.Id,
+		Host:      "draining.asdasdasdas.shop",
+		Port:      443,
+		Status:    model.EndpointStatusDraining,
+		CreatedAt: time.Now().Unix(),
+		RetireAt:  time.Now().Add(time.Minute).Unix(),
+	}
+	if err := database.GetDB().Create(draining).Error; err != nil {
+		t.Fatal(err)
+	}
+	tunnel := &model.Tunnel{
+		UserId:           1,
+		Enable:           true,
+		Mode:             TunnelModePortal,
+		Remark:           "draining-portal",
+		Listen:           "127.0.0.1",
+		ListenPort:       18081,
+		Network:          "tcp",
+		TargetAddress:    "127.0.0.1",
+		TargetPort:       18082,
+		RemoteAddress:    draining.Host,
+		RemotePort:       443,
+		Protocol:         "vless",
+		UUID:             "98989898-9898-9898-9898-989898989898",
+		PortalTransport:  PortalTransportXHTTP,
+		PortalListenPort: 26418,
+		XHttpPath:        "/portal-fixed",
+	}
+	err := (&TunnelService{}).AddTunnel(tunnel)
+	if err == nil || !strings.Contains(err.Error(), "active PublicEndpoint") {
+		t.Fatalf("AddTunnel() draining Portal binding error = %v", err)
+	}
+	var count int64
+	if err := database.GetDB().Model(&model.Tunnel{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("Portal bound to draining endpoint was persisted: count=%d", count)
+	}
+}
+
+func TestUpdatePortalXHTTPRejectsRetargetToDrainingEndpoint(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "portal-update-draining-binding.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	inbound, active := createPublishedManagedInboundForTest(t, "portal-update-draining", "portal-update-draining", 26417, "/fixed", "active.asdasdasdas.shop")
+	draining := &model.PublicEndpoint{
+		InboundId: inbound.Id,
+		Host:      "draining.asdasdasdas.shop",
+		Port:      443,
+		Status:    model.EndpointStatusDraining,
+		CreatedAt: time.Now().Unix(),
+		RetireAt:  time.Now().Add(time.Minute).Unix(),
+	}
+	if err := database.GetDB().Create(draining).Error; err != nil {
+		t.Fatal(err)
+	}
+	tunnel := &model.Tunnel{
+		UserId:           1,
+		Enable:           true,
+		Mode:             TunnelModePortal,
+		Remark:           "active-portal",
+		Listen:           "127.0.0.1",
+		ListenPort:       18081,
+		Network:          "tcp",
+		TargetAddress:    "127.0.0.1",
+		TargetPort:       18082,
+		RemoteAddress:    active.Host,
+		RemotePort:       443,
+		Protocol:         "vless",
+		UUID:             "97979797-9797-9797-9797-979797979797",
+		PortalTransport:  PortalTransportXHTTP,
+		PortalListenPort: 26418,
+		XHttpPath:        "/portal-fixed",
+	}
+	service := &TunnelService{syncManagedRoutesHook: func() error { return nil }}
+	if err := service.AddTunnel(tunnel); err != nil {
+		t.Fatalf("AddTunnel() active Portal error = %v", err)
+	}
+	tunnel.RemoteAddress = draining.Host
+	if err := service.UpdateTunnel(tunnel, 1); err == nil || !strings.Contains(err.Error(), "active PublicEndpoint") {
+		t.Fatalf("UpdateTunnel() draining retarget error = %v", err)
+	}
+	stored, err := service.GetTunnel(tunnel.Id, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.RemoteAddress != active.Host {
+		t.Fatalf("Portal RemoteAddress changed to draining host despite rejection: %q", stored.RemoteAddress)
 	}
 }
 

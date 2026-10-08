@@ -295,6 +295,7 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
 		return err
 	}
 	previous := *oldInbound
+	enableChanged := previous.Enable != inbound.Enable
 	oldInbound.Up = inbound.Up
 	oldInbound.Down = inbound.Down
 	oldInbound.Total = inbound.Total
@@ -327,7 +328,7 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
 	if err := db.Save(oldInbound).Error; err != nil {
 		return err
 	}
-	if liveEndpointCount == 0 {
+	if liveEndpointCount == 0 || !enableChanged {
 		return nil
 	}
 	if err := s.syncManagedRoutes(); err != nil {

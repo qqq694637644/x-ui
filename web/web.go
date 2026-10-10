@@ -399,6 +399,9 @@ func (s *Server) Start() (err error) {
 		logger.Info("web server run http on", listener.Addr())
 	}
 	s.listener = listener
+	if err := service.StartMyTRNControl(); err != nil {
+		return err
+	}
 
 	s.startTask()
 
@@ -415,6 +418,7 @@ func (s *Server) Start() (err error) {
 
 func (s *Server) Stop() error {
 	s.cancel()
+	service.StopMyTRNControl()
 	s.xrayService.StopXray()
 	if s.cron != nil {
 		s.cron.Stop()

@@ -19,6 +19,7 @@ var result string
 type XrayService struct {
 	inboundService InboundService
 	tunnelService  TunnelService
+	mytrnService   MyTRNService
 	settingService SettingService
 }
 
@@ -83,6 +84,9 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 	}
 	err = s.tunnelService.ApplyToXrayConfig(xrayConfig)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.mytrnService.ApplyToXrayConfig(xrayConfig); err != nil {
 		return nil, err
 	}
 	return xrayConfig, nil

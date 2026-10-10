@@ -67,10 +67,20 @@ jobs:
           path: .build/xray-core-v26.3.27
 
       - name: Set up Go
+        id: setup-go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.x'
-          cache: false
+          go-version: '1.26.8'
+          # The smoke job also compiles the pinned Xray-core repository.
+          # Share its Go module/build cache with release.yml (same Go version
+          # and dependency files). The Go 1.20 job above keeps its own cache.
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            .build/xray-core-v26.3.27/go.sum
+
+      - name: Report Go cache reuse
+        run: echo "Go 1.26 build/module cache hit=${{ steps.setup-go.outputs.cache-hit }}"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -82,10 +92,28 @@ jobs:
       - name: Install B generator dependencies
         run: python -m pip install -r .build/b_client_xray/requirements.txt
 
+      - name: Restore pinned Xray binary for smoke tests
+        id: xray-binary-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/xray-v26.3.27
+          # CI-only executable cache; releases always rebuild from pinned source.
+          # No restore-keys: compiler flags, Go version and source must all match.
+          key: xray-ci-linux-amd64-go1.26.8-cgo0-strip-d2758a023cd7f4174a5a5fa4ff66e487d4342ba0-${{ hashFiles('.build/xray-core-v26.3.27/go.mod', '.build/xray-core-v26.3.27/go.sum') }}
+
       - name: Build pinned Xray
+        if: steps.xray-binary-cache.outputs.cache-hit != 'true'
         run: |
           cd .build/xray-core-v26.3.27
-          go build -trimpath -o "$RUNNER_TEMP/xray-v26.3.27" ./main
+          # Match release.yml's build flags to maximize shared GOCACHE reuse.
+          time CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o "$RUNNER_TEMP/xray-v26.3.27" ./main
+
+      - name: Verify pinned Xray executable
+        run: |
+          chmod +x "$RUNNER_TEMP/xray-v26.3.27"
+          "$RUNNER_TEMP/xray-v26.3.27" version | tee "$RUNNER_TEMP/xray-version.txt"
+          grep -Fq 'Xray 26.3.27' "$RUNNER_TEMP/xray-version.txt"
+          grep -Fq 'd2758a0' "$RUNNER_TEMP/xray-version.txt"
 
       - name: Validate managed endpoint health-check config with pinned Xray
         env:

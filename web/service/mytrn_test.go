@@ -80,6 +80,10 @@ func mytrnTestRecord(t *testing.T) *model.MyTRN {
 		Id: 1, Enable: true, Remark: "MyTRN", UUID: mytrnTestUUID,
 		ControlToken: mytrnTestToken, ControlListen: "127.0.0.1", ControlPort: 18080,
 		WarpHost: "127.0.0.1", WarpPort: 40000, EndpointIP: "119.98.144.218", EndpointPort: 57197,
+		KcpMtu: mytrnDefaultKcpMtu, KcpTti: mytrnDefaultKcpTti,
+		KcpUplinkCapacity: mytrnDefaultKcpUplinkCapacity,
+		KcpDownlinkCapacity: mytrnDefaultKcpDownlinkCapacity,
+		KcpReadBufferSize: mytrnDefaultKcpBufferSize, KcpWriteBufferSize: mytrnDefaultKcpBufferSize,
 		CertificatePEM: cert, CertificateFingerprint: fingerprint,
 	}
 }
@@ -157,6 +161,150 @@ func TestMyTRNMergeKeepsExistingXrayAndNoSecondFreedom(t *testing.T) {
 		t.Fatal(err)
 	}
 	testMyTRNOutboundsAndRules(t, config, item)
+}
+
+func TestMyTRNKCPDefaultsPreserveWorkingConfiguration(t *testing.T) {
+	item := mytrnTestRecord(t)
+	kcp := mytrnKCPSettings(item)
+	if len(kcp) != 1 || kcp["mtu"] != 1200 {
+		t.Fatalf("unchanged settings must keep the original mtu-only mKCP config: %#v", kcp)
+	}
+	// Newly migrated SQLite columns are zero for an existing installation.
+	// Loading its settings must show the effective Xray defaults, not zeros.
+	oldRecord := &model.MyTRN{}
+	normalizeMyTRNKCP(oldRecord)
+	if oldRecord.KcpMtu != 1200 || oldRecord.KcpTti != 50 ||
+		oldRecord.KcpUplinkCapacity != 5 || oldRecord.KcpDownlinkCapacity != 20 ||
+		oldRecord.KcpCongestion || oldRecord.KcpReadBufferSize != 2 || oldRecord.KcpWriteBufferSize != 2 {
+		t.Fatalf("old installations do not inherit their previous Xray settings: %#v", oldRecord)
+	}
+	config := mytrnTestConfig(t)
+	if err := mergeMyTRNConfig(config, item, "a-cert.pem"); err != nil {
+		t.Fatal(err)
+	}
+	if !mytrnMatchesRunningConfig(item, config) {
+		t.Fatal("original running MyTRN must match the new default settings")
+	}
+}
+
+func TestMyTRNKCPTuningChangesOnlyBOutboundAndApplicationState(t *testing.T) {
+	item := mytrnTestRecord(t)
+	config := mytrnTestConfig(t)
+	if err := mergeMyTRNConfig(config, item, "a-cert.pem"); err != nil {
+		t.Fatal(err)
+	}
+	tuned := *item
+	tuned.KcpMtu = 1100
+	tuned.KcpTti = 30
+	tuned.KcpUplinkCapacity = 10
+	tuned.KcpDownlinkCapacity = 40
+	tuned.KcpCongestion = true
+	tuned.KcpReadBufferSize = 4
+	tuned.KcpWriteBufferSize = 8
+	if mytrnMatchesRunningConfig(&tuned, config) {
+		t.Fatal("mKCP parameter changes must not show as already applied")
+	}
+	if status, _ := mytrnStatus(&tuned, config, ""); status != "pending_apply" {
+		t.Fatalf("changed mKCP settings displayed as %q instead of pending_apply", status)
+	}
+	updated := mytrnTestConfig(t)
+	if err := mergeMyTRNConfig(updated, &tuned, "a-cert.pem"); err != nil {
+		t.Fatal(err)
+	}
+	testMyTRNOutboundsAndRules(t, updated, &tuned)
+	if !mytrnMatchesRunningConfig(&tuned, updated) {
+		t.Fatal("new mKCP parameters were not recognized as applied")
+	}
+	var outbounds []map[string]interface{}
+	if err := json.Unmarshal(updated.OutboundConfigs, &outbounds); err != nil {
+		t.Fatal(err)
+	}
+	actual := outbounds[2]["streamSettings"].(map[string]interface{})["kcpSettings"].(map[string]interface{})
+	for key, want := range map[string]interface{}{
+		"mtu": 1100, "tti": 30, "uplinkCapacity": 10, "downlinkCapacity": 40,
+		"congestion": true, "readBufferSize": 4, "writeBufferSize": 8,
+	} {
+		// JSON decoding represents numbers as float64.
+		if number, ok := want.(int); ok {
+			want = float64(number)
+		}
+		if actual[key] != want {
+			t.Fatalf("mKCP %s: got %#v, want %#v", key, actual[key], want)
+		}
+	}
+	if len(actual) != 7 {
+		t.Fatalf("unexpected removed or unsupported mKCP options emitted: %#v", actual)
+	}
+	if len(config.InboundConfigs) != len(updated.InboundConfigs) {
+		t.Fatal("mKCP adjustment unexpectedly changed B's existing Xray inbounds")
+	}
+}
+
+func TestMyTRNKCPInputValidation(t *testing.T) {
+	checks := []struct {
+		name string
+		edit func(*model.MyTRN)
+	}{
+		{"MTU too small", func(c *model.MyTRN) { c.KcpMtu = 575 }},
+		{"MTU too large", func(c *model.MyTRN) { c.KcpMtu = 1461 }},
+		{"TTI too small", func(c *model.MyTRN) { c.KcpTti = 9 }},
+		{"TTI zero division risk", func(c *model.MyTRN) { c.KcpTti = 1001 }},
+		{"uplink zero", func(c *model.MyTRN) { c.KcpUplinkCapacity = 0 }},
+		{"downlink overflow", func(c *model.MyTRN) { c.KcpDownlinkCapacity = 1001 }},
+		{"read buffer zero", func(c *model.MyTRN) { c.KcpReadBufferSize = 0 }},
+		{"write buffer too large", func(c *model.MyTRN) { c.KcpWriteBufferSize = 257 }},
+	}
+	for _, tc := range checks {
+		t.Run(tc.name, func(t *testing.T) {
+			item := mytrnTestRecord(t)
+			tc.edit(item)
+			if err := validateMyTRNSettings(item); err == nil {
+				t.Fatal("invalid mKCP parameter was accepted")
+			}
+		})
+	}
+}
+
+func TestMyTRNKCPSettingsPersistAndRequireRestartOnlyWhenChanged(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "mytrn-kcp.db")); err != nil {
+		t.Fatal(err)
+	}
+	defer StopMyTRNControl()
+	service := &MyTRNService{}
+	stored := mytrnTestRecord(t)
+	stored.ControlPort = freeMyTRNPort(t)
+	if err := database.GetDB().Save(stored).Error; err != nil {
+		t.Fatal(err)
+	}
+	settings := MyTRNSettings{
+		Enable: true, Remark: stored.Remark, UUID: stored.UUID,
+		ControlListen: stored.ControlListen, ControlPort: stored.ControlPort,
+		WarpHost: stored.WarpHost, WarpPort: stored.WarpPort,
+		KcpMtu: 1200, KcpTti: 20, KcpUplinkCapacity: 8, KcpDownlinkCapacity: 32,
+		KcpCongestion: true, KcpReadBufferSize: 4, KcpWriteBufferSize: 8,
+	}
+	changed, err := service.UpdateSettings(settings)
+	if err != nil || !changed {
+		t.Fatalf("mKCP tuning must schedule B's Xray restart: changed=%t err=%v", changed, err)
+	}
+	reloaded, err := service.Get()
+	if err != nil || reloaded.KcpTti != 20 || reloaded.KcpUplinkCapacity != 8 ||
+		reloaded.KcpDownlinkCapacity != 32 || !reloaded.KcpCongestion ||
+		reloaded.KcpReadBufferSize != 4 || reloaded.KcpWriteBufferSize != 8 {
+		t.Fatalf("mKCP settings were not persisted: record=%#v err=%v", reloaded, err)
+	}
+	changed, err = service.UpdateSettings(settings)
+	if err != nil || changed {
+		t.Fatalf("saving the exact same mKCP parameters must not restart Xray: changed=%t err=%v", changed, err)
+	}
+	settings.KcpTti = 0
+	if _, err := service.UpdateSettings(settings); err == nil {
+		t.Fatal("invalid mKCP TTI must be rejected before updating the database")
+	}
+	reloaded, err = service.Get()
+	if err != nil || reloaded.KcpTti != 20 {
+		t.Fatalf("invalid settings modified the saved KCP TTI: %v %v", reloaded, err)
+	}
 }
 
 func TestMyTRNMergeDisabledAndUnknownEndpointAreNoOps(t *testing.T) {
@@ -278,6 +426,10 @@ func TestMyTRNGoControlMatchesExistingPythonA(t *testing.T) {
 		Enable: true, Remark: "MyTRN", UUID: mytrnTestUUID,
 		ControlToken: mytrnTestToken, ControlListen: "127.0.0.1", ControlPort: port,
 		WarpHost: "127.0.0.1", WarpPort: 40000,
+		KcpMtu: mytrnDefaultKcpMtu, KcpTti: mytrnDefaultKcpTti,
+		KcpUplinkCapacity: mytrnDefaultKcpUplinkCapacity,
+		KcpDownlinkCapacity: mytrnDefaultKcpDownlinkCapacity,
+		KcpReadBufferSize: mytrnDefaultKcpBufferSize, KcpWriteBufferSize: mytrnDefaultKcpBufferSize,
 	}
 	changed, err := service.UpdateSettings(settings)
 	if err != nil || !changed {
@@ -531,6 +683,10 @@ func TestMyTRNControlBindAddressSamePortNeedsOnlyPanelRestart(t *testing.T) {
 		Enable: true, Remark: "MyTRN", UUID: mytrnTestUUID,
 		ControlToken: mytrnTestToken, ControlListen: "127.0.0.1", ControlPort: port,
 		WarpHost: "127.0.0.1", WarpPort: 40000,
+		KcpMtu: mytrnDefaultKcpMtu, KcpTti: mytrnDefaultKcpTti,
+		KcpUplinkCapacity: mytrnDefaultKcpUplinkCapacity,
+		KcpDownlinkCapacity: mytrnDefaultKcpDownlinkCapacity,
+		KcpReadBufferSize: mytrnDefaultKcpBufferSize, KcpWriteBufferSize: mytrnDefaultKcpBufferSize,
 	}
 	if _, err := service.UpdateSettings(settings); err != nil {
 		t.Fatal(err)

@@ -77,6 +77,13 @@ type MyTRN struct {
 	ControlPort            int    `json:"controlPort"`
 	WarpHost               string `json:"warpHost"`
 	WarpPort               int    `json:"warpPort"`
+	KcpMtu                 int    `json:"kcpMtu"`
+	KcpTti                 int    `json:"kcpTti"`
+	KcpUplinkCapacity      int    `json:"kcpUplinkCapacity"`
+	KcpDownlinkCapacity    int    `json:"kcpDownlinkCapacity"`
+	KcpCongestion          bool   `json:"kcpCongestion"`
+	KcpReadBufferSize      int    `json:"kcpReadBufferSize"`
+	KcpWriteBufferSize     int    `json:"kcpWriteBufferSize"`
 	CertificatePEM         string `json:"-"`
 	CertificateFingerprint string `json:"certificateFingerprint"`
 	EndpointIP             string `json:"endpointIP"`

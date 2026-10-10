@@ -151,6 +151,21 @@
                     <a-form-item label="控制监听端口"><a-input-number v-model="mytrnEdit.controlPort" :min="1" :max="65535"></a-input-number></a-form-item>
                     <a-form-item label="现有 WARP SOCKS5 IP"><a-input v-model="mytrnEdit.warpHost"></a-input></a-form-item>
                     <a-form-item label="现有 WARP SOCKS5 端口"><a-input-number v-model="mytrnEdit.warpPort" :min="1" :max="65535"></a-input-number></a-form-item>
+                    <a-divider orientation="left">mKCP 传输参数（B 端）</a-divider>
+                    <a-alert type="info" show-icon style="margin-bottom:16px"
+                             message="默认值保持当前已连通的配置。A Python 目前 MTU=1200，调整 B 端 MTU 时注意与 A 兼容；保存有变化的参数会重启 B 的 Xray。"></a-alert>
+                    <a-form-item label="MTU（字节）"><a-input-number v-model="mytrnEdit.kcpMtu" :min="576" :max="1460" :step="10"></a-input-number></a-form-item>
+                    <a-form-item label="TTI（毫秒）"><a-input-number v-model="mytrnEdit.kcpTti" :min="10" :max="1000" :step="10"></a-input-number></a-form-item>
+                    <a-form-item label="上行容量（MB/s）"><a-input-number v-model="mytrnEdit.kcpUplinkCapacity" :min="1" :max="1000"></a-input-number></a-form-item>
+                    <a-form-item label="下行容量（MB/s）"><a-input-number v-model="mytrnEdit.kcpDownlinkCapacity" :min="1" :max="1000"></a-input-number></a-form-item>
+                    <a-form-item label="拥塞控制"><a-switch v-model="mytrnEdit.kcpCongestion"></a-switch></a-form-item>
+                    <a-form-item label="读取缓冲（MB）"><a-input-number v-model="mytrnEdit.kcpReadBufferSize" :min="1" :max="256"></a-input-number></a-form-item>
+                    <a-form-item label="写入缓冲（MB）"><a-input-number v-model="mytrnEdit.kcpWriteBufferSize" :min="1" :max="256"></a-input-number></a-form-item>
+                    <a-form-item label="恢复原有参数">
+                        <a-button @click="resetMytrnKcpDefaults">恢复当前已验证的默认值</a-button>
+                    </a-form-item>
+                    <a-alert type="warning" show-icon style="margin-bottom:16px"
+                             message="Xray 26.3.27 的 readBufferSize 虽可配置，但当前核心未使用该读取缓冲值；header、seed 已移除，不提供无效选项。"></a-alert>
                     <a-form-item label="A 公网映射（只读）"><span>[[ mytrn.endpointIP ? mytrn.endpointIP + ':' + mytrn.endpointPort : '等待 A Python 上报' ]]</span></a-form-item>
                     <a-form-item label="A TLS 证书指纹"><span style="overflow-wrap:anywhere">[[ mytrn.certificateFingerprint || '待首次认证注册' ]]</span></a-form-item>
                     <a-form-item label="重新信任 A 证书">
@@ -229,7 +244,8 @@
             spinning: false,
             inbounds: [],
             dbInbounds: [],
-            mytrn: { enable:false, remark:'MyTRN 反向上网', status:'disabled', controlListen:'127.0.0.1', controlPort:18080, warpHost:'127.0.0.1', warpPort:40000 },
+            mytrn: { enable:false, remark:'MyTRN 反向上网', status:'disabled', controlListen:'127.0.0.1', controlPort:18080, warpHost:'127.0.0.1', warpPort:40000,
+                kcpMtu:1200, kcpTti:50, kcpUplinkCapacity:5, kcpDownlinkCapacity:20, kcpCongestion:false, kcpReadBufferSize:2, kcpWriteBufferSize:2 },
             mytrnEdit: {},
             mytrnModalOpen: false,
             mytrnSaving: false,
@@ -259,8 +275,15 @@
                 this.mytrnEdit = Object.assign({}, this.mytrn, { resetTrust:false });
                 this.mytrnModalOpen = true;
             },
+            resetMytrnKcpDefaults() {
+                Object.assign(this.mytrnEdit, {
+                    kcpMtu:1200, kcpTti:50, kcpUplinkCapacity:5, kcpDownlinkCapacity:20,
+                    kcpCongestion:false, kcpReadBufferSize:2, kcpWriteBufferSize:2,
+                });
+            },
             async submitMytrn(data) {
-                const fields = ['enable','remark','uuid','controlToken','controlListen','controlPort','warpHost','warpPort','resetTrust'];
+                const fields = ['enable','remark','uuid','controlToken','controlListen','controlPort','warpHost','warpPort',
+                    'kcpMtu','kcpTti','kcpUplinkCapacity','kcpDownlinkCapacity','kcpCongestion','kcpReadBufferSize','kcpWriteBufferSize','resetTrust'];
                 const body = {};
                 fields.forEach(field => { body[field] = data[field] === undefined ? (field === 'controlToken' ? '' : false) : data[field]; });
                 // x-ui's global axios interceptor forces URL-encoded bodies.

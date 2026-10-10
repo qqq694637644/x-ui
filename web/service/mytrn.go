@@ -35,6 +35,13 @@ const (
 	mytrnInboundTag = "mytrn-data-in"
 	mytrnFreedomTag = "mytrn-freedom"
 	mytrnServerName = "mytrn-a.test"
+	// Defaults preserve the currently working A Python configuration:
+	// A sets MTU=1200 and leaves the other mKCP settings to Xray 26.3.27.
+	mytrnDefaultKcpMtu              = 1200
+	mytrnDefaultKcpTti              = 50
+	mytrnDefaultKcpUplinkCapacity   = 5
+	mytrnDefaultKcpDownlinkCapacity = 20
+	mytrnDefaultKcpBufferSize       = 2
 )
 
 var uuidPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -65,15 +72,22 @@ type MyTRNService struct{}
 // retains the existing secret. The remote IP/port are exclusively owned by
 // the control API.
 type MyTRNSettings struct {
-	Enable        bool   `json:"enable"`
-	Remark        string `json:"remark"`
-	UUID          string `json:"uuid"`
-	ControlToken  string `json:"controlToken"`
-	ControlListen string `json:"controlListen"`
-	ControlPort   int    `json:"controlPort"`
-	WarpHost      string `json:"warpHost"`
-	WarpPort      int    `json:"warpPort"`
-	ResetTrust    bool   `json:"resetTrust"`
+	Enable              bool   `json:"enable"`
+	Remark              string `json:"remark"`
+	UUID                string `json:"uuid"`
+	ControlToken        string `json:"controlToken"`
+	ControlListen       string `json:"controlListen"`
+	ControlPort         int    `json:"controlPort"`
+	WarpHost            string `json:"warpHost"`
+	WarpPort            int    `json:"warpPort"`
+	KcpMtu              int  `json:"kcpMtu"`
+	KcpTti              int  `json:"kcpTti"`
+	KcpUplinkCapacity   int  `json:"kcpUplinkCapacity"`
+	KcpDownlinkCapacity int  `json:"kcpDownlinkCapacity"`
+	KcpCongestion       bool `json:"kcpCongestion"`
+	KcpReadBufferSize   int  `json:"kcpReadBufferSize"`
+	KcpWriteBufferSize  int  `json:"kcpWriteBufferSize"`
+	ResetTrust          bool   `json:"resetTrust"`
 }
 
 type MyTRNView struct {
@@ -86,6 +100,13 @@ type MyTRNView struct {
 	ControlPort            int    `json:"controlPort"`
 	WarpHost               string `json:"warpHost"`
 	WarpPort               int    `json:"warpPort"`
+	KcpMtu                 int    `json:"kcpMtu"`
+	KcpTti                 int    `json:"kcpTti"`
+	KcpUplinkCapacity      int    `json:"kcpUplinkCapacity"`
+	KcpDownlinkCapacity    int    `json:"kcpDownlinkCapacity"`
+	KcpCongestion          bool   `json:"kcpCongestion"`
+	KcpReadBufferSize      int    `json:"kcpReadBufferSize"`
+	KcpWriteBufferSize     int    `json:"kcpWriteBufferSize"`
 	CertificateFingerprint string `json:"certificateFingerprint"`
 	EndpointIP             string `json:"endpointIP"`
 	EndpointPort           int    `json:"endpointPort"`
@@ -100,7 +121,60 @@ func defaultMyTRN() *model.MyTRN {
 	return &model.MyTRN{
 		Id: mytrnID, Remark: "MyTRN 反向上网", ControlListen: "127.0.0.1",
 		ControlPort: 18080, WarpHost: "127.0.0.1", WarpPort: 40000,
+		KcpMtu: mytrnDefaultKcpMtu, KcpTti: mytrnDefaultKcpTti,
+		KcpUplinkCapacity: mytrnDefaultKcpUplinkCapacity,
+		KcpDownlinkCapacity: mytrnDefaultKcpDownlinkCapacity,
+		KcpReadBufferSize: mytrnDefaultKcpBufferSize,
+		KcpWriteBufferSize: mytrnDefaultKcpBufferSize,
 	}
+}
+
+// Existing installations predate the mKCP columns. GORM gives new integer
+// columns zero values; restore the exact effective Xray defaults in memory.
+func normalizeMyTRNKCP(item *model.MyTRN) {
+	if item.KcpMtu == 0 {
+		item.KcpMtu = mytrnDefaultKcpMtu
+	}
+	if item.KcpTti == 0 {
+		item.KcpTti = mytrnDefaultKcpTti
+	}
+	if item.KcpUplinkCapacity == 0 {
+		item.KcpUplinkCapacity = mytrnDefaultKcpUplinkCapacity
+	}
+	if item.KcpDownlinkCapacity == 0 {
+		item.KcpDownlinkCapacity = mytrnDefaultKcpDownlinkCapacity
+	}
+	if item.KcpReadBufferSize == 0 {
+		item.KcpReadBufferSize = mytrnDefaultKcpBufferSize
+	}
+	if item.KcpWriteBufferSize == 0 {
+		item.KcpWriteBufferSize = mytrnDefaultKcpBufferSize
+	}
+}
+
+// Emit unchanged defaults as the original {"mtu":1200} JSON so upgrading
+// the panel alone does not unnecessarily restart the working data path.
+func mytrnKCPSettings(item *model.MyTRN) map[string]interface{} {
+	kcp := map[string]interface{}{"mtu": item.KcpMtu}
+	if item.KcpTti != mytrnDefaultKcpTti {
+		kcp["tti"] = item.KcpTti
+	}
+	if item.KcpUplinkCapacity != mytrnDefaultKcpUplinkCapacity {
+		kcp["uplinkCapacity"] = item.KcpUplinkCapacity
+	}
+	if item.KcpDownlinkCapacity != mytrnDefaultKcpDownlinkCapacity {
+		kcp["downlinkCapacity"] = item.KcpDownlinkCapacity
+	}
+	if item.KcpCongestion {
+		kcp["congestion"] = true
+	}
+	if item.KcpReadBufferSize != mytrnDefaultKcpBufferSize {
+		kcp["readBufferSize"] = item.KcpReadBufferSize
+	}
+	if item.KcpWriteBufferSize != mytrnDefaultKcpBufferSize {
+		kcp["writeBufferSize"] = item.KcpWriteBufferSize
+	}
+	return kcp
 }
 
 func (s *MyTRNService) Get() (*model.MyTRN, error) {
@@ -108,6 +182,9 @@ func (s *MyTRNService) Get() (*model.MyTRN, error) {
 	err := database.GetDB().Where("id = ?", mytrnID).First(item).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return defaultMyTRN(), nil
+	}
+	if err == nil {
+		normalizeMyTRNKCP(item)
 	}
 	return item, err
 }
@@ -129,6 +206,10 @@ func (s *MyTRNService) View() (*MyTRNView, error) {
 		ControlToken: item.ControlToken,
 		ControlTokenConfigured: item.ControlToken != "", ControlListen: item.ControlListen,
 		ControlPort: item.ControlPort, WarpHost: item.WarpHost, WarpPort: item.WarpPort,
+		KcpMtu: item.KcpMtu, KcpTti: item.KcpTti,
+		KcpUplinkCapacity: item.KcpUplinkCapacity, KcpDownlinkCapacity: item.KcpDownlinkCapacity,
+		KcpCongestion: item.KcpCongestion, KcpReadBufferSize: item.KcpReadBufferSize,
+		KcpWriteBufferSize: item.KcpWriteBufferSize,
 		CertificateFingerprint: item.CertificateFingerprint, EndpointIP: item.EndpointIP,
 		EndpointPort: item.EndpointPort, LastRegistration: item.LastRegistration,
 		Status: status, StatusMessage: statusMessage,
@@ -169,18 +250,23 @@ func mytrnMatchesRunningConfig(item *model.MyTRN, active *xray.Config) bool {
 		Protocol string `json:"protocol"`
 		Settings struct {
 			Address string `json:"address"`
-			Port int `json:"port"`
-			ID string `json:"id"`
-			Reverse struct { Tag string `json:"tag"` } `json:"reverse"`
+			Port    int    `json:"port"`
+			ID      string `json:"id"`
+			Reverse struct {
+				Tag string `json:"tag"`
+			} `json:"reverse"`
 			Servers []struct {
 				Address string `json:"address"`
-				Port int `json:"port"`
+				Port    int    `json:"port"`
 			} `json:"servers"`
 		} `json:"settings"`
 		StreamSettings struct {
-			Network string `json:"network"`
-			Security string `json:"security"`
-			Sockopt struct { DialerProxy string `json:"dialerProxy"` } `json:"sockopt"`
+			Network     string                     `json:"network"`
+			Security    string                     `json:"security"`
+			KcpSettings map[string]json.RawMessage `json:"kcpSettings"`
+			Sockopt struct {
+				DialerProxy string `json:"dialerProxy"`
+			} `json:"sockopt"`
 		} `json:"streamSettings"`
 	}
 	if err := json.Unmarshal(active.OutboundConfigs, &outbounds); err != nil {
@@ -194,6 +280,7 @@ func mytrnMatchesRunningConfig(item *model.MyTRN, active *xray.Config) bool {
 				outbound.Settings.Port == item.EndpointPort && outbound.Settings.ID == item.UUID &&
 				outbound.Settings.Reverse.Tag == mytrnInboundTag &&
 				outbound.StreamSettings.Network == "kcp" && outbound.StreamSettings.Security == "tls" &&
+				mytrnKCPMatches(item, outbound.StreamSettings.KcpSettings) &&
 				outbound.StreamSettings.Sockopt.DialerProxy == mytrnWarpTag
 		case mytrnWarpTag:
 			warpOK = outbound.Protocol == "socks" && len(outbound.Settings.Servers) == 1 &&
@@ -202,6 +289,15 @@ func mytrnMatchesRunningConfig(item *model.MyTRN, active *xray.Config) bool {
 		}
 	}
 	return dialOK && warpOK
+}
+
+func mytrnKCPMatches(item *model.MyTRN, active map[string]json.RawMessage) bool {
+	actualJSON, err := json.Marshal(active)
+	if err != nil {
+		return false
+	}
+	wantedJSON, err := json.Marshal(mytrnKCPSettings(item))
+	return err == nil && bytes.Equal(actualJSON, wantedJSON)
 }
 
 func validPort(p int) bool { return p > 0 && p <= 65535 }
@@ -222,6 +318,22 @@ func validateMyTRNSettings(item *model.MyTRN) error {
 	}
 	if net.ParseIP(item.WarpHost) == nil || net.ParseIP(item.WarpHost).To4() == nil {
 		return errors.New("MyTRN WARP SOCKS5 地址必须是 IPv4")
+	}
+	if item.KcpMtu < 576 || item.KcpMtu > 1460 {
+		return errors.New("MyTRN mKCP MTU 必须在 576-1460 字节；A Python 当前使用 1200")
+	}
+	// Xray 26.3.27 divides by (1000/TTI) when computing its window size.
+	// Values above 1000 may pass Xray's parser but can divide by zero at runtime.
+	if item.KcpTti < 10 || item.KcpTti > 1000 {
+		return errors.New("MyTRN mKCP TTI 必须在 10-1000 毫秒")
+	}
+	if item.KcpUplinkCapacity < 1 || item.KcpUplinkCapacity > 1000 ||
+		item.KcpDownlinkCapacity < 1 || item.KcpDownlinkCapacity > 1000 {
+		return errors.New("MyTRN mKCP 上下行容量必须在 1-1000 MB/s")
+	}
+	if item.KcpReadBufferSize < 1 || item.KcpReadBufferSize > 256 ||
+		item.KcpWriteBufferSize < 1 || item.KcpWriteBufferSize > 256 {
+		return errors.New("MyTRN mKCP 缓冲区必须在 1-256 MB")
 	}
 	if item.Enable {
 		if !uuidPattern.MatchString(item.UUID) {
@@ -245,6 +357,10 @@ func (s *MyTRNService) UpdateSettings(edit MyTRNSettings) (bool, error) {
 	next.Enable, next.Remark, next.UUID = edit.Enable, edit.Remark, strings.TrimSpace(edit.UUID)
 	next.ControlListen, next.ControlPort = strings.TrimSpace(edit.ControlListen), edit.ControlPort
 	next.WarpHost, next.WarpPort = strings.TrimSpace(edit.WarpHost), edit.WarpPort
+	next.KcpMtu, next.KcpTti = edit.KcpMtu, edit.KcpTti
+	next.KcpUplinkCapacity, next.KcpDownlinkCapacity = edit.KcpUplinkCapacity, edit.KcpDownlinkCapacity
+	next.KcpCongestion = edit.KcpCongestion
+	next.KcpReadBufferSize, next.KcpWriteBufferSize = edit.KcpReadBufferSize, edit.KcpWriteBufferSize
 	if edit.ControlToken != "" {
 		next.ControlToken = edit.ControlToken
 	}
@@ -268,6 +384,10 @@ func (s *MyTRNService) UpdateSettings(edit MyTRNSettings) (bool, error) {
 	// Do not restart Xray for a change to the control HTTP listener/token.
 	changesData := old.Enable != next.Enable || old.UUID != next.UUID ||
 		old.WarpHost != next.WarpHost || old.WarpPort != next.WarpPort ||
+		old.KcpMtu != next.KcpMtu || old.KcpTti != next.KcpTti ||
+		old.KcpUplinkCapacity != next.KcpUplinkCapacity || old.KcpDownlinkCapacity != next.KcpDownlinkCapacity ||
+		old.KcpCongestion != next.KcpCongestion ||
+		old.KcpReadBufferSize != next.KcpReadBufferSize || old.KcpWriteBufferSize != next.KcpWriteBufferSize ||
 		old.CertificateFingerprint != next.CertificateFingerprint
 	return changesData, nil
 }
@@ -455,7 +575,7 @@ func mergeMyTRNConfig(conf *xray.Config, item *model.MyTRN, certFile string) err
 			"reverse": map[string]interface{}{"tag": mytrnInboundTag},
 		},
 		"streamSettings": map[string]interface{}{
-			"network": "kcp", "security": "tls", "kcpSettings": map[string]interface{}{"mtu": 1200},
+			"network": "kcp", "security": "tls", "kcpSettings": mytrnKCPSettings(item),
 			"tlsSettings": map[string]interface{}{
 				"serverName": mytrnServerName, "allowInsecure": false,
 				"disableSystemRoot": true,

@@ -17,22 +17,17 @@
         flex-direction: column;
         align-items: center;
         gap: 4px;
-        min-width: 200px;
+        min-width: 205px;
     }
 
+    .inbounds-table .ant-table-tbody > tr > td:nth-child(1),
+    .inbounds-table .ant-table-tbody > tr > td:nth-child(3),
+    .inbounds-table .ant-table-tbody > tr > td:nth-child(6),
+    .inbounds-table .ant-table-tbody > tr > td:nth-child(9),
     .mytrn-detail .ant-tag,
     .mytrn-endpoint {
         margin-right: 0;
         white-space: nowrap;
-    }
-
-    .mytrn-detail-note {
-        max-width: 205px;
-        overflow: hidden;
-        white-space: nowrap;
-        text-overflow: ellipsis;
-        color: #8c8c8c;
-        font-size: 12px;
     }
 </style>
 <body>
@@ -70,9 +65,9 @@
                             <a-button type="primary" icon="plus" @click="openAddInbound"></a-button>
                         </div>
 <!--                        <a-input v-model="searchKey" placeholder="搜索" autofocus style="max-width: 300px"></a-input>-->
-                        <a-table :columns="columns" :row-key="dbInbound => dbInbound.id"
+                        <a-table class="inbounds-table" :columns="columns" :row-key="dbInbound => dbInbound.id"
                                  :data-source="displayInbounds"
-                                 :loading="spinning" :scroll="{ x: 1500 }"
+                                 :loading="spinning" :scroll="{ x: 1550 }"
                                  :pagination="false"
                                  style="margin-top: 20px"
                                  @change="() => getDBInbounds()">
@@ -118,18 +113,10 @@
                             </template>
                             <template slot="settings" slot-scope="text, dbInbound">
                                 <div v-if="dbInbound.isMytrn" class="mytrn-detail">
-                                    <a-tag v-if="dbInbound.status === 'applied'" color="blue">Xray 已应用</a-tag>
-                                    <a-tag v-else-if="dbInbound.status === 'apply_failed'" color="red">应用失败 · 重试中</a-tag>
-                                    <a-tag v-else-if="dbInbound.status === 'invalid_certificate'" color="red">A 证书失效</a-tag>
-                                    <a-tag v-else-if="dbInbound.status === 'pending_apply'" color="orange">等待 Xray 应用</a-tag>
-                                    <a-tag v-else-if="dbInbound.status === 'waiting_endpoint'" color="orange">等待 A 上报</a-tag>
-                                    <a-tag v-else>未启用</a-tag>
+                                    <a-tooltip :title="mytrnStatusTooltip(dbInbound)" placement="top">
+                                        <a-tag :color="mytrnStatusColor(dbInbound.status)">[[ mytrnStatusLabel(dbInbound.status) ]]</a-tag>
+                                    </a-tooltip>
                                     <div v-if="dbInbound.endpointIP" class="mytrn-endpoint">[[ dbInbound.endpointIP ]]:[[ dbInbound.endpointPort ]]</div>
-                                    <div v-if="dbInbound.statusMessage && dbInbound.status !== 'applied'"
-                                         class="mytrn-detail-note" :title="dbInbound.statusMessage">[[ dbInbound.statusMessage ]]</div>
-                                    <div v-if="dbInbound.controlListenerMessage" class="mytrn-detail-note"
-                                         :title="dbInbound.controlListenerMessage">[[ dbInbound.controlListenerMessage ]]</div>
-                                    <a-tag v-if="dbInbound.controlListenerRestartRequired" color="orange">控制监听变更需重启面板</a-tag>
                                 </div>
                                 <a-button v-else type="link" @click="showInfo(dbInbound)">查看</a-button>
                             </template>
@@ -176,6 +163,11 @@
                     <a-form-item label="控制监听端口"><a-input-number v-model="mytrnEdit.controlPort" :min="1" :max="65535"></a-input-number></a-form-item>
                     <a-form-item label="现有 WARP SOCKS5 IP"><a-input v-model="mytrnEdit.warpHost"></a-input></a-form-item>
                     <a-form-item label="现有 WARP SOCKS5 端口"><a-input-number v-model="mytrnEdit.warpPort" :min="1" :max="65535"></a-input-number></a-form-item>
+                    <a-form-item label="当前状态">
+                        <a-tag :color="mytrnStatusColor(mytrn.status)">[[ mytrnStatusLabel(mytrn.status) ]]</a-tag>
+                        <div v-if="mytrn.statusMessage" style="overflow-wrap:anywhere">[[ mytrn.statusMessage ]]</div>
+                        <div v-if="mytrn.controlListenerMessage" style="overflow-wrap:anywhere">[[ mytrn.controlListenerMessage ]]</div>
+                    </a-form-item>
                     <a-divider orientation="left">mKCP 传输参数（B 端）</a-divider>
                     <a-alert type="info" show-icon style="margin-bottom:16px"
                              message="默认值保持当前已连通的配置。A Python 目前 MTU=1200，调整 B 端 MTU 时注意与 A 兼容；保存有变化的参数会重启 B 的 Xray。"></a-alert>
@@ -212,52 +204,52 @@
     const columns = [{
         title: "操作",
         align: 'center',
-        width: 30,
+        width: 135,
         scopedSlots: { customRender: 'action' },
     }, {
         title: "启用",
         align: 'center',
-        width: 40,
+        width: 80,
         scopedSlots: { customRender: 'enable' },
     }, {
         title: "id",
         align: 'center',
         dataIndex: "id",
-        width: 30,
+        width: 80,
     }, {
         title: "备注",
         align: 'center',
-        width: 100,
+        width: 160,
         dataIndex: "remark",
     }, {
         title: "协议",
         align: 'center',
-        width: 60,
+        width: 95,
         scopedSlots: { customRender: 'protocol' },
     }, {
         title: "端口",
         align: 'center',
         scopedSlots: { customRender: 'port' },
-        width: 60,
+        width: 145,
     }, {
         title: "流量↑|↓",
         align: 'center',
-        width: 150,
+        width: 180,
         scopedSlots: { customRender: 'traffic' },
     }, {
         title: "详细信息",
         align: 'center',
-        width: 240,
+        width: 250,
         scopedSlots: { customRender: 'settings' },
     }, {
         title: "传输配置",
         align: 'center',
-        width: 60,
+        width: 190,
         scopedSlots: { customRender: 'stream' },
     }, {
         title: "到期时间",
         align: 'center',
-        width: 80,
+        width: 135,
         scopedSlots: { customRender: 'expiryTime' },
     }];
 
@@ -296,6 +288,37 @@
                 if (msg.success && msg.obj) {
                     this.mytrn = msg.obj;
                 }
+            },
+            mytrnStatusLabel(status) {
+                return {
+                    applied: 'Xray 已应用',
+                    apply_failed: '应用失败 · 重试中',
+                    invalid_certificate: 'A 证书失效',
+                    pending_apply: '等待 Xray 应用',
+                    waiting_endpoint: '等待 A 上报',
+                    disabled: '未启用',
+                }[status] || '状态未知';
+            },
+            mytrnStatusColor(status) {
+                return {
+                    applied: 'blue',
+                    apply_failed: 'red',
+                    invalid_certificate: 'red',
+                    pending_apply: 'orange',
+                    waiting_endpoint: 'orange',
+                }[status] || 'default';
+            },
+            mytrnStatusTooltip(inbound) {
+                const messages = [];
+                if (inbound.status === 'applied') {
+                    messages.push('运行中的 Xray 已加载当前 MyTRN 配置');
+                }
+                if (inbound.statusMessage) messages.push(inbound.statusMessage);
+                if (inbound.controlListenerMessage) messages.push(inbound.controlListenerMessage);
+                if (inbound.controlListenerRestartRequired && !inbound.controlListenerMessage) {
+                    messages.push('控制监听变更需重启 x-ui 面板');
+                }
+                return messages.join('；') || this.mytrnStatusLabel(inbound.status);
             },
             openEditMytrn() {
                 this.mytrnEdit = Object.assign({}, this.mytrn, { resetTrust:false });

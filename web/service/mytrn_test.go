@@ -308,7 +308,7 @@ func TestMyTRNGoControlMatchesExistingPythonA(t *testing.T) {
 	if status, data = postMyTRN(t, url, mytrnTestToken, registration); status != 200 || !bytes.Contains(data, []byte(`"changed":false`)) {
 		t.Fatalf("same endpoint forced restart: HTTP=%d %s", status, data)
 	}
-	if view, err := service.View(); err != nil || view.Status != "pending_apply" || !view.ControlTokenConfigured {
+	if view, err := service.View(); err != nil || view.Status != "pending_apply" || !view.ControlTokenConfigured || view.ControlToken != mytrnTestToken {
 		t.Fatalf("incorrect UI status: view=%#v err=%v", view, err)
 	}
 	other := registration

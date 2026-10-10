@@ -62,8 +62,8 @@ func getMyTRNConfigIssue() string {
 type MyTRNService struct{}
 
 // MyTRNSettings is the authenticated panel's editable data. A blank token
-// retains the existing secret; token and A certificate are never returned by
-// a GET. The remote IP/port are exclusively owned by the control API.
+// retains the existing secret. The remote IP/port are exclusively owned by
+// the control API.
 type MyTRNSettings struct {
 	Enable        bool   `json:"enable"`
 	Remark        string `json:"remark"`
@@ -80,6 +80,7 @@ type MyTRNView struct {
 	Enable                 bool   `json:"enable"`
 	Remark                 string `json:"remark"`
 	UUID                   string `json:"uuid"`
+	ControlToken           string `json:"controlToken"`
 	ControlTokenConfigured bool   `json:"controlTokenConfigured"`
 	ControlListen          string `json:"controlListen"`
 	ControlPort            int    `json:"controlPort"`
@@ -125,6 +126,7 @@ func (s *MyTRNService) View() (*MyTRNView, error) {
 	listenerMessage := mytrnControlListenerMessage(item)
 	return &MyTRNView{
 		Enable: item.Enable, Remark: item.Remark, UUID: item.UUID,
+		ControlToken: item.ControlToken,
 		ControlTokenConfigured: item.ControlToken != "", ControlListen: item.ControlListen,
 		ControlPort: item.ControlPort, WarpHost: item.WarpHost, WarpPort: item.WarpPort,
 		CertificateFingerprint: item.CertificateFingerprint, EndpointIP: item.EndpointIP,

@@ -146,7 +146,7 @@
                     <a-form-item label="启用"><a-switch v-model="mytrnEdit.enable"></a-switch></a-form-item>
                     <a-form-item label="备注"><a-input v-model="mytrnEdit.remark" maxlength="200"></a-input></a-form-item>
                     <a-form-item label="A 的 VLESS UUID"><a-input v-model="mytrnEdit.uuid" placeholder="与 A config.a.json 一致"></a-input></a-form-item>
-                    <a-form-item label="控制 Token"><a-input-password v-model="mytrnEdit.controlToken" placeholder="从 A 复制；留空保持原 token"></a-input-password></a-form-item>
+                    <a-form-item label="控制 Token"><a-input v-model="mytrnEdit.controlToken" placeholder="与 A 端 control_token 保持一致"></a-input></a-form-item>
                     <a-form-item label="控制监听 IP"><a-input v-model="mytrnEdit.controlListen" placeholder="127.0.0.1"></a-input></a-form-item>
                     <a-form-item label="控制监听端口"><a-input-number v-model="mytrnEdit.controlPort" :min="1" :max="65535"></a-input-number></a-form-item>
                     <a-form-item label="现有 WARP SOCKS5 IP"><a-input v-model="mytrnEdit.warpHost"></a-input></a-form-item>
@@ -256,7 +256,7 @@
                 }
             },
             openEditMytrn() {
-                this.mytrnEdit = Object.assign({}, this.mytrn, { controlToken:'', resetTrust:false });
+                this.mytrnEdit = Object.assign({}, this.mytrn, { resetTrust:false });
                 this.mytrnModalOpen = true;
             },
             async submitMytrn(data) {

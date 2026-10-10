@@ -233,7 +233,7 @@ func mytrnStatus(item *model.MyTRN, active *xray.Config, applyError string) (str
 		return "invalid_certificate", "A TLS 证书已过期、损坏或与已固定指纹不一致；更新 A 证书后在面板明确重置信任"
 	}
 	if mytrnMatchesRunningConfig(item, active) {
-		return "applied", "运行中的 Xray 已加载此映射；尚未收到 A 端实际代理上网成功的验证结果"
+		return "applied", ""
 	}
 	if applyError != "" {
 		return "apply_failed", applyError

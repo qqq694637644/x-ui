@@ -587,8 +587,8 @@ func TestMyTRNStatusUsesRunningConfigurationNotSavedEndpoint(t *testing.T) {
 	if err := mergeMyTRNConfig(config, item, "a-cert.pem"); err != nil {
 		t.Fatal(err)
 	}
-	if status, _ := mytrnStatus(item, config, ""); status != "applied" {
-		t.Fatalf("running Xray with matching config is %q, want applied", status)
+	if status, message := mytrnStatus(item, config, ""); status != "applied" || message != "" {
+		t.Fatalf("running Xray with matching config: status=%q message=%q, want applied without unverified-traffic claim", status, message)
 	}
 	newEndpoint := *item
 	newEndpoint.EndpointPort++

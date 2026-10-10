@@ -38,8 +38,26 @@ jobs:
           files="$(gofmt -l $changed)"
           if [ -n "$files" ]; then
             echo "$files"
+            gofmt -d $changed
             exit 1
           fi
+
+      - name: Prepare Go formatting patch for review
+        if: failure()
+        run: |
+          changed="$(git diff --name-only origin/main...HEAD -- '*.go')"
+          if [ -n "$changed" ]; then
+            gofmt -w $changed
+            git diff -- $changed > "$RUNNER_TEMP/gofmt.patch"
+          fi
+
+      - name: Upload Go formatting patch
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gofmt-patch
+          path: ${{ runner.temp }}/gofmt.patch
+          if-no-files-found: ignore
 
       - name: Test
         run: go test ./...
@@ -119,6 +137,11 @@ jobs:
         env:
           XUI_HEALTHCHECK_XRAY_BIN: ${{ runner.temp }}/xray-v26.3.27
         run: go test ./web/service -run TestEndpointHealthCheckConfigAcceptedByConfiguredXray -count=1
+
+      - name: Validate MyTRN merged single-process config with real Xray v26.3.27
+        env:
+          XUI_HEALTHCHECK_XRAY_BIN: ${{ runner.temp }}/xray-v26.3.27
+        run: go test ./web/service -run 'TestMyTRNGeneratedJSONAcceptedByRealXray26327|TestMyTRNMergeKeepsExistingXrayAndNoSecondFreedom' -count=1 -v
 
       - name: Generate A config with x-ui production generator
         run: |

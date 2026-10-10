@@ -16,6 +16,7 @@ type XUIController struct {
 	caddyController    *CaddyController
 	settingController  *SettingController
 	endpointController *EndpointController
+	mytrnController    *MyTRNController
 }
 
 func NewXUIController(g *gin.RouterGroup) *XUIController {
@@ -40,6 +41,7 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	a.caddyController = NewCaddyController(g)
 	a.settingController = NewSettingController(g)
 	a.endpointController = NewEndpointController(g)
+	a.mytrnController = NewMyTRNController(g)
 }
 
 func (a *XUIController) index(c *gin.Context) {

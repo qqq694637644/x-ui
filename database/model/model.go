@@ -64,6 +64,33 @@ type PublicEndpoint struct {
 	RetireAt  int64  `json:"retireAt" form:"-" gorm:"index"`
 }
 
+// MyTRN is a single B-side reverse-internet business, not an Xray inbound.
+// Its only public listener is the x-ui Go HTTP control API. The Xray tunnel
+// is an outbound connection dialed through an existing WARP SOCKS5 service.
+type MyTRN struct {
+	Id                     int    `json:"id" gorm:"primaryKey"`
+	Enable                 bool   `json:"enable"`
+	Remark                 string `json:"remark"`
+	UUID                   string `json:"uuid"`
+	ControlToken           string `json:"-"`
+	ControlListen          string `json:"controlListen"`
+	ControlPort            int    `json:"controlPort"`
+	WarpHost               string `json:"warpHost"`
+	WarpPort               int    `json:"warpPort"`
+	KcpMtu                 int    `json:"kcpMtu"`
+	KcpTti                 int    `json:"kcpTti"`
+	KcpUplinkCapacity      int    `json:"kcpUplinkCapacity"`
+	KcpDownlinkCapacity    int    `json:"kcpDownlinkCapacity"`
+	KcpCongestion          bool   `json:"kcpCongestion"`
+	KcpReadBufferSize      int    `json:"kcpReadBufferSize"`
+	KcpWriteBufferSize     int    `json:"kcpWriteBufferSize"`
+	CertificatePEM         string `json:"-"`
+	CertificateFingerprint string `json:"certificateFingerprint"`
+	EndpointIP             string `json:"endpointIP"`
+	EndpointPort           int    `json:"endpointPort"`
+	LastRegistration       int64  `json:"lastRegistration"`
+}
+
 type Tunnel struct {
 	Id     int    `json:"id" form:"id" gorm:"primaryKey;autoIncrement"`
 	UserId int    `json:"-"`

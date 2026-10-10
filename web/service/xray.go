@@ -15,10 +15,44 @@ var p *xray.Process
 var lock sync.Mutex
 var isNeedXrayRestart atomic.Bool
 var result string
+var lastXrayApplyError struct {
+	sync.RWMutex
+	message string
+}
+
+func xrayApplyFailure() string {
+	lastXrayApplyError.RLock()
+	defer lastXrayApplyError.RUnlock()
+	return lastXrayApplyError.message
+}
+
+func recordXrayApplyResult(err error) {
+	lastXrayApplyError.Lock()
+	defer lastXrayApplyError.Unlock()
+	if err != nil {
+		lastXrayApplyError.message = err.Error()
+		// The scheduler consumes the flag BEFORE calling RestartXray.
+		// Re-queue every failed attempt, including a failed cold start,
+		// so a saved A mapping is never mistaken for an applied mapping.
+		isNeedXrayRestart.Store(true)
+	} else {
+		lastXrayApplyError.message = ""
+	}
+}
+
+func currentXrayConfig() *xray.Config {
+	lock.Lock()
+	defer lock.Unlock()
+	if p == nil || !p.IsRunning() {
+		return nil
+	}
+	return p.GetConfig()
+}
 
 type XrayService struct {
 	inboundService InboundService
 	tunnelService  TunnelService
+	mytrnService   MyTRNService
 	settingService SettingService
 }
 
@@ -85,6 +119,9 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := s.mytrnService.ApplyToXrayConfig(xrayConfig); err != nil {
+		return nil, err
+	}
 	return xrayConfig, nil
 }
 
@@ -100,6 +137,7 @@ func (s *XrayService) RestartXray(isForce bool) (err error) {
 	defer lock.Unlock()
 	defer func() {
 		setManagedXrayHealthy(err == nil && p != nil && p.IsRunning())
+		recordXrayApplyResult(err)
 	}()
 	logger.Debug("restart xray, force:", isForce)
 

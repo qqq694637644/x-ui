@@ -11,6 +11,24 @@
     .ant-col-sm-24 {
         margin-top: 10px;
     }
+
+    .mytrn-detail {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        min-width: 205px;
+    }
+
+    .inbounds-table .ant-table-tbody > tr > td:nth-child(1),
+    .inbounds-table .ant-table-tbody > tr > td:nth-child(3),
+    .inbounds-table .ant-table-tbody > tr > td:nth-child(6),
+    .inbounds-table .ant-table-tbody > tr > td:nth-child(9),
+    .mytrn-detail .ant-tag,
+    .mytrn-endpoint {
+        margin-right: 0;
+        white-space: nowrap;
+    }
 </style>
 <body>
 <a-layout id="app" v-cloak>
@@ -47,14 +65,15 @@
                             <a-button type="primary" icon="plus" @click="openAddInbound"></a-button>
                         </div>
 <!--                        <a-input v-model="searchKey" placeholder="搜索" autofocus style="max-width: 300px"></a-input>-->
-                        <a-table :columns="columns" :row-key="dbInbound => dbInbound.id"
-                                 :data-source="dbInbounds"
-                                 :loading="spinning" :scroll="{ x: 1500 }"
+                        <a-table class="inbounds-table" :columns="columns" :row-key="dbInbound => dbInbound.id"
+                                 :data-source="displayInbounds"
+                                 :loading="spinning" :scroll="{ x: 1550 }"
                                  :pagination="false"
                                  style="margin-top: 20px"
                                  @change="() => getDBInbounds()">
                             <template slot="action" slot-scope="text, dbInbound">
-                                <a-dropdown :trigger="['click']">
+                                <a-button v-if="dbInbound.isMytrn" type="link" @click="openEditMytrn">编辑 MyTRN</a-button>
+                                <a-dropdown v-else :trigger="['click']">
                                     <a @click="e => e.preventDefault()">操作</a>
                                     <a-menu slot="overlay" @click="a => clickAction(a, dbInbound)">
                                         <a-menu-item v-if="dbInbound.hasLink()" key="qrcode">
@@ -75,21 +94,35 @@
                                 </a-dropdown>
                             </template>
                             <template slot="protocol" slot-scope="text, dbInbound">
-                                <a-tag color="blue">[[ dbInbound.protocol ]]</a-tag>
+                                <a-tag :color="dbInbound.isMytrn ? 'purple' : 'blue'">[[ dbInbound.isMytrn ? 'MyTRN' : dbInbound.protocol ]]</a-tag>
+                            </template>
+                            <template slot="port" slot-scope="text, dbInbound">
+                                <span v-if="dbInbound.isMytrn">— (B 主动拨号)</span>
+                                <span v-else>[[ dbInbound.port ]]</span>
                             </template>
                             <template slot="traffic" slot-scope="text, dbInbound">
+                                <span v-if="dbInbound.isMytrn">—</span>
+                                <template v-else>
                                 <a-tag color="blue">[[ sizeFormat(dbInbound.up) ]] / [[ sizeFormat(dbInbound.down) ]]</a-tag>
                                 <template v-if="dbInbound.total > 0">
                                     <a-tag v-if="dbInbound.up + dbInbound.down < dbInbound.total" color="cyan">[[ sizeFormat(dbInbound.total) ]]</a-tag>
                                     <a-tag v-else color="red">[[ sizeFormat(dbInbound.total) ]]</a-tag>
                                 </template>
                                 <a-tag v-else color="green">无限制</a-tag>
+                                </template>
                             </template>
                             <template slot="settings" slot-scope="text, dbInbound">
-                                <a-button type="link" @click="showInfo(dbInbound)">查看</a-button>
+                                <div v-if="dbInbound.isMytrn" class="mytrn-detail">
+                                    <a-tooltip :title="mytrnStatusTooltip(dbInbound)" placement="top">
+                                        <a-tag :color="mytrnStatusColor(dbInbound.status)">[[ mytrnStatusLabel(dbInbound.status) ]]</a-tag>
+                                    </a-tooltip>
+                                    <div v-if="dbInbound.endpointIP" class="mytrn-endpoint">[[ dbInbound.endpointIP ]]:[[ dbInbound.endpointPort ]]</div>
+                                </div>
+                                <a-button v-else type="link" @click="showInfo(dbInbound)">查看</a-button>
                             </template>
                             <template slot="stream" slot-scope="text, dbInbound, index">
-                                <template v-if="dbInbound.isVMess || dbInbound.isVLess || dbInbound.isTrojan || dbInbound.isSS">
+                                <template v-if="dbInbound.isMytrn"><a-tag color="purple">VLESS / mKCP / TLS</a-tag></template>
+                                <template v-else-if="dbInbound.isVMess || dbInbound.isVLess || dbInbound.isTrojan || dbInbound.isSS">
                                     <a-tag color="green">[[ inbounds[index].stream.network ]]</a-tag>
                                     <a-tag v-if="inbounds[index].stream.isTls" color="blue">tls</a-tag>
                                     <a-tag v-if="inbounds[index].stream.isXTls" color="blue">xtls</a-tag>
@@ -97,9 +130,12 @@
                                 <template v-else>无</template>
                             </template>
                             <template slot="enable" slot-scope="text, dbInbound">
-                                <a-switch v-model="dbInbound.enable" @change="switchEnable(dbInbound)"></a-switch>
+                                <a-switch v-if="dbInbound.isMytrn" :checked="dbInbound.enable" @change="toggleMytrn"></a-switch>
+                                <a-switch v-else v-model="dbInbound.enable" @change="switchEnable(dbInbound)"></a-switch>
                             </template>
                             <template slot="expiryTime" slot-scope="text, dbInbound">
+                                <span v-if="dbInbound.isMytrn">—</span>
+                                <template v-else>
                                 <template v-if="dbInbound.expiryTime > 0">
                                     <a-tag v-if="dbInbound.isExpiry" color="red">
                                         [[ DateUtil.formatMillis(dbInbound.expiryTime) ]]
@@ -109,11 +145,56 @@
                                     </a-tag>
                                 </template>
                                 <a-tag v-else color="green">无限期</a-tag>
+                                </template>
                             </template>
                         </a-table>
                     </a-card>
                 </transition>
             </a-spin>
+            <a-modal v-model="mytrnModalOpen" title="MyTRN · B 侧反向上网" :confirm-loading="mytrnSaving"
+                     width="700px" ok-text="保存" @ok="saveMytrn">
+                <a-alert type="info" show-icon message="A 仍运行 Python；B 只连接现有 WARP SOCKS5，控制请求走既有 VLESS/CF" style="margin-bottom:16px"></a-alert>
+                <a-form :label-col="{span:8}" :wrapper-col="{span:15}">
+                    <a-form-item label="启用"><a-switch v-model="mytrnEdit.enable"></a-switch></a-form-item>
+                    <a-form-item label="备注"><a-input v-model="mytrnEdit.remark" maxlength="200"></a-input></a-form-item>
+                    <a-form-item label="A 的 VLESS UUID"><a-input v-model="mytrnEdit.uuid" placeholder="与 A config.a.json 一致"></a-input></a-form-item>
+                    <a-form-item label="控制 Token"><a-input v-model="mytrnEdit.controlToken" placeholder="与 A 端 control_token 保持一致"></a-input></a-form-item>
+                    <a-form-item label="控制监听 IP"><a-input v-model="mytrnEdit.controlListen" placeholder="127.0.0.1"></a-input></a-form-item>
+                    <a-form-item label="控制监听端口"><a-input-number v-model="mytrnEdit.controlPort" :min="1" :max="65535"></a-input-number></a-form-item>
+                    <a-form-item label="现有 WARP SOCKS5 IP"><a-input v-model="mytrnEdit.warpHost"></a-input></a-form-item>
+                    <a-form-item label="现有 WARP SOCKS5 端口"><a-input-number v-model="mytrnEdit.warpPort" :min="1" :max="65535"></a-input-number></a-form-item>
+                    <a-form-item label="当前状态">
+                        <a-tag :color="mytrnStatusColor(mytrn.status)">[[ mytrnStatusLabel(mytrn.status) ]]</a-tag>
+                        <div v-if="mytrn.statusMessage" style="overflow-wrap:anywhere">[[ mytrn.statusMessage ]]</div>
+                        <div v-if="mytrn.controlListenerMessage" style="overflow-wrap:anywhere">[[ mytrn.controlListenerMessage ]]</div>
+                    </a-form-item>
+                    <a-divider orientation="left">mKCP 传输参数（B 端）</a-divider>
+                    <a-alert type="info" show-icon style="margin-bottom:16px"
+                             message="默认值保持当前已连通的配置。A Python 目前 MTU=1200，调整 B 端 MTU 时注意与 A 兼容；保存有变化的参数会重启 B 的 Xray。"></a-alert>
+                    <a-form-item label="MTU（字节）"><a-input-number v-model="mytrnEdit.kcpMtu" :min="576" :max="1460" :step="10"></a-input-number></a-form-item>
+                    <a-form-item label="TTI（毫秒）"><a-input-number v-model="mytrnEdit.kcpTti" :min="10" :max="1000" :step="10"></a-input-number></a-form-item>
+                    <a-form-item label="上行容量（MB/s）"><a-input-number v-model="mytrnEdit.kcpUplinkCapacity" :min="1" :max="1000"></a-input-number></a-form-item>
+                    <a-form-item label="下行容量（MB/s）"><a-input-number v-model="mytrnEdit.kcpDownlinkCapacity" :min="1" :max="1000"></a-input-number></a-form-item>
+                    <a-form-item label="拥塞控制"><a-switch v-model="mytrnEdit.kcpCongestion"></a-switch></a-form-item>
+                    <a-form-item label="读取缓冲（MB）"><a-input-number v-model="mytrnEdit.kcpReadBufferSize" :min="1" :max="256"></a-input-number></a-form-item>
+                    <a-form-item label="写入缓冲（MB）"><a-input-number v-model="mytrnEdit.kcpWriteBufferSize" :min="1" :max="256"></a-input-number></a-form-item>
+                    <a-form-item label="恢复原有参数">
+                        <a-button @click="resetMytrnKcpDefaults">恢复当前已验证的默认值</a-button>
+                    </a-form-item>
+                    <a-alert type="warning" show-icon style="margin-bottom:16px"
+                             message="Xray 26.3.27 的 readBufferSize 虽可配置，但当前核心未使用该读取缓冲值；header、seed 已移除，不提供无效选项。"></a-alert>
+                    <a-form-item label="A 公网映射（只读）"><span>[[ mytrn.endpointIP ? mytrn.endpointIP + ':' + mytrn.endpointPort : '等待 A Python 上报' ]]</span></a-form-item>
+                    <a-form-item label="A TLS 证书指纹"><span style="overflow-wrap:anywhere">[[ mytrn.certificateFingerprint || '待首次认证注册' ]]</span></a-form-item>
+                    <a-form-item label="重新信任 A 证书">
+                        <a-checkbox v-model="mytrnEdit.resetTrust">清除已固定的证书与旧 endpoint（仅确认 A 身份变更后使用）</a-checkbox>
+                    </a-form-item>
+                </a-form>
+                <a-alert type="warning" show-icon message="A 映射变化时将重启 x-ui 管理的整个 Xray；现有 VLESS 会短暂断开"></a-alert>
+                <a-alert v-if="mytrn.controlListenerRestartRequired" type="warning" show-icon
+                         message="已保存控制监听地址；同端口改 IP 需重启 x-ui 面板后生效" style="margin-top:8px"></a-alert>
+                <a-alert v-if="mytrn.status === 'invalid_certificate'" type="error" show-icon
+                         message="A 证书已失效：先在 A 更新证书，再勾选重新信任并等待 A 重新注册；其他 VLESS 入站不受影响" style="margin-top:8px"></a-alert>
+            </a-modal>
         </a-layout-content>
     </a-layout>
 </a-layout>
@@ -123,52 +204,52 @@
     const columns = [{
         title: "操作",
         align: 'center',
-        width: 30,
+        width: 135,
         scopedSlots: { customRender: 'action' },
     }, {
         title: "启用",
         align: 'center',
-        width: 40,
+        width: 80,
         scopedSlots: { customRender: 'enable' },
     }, {
         title: "id",
         align: 'center',
         dataIndex: "id",
-        width: 30,
+        width: 80,
     }, {
         title: "备注",
         align: 'center',
-        width: 100,
+        width: 160,
         dataIndex: "remark",
     }, {
         title: "协议",
         align: 'center',
-        width: 60,
+        width: 95,
         scopedSlots: { customRender: 'protocol' },
     }, {
         title: "端口",
         align: 'center',
-        dataIndex: "port",
-        width: 60,
+        scopedSlots: { customRender: 'port' },
+        width: 145,
     }, {
         title: "流量↑|↓",
         align: 'center',
-        width: 150,
+        width: 180,
         scopedSlots: { customRender: 'traffic' },
     }, {
         title: "详细信息",
         align: 'center',
-        width: 40,
+        width: 250,
         scopedSlots: { customRender: 'settings' },
     }, {
         title: "传输配置",
         align: 'center',
-        width: 60,
+        width: 190,
         scopedSlots: { customRender: 'stream' },
     }, {
         title: "到期时间",
         align: 'center',
-        width: 80,
+        width: 135,
         scopedSlots: { customRender: 'expiryTime' },
     }];
 
@@ -180,6 +261,12 @@
             spinning: false,
             inbounds: [],
             dbInbounds: [],
+            mytrn: { enable:false, remark:'MyTRN 反向上网', status:'disabled', controlListen:'127.0.0.1', controlPort:18080, warpHost:'127.0.0.1', warpPort:40000,
+                kcpMtu:1200, kcpTti:50, kcpUplinkCapacity:5, kcpDownlinkCapacity:20, kcpCongestion:false, kcpReadBufferSize:2, kcpWriteBufferSize:2 },
+            mytrnEdit: {},
+            mytrnModalOpen: false,
+            mytrnSaving: false,
+            mytrnRefreshTimer: null,
             searchKey: '',
         },
         methods: {
@@ -194,6 +281,96 @@
                     return;
                 }
                 this.setInbounds(msg.obj);
+                await this.getMytrn();
+            },
+            async getMytrn() {
+                const msg = await HttpUtil.post('/xui/mytrn/get');
+                if (msg.success && msg.obj) {
+                    this.mytrn = msg.obj;
+                }
+            },
+            mytrnStatusLabel(status) {
+                return {
+                    applied: 'Xray 已应用',
+                    apply_failed: '应用失败 · 重试中',
+                    invalid_certificate: 'A 证书失效',
+                    pending_apply: '等待 Xray 应用',
+                    waiting_endpoint: '等待 A 上报',
+                    disabled: '未启用',
+                }[status] || '状态未知';
+            },
+            mytrnStatusColor(status) {
+                return {
+                    applied: 'blue',
+                    apply_failed: 'red',
+                    invalid_certificate: 'red',
+                    pending_apply: 'orange',
+                    waiting_endpoint: 'orange',
+                }[status] || 'default';
+            },
+            mytrnStatusTooltip(inbound) {
+                const messages = [];
+                if (inbound.status === 'applied') {
+                    messages.push('运行中的 Xray 已加载当前 MyTRN 配置');
+                }
+                if (inbound.statusMessage) messages.push(inbound.statusMessage);
+                if (inbound.controlListenerMessage) messages.push(inbound.controlListenerMessage);
+                if (inbound.controlListenerRestartRequired && !inbound.controlListenerMessage) {
+                    messages.push('控制监听变更需重启 x-ui 面板');
+                }
+                return messages.join('；') || this.mytrnStatusLabel(inbound.status);
+            },
+            openEditMytrn() {
+                this.mytrnEdit = Object.assign({}, this.mytrn, { resetTrust:false });
+                this.mytrnModalOpen = true;
+            },
+            resetMytrnKcpDefaults() {
+                Object.assign(this.mytrnEdit, {
+                    kcpMtu:1200, kcpTti:50, kcpUplinkCapacity:5, kcpDownlinkCapacity:20,
+                    kcpCongestion:false, kcpReadBufferSize:2, kcpWriteBufferSize:2,
+                });
+            },
+            async submitMytrn(data) {
+                const fields = ['enable','remark','uuid','controlToken','controlListen','controlPort','warpHost','warpPort',
+                    'kcpMtu','kcpTti','kcpUplinkCapacity','kcpDownlinkCapacity','kcpCongestion','kcpReadBufferSize','kcpWriteBufferSize','resetTrust'];
+                const body = {};
+                fields.forEach(field => { body[field] = data[field] === undefined ? (field === 'controlToken' ? '' : false) : data[field]; });
+                // x-ui's global axios interceptor forces URL-encoded bodies.
+                // MyTRN's strict settings API deliberately uses JSON instead.
+                let msg;
+                try {
+                    const response = await fetch(basePath + 'xui/mytrn/save', {
+                        method: 'POST', credentials: 'same-origin',
+                        headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
+                        body: JSON.stringify(body),
+                    });
+                    msg = await response.json();
+                } catch (error) {
+                    this.$message.error('MyTRN 请求失败：' + error);
+                    return false;
+                }
+                if (!msg.success) {
+                    this.$message.error(msg.msg || 'MyTRN 保存失败');
+                    return false;
+                }
+                await this.getMytrn();
+                return true;
+            },
+            async saveMytrn() {
+                if (this.mytrnEdit.resetTrust && !window.confirm('确定清除已固定的 A TLS 证书和公网映射？')) return;
+                this.mytrnSaving = true;
+                try {
+                    if (await this.submitMytrn(this.mytrnEdit)) {
+                        this.mytrnModalOpen = false;
+                        this.$message.success('MyTRN 配置已保存');
+                    }
+                } finally {
+                    this.mytrnSaving = false;
+                }
+            },
+            async toggleMytrn(checked) {
+                const data = Object.assign({}, this.mytrn, { enable:checked, controlToken:'', resetTrust:false });
+                await this.submitMytrn(data);
             },
             setInbounds(dbInbounds) {
                 this.inbounds.splice(0);
@@ -356,8 +533,17 @@
         },
         mounted() {
             this.getDBInbounds();
+            this.mytrnRefreshTimer = window.setInterval(() => {
+                this.getMytrn().catch(() => {});
+            }, 15000);
+        },
+        beforeDestroy() {
+            window.clearInterval(this.mytrnRefreshTimer);
         },
         computed: {
+            displayInbounds() {
+                return this.dbInbounds.concat([Object.assign({ id:'mytrn', isMytrn:true }, this.mytrn)]);
+            },
             total() {
                 let down = 0, up = 0;
                 for (let i = 0; i < this.dbInbounds.length; ++i) {

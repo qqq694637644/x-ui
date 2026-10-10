@@ -253,6 +253,15 @@ func postMyTRN(t *testing.T, url, token string, body interface{}) (int, []byte) 
 }
 
 func TestMyTRNGoControlMatchesExistingPythonA(t *testing.T) {
+	// The production control registration schedules a global Xray restart.
+	// Restore the exact pre-test state so independent subscription/managed
+	// health tests are not affected by this isolated HTTP integration case.
+	beforeRestart := isNeedXrayRestart.Load()
+	beforeHealthy := managedXrayHealthy.Load()
+	defer func() {
+		isNeedXrayRestart.Store(beforeRestart)
+		managedXrayHealthy.Store(beforeHealthy)
+	}()
 	if err := database.InitDB(filepath.Join(t.TempDir(), "mytrn.db")); err != nil {
 		t.Fatal(err)
 	}
@@ -334,6 +343,12 @@ func TestMyTRNGeneratedJSONAcceptedByRealXray26327(t *testing.T) {
 		t.Skip("CI pinned Xray binary is not installed")
 	}
 	config := mytrnTestConfig(t)
+	// CI builds Xray-core from source without external geoip.dat assets.
+	// Only this isolated run -test fixture substitutes a literal private CIDR
+	// for the existing template's geoip:private block. The production merger
+	// and all other tests preserve the original geoip:private rule unchanged.
+	config.RouterConfig = []byte(strings.ReplaceAll(string(config.RouterConfig),
+		"geoip:private", "192.168.0.0/16"))
 	item := mytrnTestRecord(t)
 	certificate := filepath.Join(t.TempDir(), "mytrn-a-cert.pem")
 	if err := os.WriteFile(certificate, []byte(item.CertificatePEM), 0600); err != nil {

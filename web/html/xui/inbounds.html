@@ -253,7 +253,20 @@
                 const fields = ['enable','remark','uuid','controlToken','controlListen','controlPort','warpHost','warpPort','resetTrust'];
                 const body = {};
                 fields.forEach(field => { body[field] = data[field] === undefined ? (field === 'controlToken' ? '' : false) : data[field]; });
-                const msg = await HttpUtil.post('/xui/mytrn/save', body);
+                // x-ui's global axios interceptor forces URL-encoded bodies.
+                // MyTRN's strict settings API deliberately uses JSON instead.
+                let msg;
+                try {
+                    const response = await fetch('/xui/mytrn/save', {
+                        method: 'POST', credentials: 'same-origin',
+                        headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
+                        body: JSON.stringify(body),
+                    });
+                    msg = await response.json();
+                } catch (error) {
+                    this.$message.error('MyTRN 请求失败：' + error);
+                    return false;
+                }
                 if (!msg.success) {
                     this.$message.error(msg.msg || 'MyTRN 保存失败');
                     return false;

@@ -400,7 +400,10 @@ func (s *Server) Start() (err error) {
 	}
 	s.listener = listener
 	if err := service.StartMyTRNControl(); err != nil {
-		return err
+		// A MyTRN listener problem must not prevent the existing x-ui
+		// panel and its unrelated VLESS inbounds from cold-starting.
+		// The MyTRN status view reports the control listener as stopped.
+		logger.Warning("MyTRN control HTTP unavailable:", err)
 	}
 
 	s.startTask()

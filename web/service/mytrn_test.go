@@ -5,8 +5,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -30,6 +32,10 @@ const mytrnTestUUID = "123e4567-e89b-42d3-a456-426614174000"
 const mytrnTestToken = "mytrn-test-token-98765432109876543210"
 
 func mytrnTestCert(t *testing.T) string {
+	return mytrnTestCertWithValidity(t, time.Now().Add(-time.Hour), time.Now().Add(24*time.Hour))
+}
+
+func mytrnTestCertWithValidity(t *testing.T, notBefore, notAfter time.Time) string {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -38,7 +44,7 @@ func mytrnTestCert(t *testing.T) string {
 	cert := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
 		Subject:      pkix.Name{CommonName: mytrnServerName},
-		NotBefore:    time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+		NotBefore:    notBefore, NotAfter: notAfter,
 		DNSNames: []string{mytrnServerName}, IsCA: true, BasicConstraintsValid: true,
 		KeyUsage:    x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
@@ -302,7 +308,7 @@ func TestMyTRNGoControlMatchesExistingPythonA(t *testing.T) {
 	if status, data = postMyTRN(t, url, mytrnTestToken, registration); status != 200 || !bytes.Contains(data, []byte(`"changed":false`)) {
 		t.Fatalf("same endpoint forced restart: HTTP=%d %s", status, data)
 	}
-	if view, err := service.View(); err != nil || view.Status != "configured" || !view.ControlTokenConfigured {
+	if view, err := service.View(); err != nil || view.Status != "pending_apply" || !view.ControlTokenConfigured {
 		t.Fatalf("incorrect UI status: view=%#v err=%v", view, err)
 	}
 	other := registration
@@ -372,5 +378,182 @@ func TestMyTRNGeneratedJSONAcceptedByRealXray26327(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "Reading config") {
 		t.Logf("Xray validation output: %s", output)
+	}
+}
+
+func TestMyTRNRejectsCatchallRoutingBeforeReverseRule(t *testing.T) {
+	item := mytrnTestRecord(t)
+	for _, catchall := range []string{
+		`{"type":"field","outboundTag":"blocked"}`,
+		`{"type":"field","network":"tcp,udp","outboundTag":"blocked"}`,
+		`{"type":"field","port":"1-65535","outboundTag":"blocked"}`,
+		`{"type":"field","ip":["0.0.0.0/0"],"outboundTag":"blocked"}`,
+		`{"type":"field","domain":["regexp:.*"],"outboundTag":"blocked"}`,
+		`{"type":"field","inboundTag":["mytrn-data-in"],"outboundTag":"blocked"}`,
+	} {
+		config := mytrnTestConfig(t)
+		var routing map[string]json.RawMessage
+		if err := json.Unmarshal(config.RouterConfig, &routing); err != nil {
+			t.Fatal(err)
+		}
+		var rules []json.RawMessage
+		if err := json.Unmarshal(routing["rules"], &rules); err != nil {
+			t.Fatal(err)
+		}
+		rules = append(rules, json.RawMessage(catchall))
+		routing["rules"], _ = json.Marshal(rules)
+		config.RouterConfig, _ = json.Marshal(routing)
+		if err := mergeMyTRNConfig(config, item, "valid.pem"); err == nil {
+			t.Fatalf("MyTRN accepted a shadowing route: %s", catchall)
+		}
+	}
+	// An inbound-specific policy for the existing control VLESS must not
+	// be mistaken for a rule that can shadow MyTRN's internal reverse tag.
+	config := mytrnTestConfig(t)
+	var routing map[string]json.RawMessage
+	_ = json.Unmarshal(config.RouterConfig, &routing)
+	var rules []json.RawMessage
+	_ = json.Unmarshal(routing["rules"], &rules)
+	rules = append(rules, json.RawMessage(`{"type":"field","inboundTag":["inbound-26417"],"outboundTag":"blocked"}`))
+	routing["rules"], _ = json.Marshal(rules)
+	config.RouterConfig, _ = json.Marshal(routing)
+	if err := mergeMyTRNConfig(config, item, "valid.pem"); err != nil {
+		t.Fatalf("rejected unrelated inbound-scoped policy: %v", err)
+	}
+}
+
+func TestMyTRNStatusUsesRunningConfigurationNotSavedEndpoint(t *testing.T) {
+	item := mytrnTestRecord(t)
+	if status, _ := mytrnStatus(item, nil, ""); status != "pending_apply" {
+		t.Fatalf("saved endpoint without running Xray is %q, want pending_apply", status)
+	}
+	if status, message := mytrnStatus(item, nil, "injected Xray startup error"); status != "apply_failed" ||
+		!strings.Contains(message, "injected") {
+		t.Fatalf("failed Xray start was not surfaced: %q %q", status, message)
+	}
+	config := mytrnTestConfig(t)
+	if err := mergeMyTRNConfig(config, item, "a-cert.pem"); err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := mytrnStatus(item, config, ""); status != "applied" {
+		t.Fatalf("running Xray with matching config is %q, want applied", status)
+	}
+	newEndpoint := *item
+	newEndpoint.EndpointPort++
+	if status, _ := mytrnStatus(&newEndpoint, config, ""); status != "pending_apply" {
+		t.Fatalf("running Xray with STALE endpoint is %q, want pending_apply", status)
+	}
+	rotated := *item
+	rotated.CertificatePEM = mytrnTestCert(t)
+	rotated.CertificateFingerprint, _ = parseACertificate(rotated.CertificatePEM)
+	if status, _ := mytrnStatus(&rotated, config, ""); status != "pending_apply" {
+		t.Fatalf("running Xray with previous trusted certificate is %q, want pending_apply", status)
+	}
+	otherData, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := &xray.Config{}
+	if err := json.Unmarshal(otherData, other); err != nil {
+		t.Fatal(err)
+	}
+	other.MyTRNCertFingerprint = rotated.CertificateFingerprint
+	if config.Equals(other) {
+		t.Fatal("different trusted A certificate fingerprint was ignored in Xray config equality")
+	}
+	data, err := json.Marshal(config)
+	if err != nil || bytes.Contains(data, []byte("MyTRNCertFingerprint")) || bytes.Contains(data, []byte("mytrnCertFingerprint")) {
+		t.Fatalf("process-local certificate fingerprint must not leak into Xray JSON: %v", err)
+	}
+}
+
+func TestMyTRNFailedRestartIsRequeuedAndFailureCanClear(t *testing.T) {
+	previousFlag := isNeedXrayRestart.Load()
+	previousMessage := xrayApplyFailure()
+	defer func() {
+		isNeedXrayRestart.Store(previousFlag)
+		lastXrayApplyError.Lock()
+		lastXrayApplyError.message = previousMessage
+		lastXrayApplyError.Unlock()
+	}()
+	isNeedXrayRestart.Store(false) // the cron scheduler has consumed it
+	recordXrayApplyResult(fmt.Errorf("transient Xray run -test failure"))
+	if !isNeedXrayRestart.Load() || !strings.Contains(xrayApplyFailure(), "transient") {
+		t.Fatal("failed Xray restart was lost after cron consumed its flag")
+	}
+	recordXrayApplyResult(nil)
+	if xrayApplyFailure() != "" {
+		t.Fatal("successful Xray restart left stale failure message")
+	}
+}
+
+func TestMyTRNInvalidCertificateDoesNotBlockOtherXrayInbounds(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "mytrn-invalid-cert.db")); err != nil {
+		t.Fatal(err)
+	}
+	defer setMyTRNConfigIssue("")
+	item := mytrnTestRecord(t)
+	item.CertificatePEM = mytrnTestCertWithValidity(t, time.Now().Add(-48*time.Hour), time.Now().Add(-24*time.Hour))
+	// Fingerprint was pinned when the now-expired certificate was valid.
+	block, _ := pem.Decode([]byte(item.CertificatePEM))
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(cert.Raw)
+	item.CertificateFingerprint = hex.EncodeToString(sum[:])
+	if err := database.GetDB().Save(item).Error; err != nil {
+		t.Fatal(err)
+	}
+	config := mytrnTestConfig(t)
+	before, _ := json.Marshal(config)
+	if err := (&MyTRNService{}).ApplyToXrayConfig(config); err != nil {
+		t.Fatalf("expired A TLS cert must not prevent existing VLESS startup: %v", err)
+	}
+	after, _ := json.Marshal(config)
+	if !bytes.Equal(before, after) {
+		t.Fatal("expired MyTRN certificate modified unrelated existing Xray config")
+	}
+	view, err := (&MyTRNService{}).View()
+	if err != nil || view.Status != "invalid_certificate" {
+		t.Fatalf("expired A certificate should show explicit re-trust message: %#v, %v", view, err)
+	}
+}
+
+func TestMyTRNControlBindAddressSamePortNeedsOnlyPanelRestart(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "mytrn-listener-switch.db")); err != nil {
+		t.Fatal(err)
+	}
+	defer StopMyTRNControl()
+	service := &MyTRNService{}
+	port := freeMyTRNPort(t)
+	settings := MyTRNSettings{
+		Enable: true, Remark: "MyTRN", UUID: mytrnTestUUID,
+		ControlToken: mytrnTestToken, ControlListen: "127.0.0.1", ControlPort: port,
+		WarpHost: "127.0.0.1", WarpPort: 40000,
+	}
+	if _, err := service.UpdateSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	settings.ControlListen = "0.0.0.0"
+	settings.ControlToken = "" // keep the existing token
+	if _, err := service.UpdateSettings(settings); err != nil {
+		t.Fatalf("same-port loopback -> wildcard change should be saved: %v", err)
+	}
+	view, err := service.View()
+	if err != nil || !view.ControlListenerRestartRequired {
+		t.Fatalf("panel restart requirement was not advertised: %#v %v", view, err)
+	}
+	item, err := service.Get()
+	if err != nil || item.ControlListen != "0.0.0.0" {
+		t.Fatalf("new listener address not persisted: %#v %v", item, err)
+	}
+	StopMyTRNControl() // model the user restarting only the x-ui panel
+	if err := StartMyTRNControl(); err != nil {
+		t.Fatalf("cold-start of saved wildcard listener failed: %v", err)
+	}
+	view, err = service.View()
+	if err != nil || view.ControlListenerRestartRequired || view.ControlListenerMessage != "" {
+		t.Fatalf("control listener still reports pending restart after it was rebound: %#v %v", view, err)
 	}
 }

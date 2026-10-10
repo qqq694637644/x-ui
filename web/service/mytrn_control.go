@@ -18,9 +18,11 @@ import (
 // MyTRN control is ordinary HTTP. A reaches it through its existing CF/VLESS
 // SOCKS5 proxy. It is neither an Xray inbound nor the VLESS reverse tunnel.
 //
-// The listener is separate from the panel HTTP port. A new port is bound
-// before the previous listener is released, so saving an invalid address
-// cannot silently take down the control service.
+// The listener is separate from the panel HTTP port. A changed port can be
+// prepared before closing the old listener. Changing only the bind address
+// on the same port (127.0.0.1 -> 0.0.0.0) is saved for the next panel restart:
+// Linux cannot bind those addresses simultaneously, and no downtime-free
+// listener swap is required for this personal deployment.
 var mytrnControl struct {
 	sync.Mutex
 	address      string
@@ -36,14 +38,25 @@ func prepareMyTRNControlListener(cfg *model.MyTRN) error {
 	if mytrnControl.prepared != nil {
 		mytrnControl.prepared.Close()
 		mytrnControl.prepared = nil
-		mytrnControl.preparedAddr = ""
 	}
+	mytrnControl.preparedAddr = ""
 	if !cfg.Enable {
 		return nil
 	}
 	addr := ControlAddress(cfg)
 	if mytrnControl.listener != nil && mytrnControl.address == addr {
 		return nil
+	}
+	if mytrnControl.listener != nil {
+		_, oldPort, oldErr := net.SplitHostPort(mytrnControl.address)
+		_, newPort, newErr := net.SplitHostPort(addr)
+		if oldErr == nil && newErr == nil && oldPort == newPort {
+			// Do not attempt to bind a wildcard address over an existing
+			// loopback listener. The DB is updated; the UI tells the user
+			// that the new address takes effect after restarting x-ui.
+			mytrnControl.preparedAddr = addr
+			return nil
+		}
 	}
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -60,8 +73,8 @@ func discardPreparedMyTRNControlListener() {
 	if mytrnControl.prepared != nil {
 		mytrnControl.prepared.Close()
 		mytrnControl.prepared = nil
-		mytrnControl.preparedAddr = ""
 	}
+	mytrnControl.preparedAddr = ""
 }
 
 func applyMyTRNControlListener(cfg *model.MyTRN) {
@@ -72,6 +85,11 @@ func applyMyTRNControlListener(cfg *model.MyTRN) {
 		addr = ControlAddress(cfg)
 	}
 	if mytrnControl.listener != nil && mytrnControl.address == addr {
+		return
+	}
+	if cfg.Enable && mytrnControl.listener != nil &&
+		mytrnControl.prepared == nil && mytrnControl.preparedAddr == addr {
+		logger.Infof("MyTRN control listener change to %s saved; restart x-ui to apply", addr)
 		return
 	}
 	if mytrnControl.server != nil {
@@ -109,6 +127,27 @@ func applyMyTRNControlListener(cfg *model.MyTRN) {
 	logger.Infof("MyTRN control HTTP listening on %s", addr)
 }
 
+func isMyTRNControlListenerRestartRequired(cfg *model.MyTRN) bool {
+	mytrnControl.Lock()
+	defer mytrnControl.Unlock()
+	return cfg.Enable && mytrnControl.listener != nil && mytrnControl.address != ControlAddress(cfg)
+}
+
+func mytrnControlListenerMessage(cfg *model.MyTRN) string {
+	mytrnControl.Lock()
+	defer mytrnControl.Unlock()
+	if !cfg.Enable {
+		return ""
+	}
+	if mytrnControl.listener == nil {
+		return "控制 HTTP 监听未运行；检查端口占用后重启 x-ui 面板"
+	}
+	if mytrnControl.address != ControlAddress(cfg) {
+		return "控制监听地址变更已保存，重启 x-ui 面板后生效"
+	}
+	return ""
+}
+
 func StartMyTRNControl() error {
 	cfg, err := (&MyTRNService{}).Get()
 	if err != nil {
@@ -136,8 +175,8 @@ func StopMyTRNControl() {
 	if mytrnControl.prepared != nil {
 		mytrnControl.prepared.Close()
 		mytrnControl.prepared = nil
-		mytrnControl.preparedAddr = ""
 	}
+	mytrnControl.preparedAddr = ""
 	mytrnControl.listener = nil
 	mytrnControl.address = ""
 }

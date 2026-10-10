@@ -6,6 +6,10 @@ import (
 )
 
 type Config struct {
+	// MyTRNCertFingerprint is process-local metadata. Xray loads its TLS
+	// certificate from a stable file path, so comparing JSON alone cannot
+	// detect an A certificate rotation at the same IP:port.
+	MyTRNCertFingerprint string `json:"-"`
 	LogConfig       json_util.RawMessage `json:"log"`
 	RouterConfig    json_util.RawMessage `json:"routing"`
 	DNSConfig       json_util.RawMessage `json:"dns"`
@@ -20,6 +24,9 @@ type Config struct {
 }
 
 func (c *Config) Equals(other *Config) bool {
+	if c.MyTRNCertFingerprint != other.MyTRNCertFingerprint {
+		return false
+	}
 	if len(c.InboundConfigs) != len(other.InboundConfigs) {
 		return false
 	}

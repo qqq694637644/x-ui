@@ -21,6 +21,7 @@ import (
 
 	"x-ui/database"
 	"x-ui/database/model"
+	"x-ui/logger"
 	"x-ui/util/json_util"
 	"x-ui/xray"
 
@@ -41,6 +42,22 @@ var uuidPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[
 // Mapping changes and panel settings updates must serialize against each
 // other. x-ui's existing Xray restart scheduler performs the actual restart.
 var mytrnUpdateMu sync.Mutex
+var mytrnConfigIssue struct {
+	sync.RWMutex
+	message string
+}
+
+func setMyTRNConfigIssue(message string) {
+	mytrnConfigIssue.Lock()
+	mytrnConfigIssue.message = message
+	mytrnConfigIssue.Unlock()
+}
+
+func getMyTRNConfigIssue() string {
+	mytrnConfigIssue.RLock()
+	defer mytrnConfigIssue.RUnlock()
+	return mytrnConfigIssue.message
+}
 
 type MyTRNService struct{}
 
@@ -73,6 +90,9 @@ type MyTRNView struct {
 	EndpointPort           int    `json:"endpointPort"`
 	LastRegistration       int64  `json:"lastRegistration"`
 	Status                 string `json:"status"`
+	StatusMessage          string `json:"statusMessage"`
+	ControlListenerRestartRequired bool `json:"controlListenerRestartRequired"`
+	ControlListenerMessage string `json:"controlListenerMessage"`
 }
 
 func defaultMyTRN() *model.MyTRN {
@@ -96,20 +116,90 @@ func (s *MyTRNService) View() (*MyTRNView, error) {
 	if err != nil {
 		return nil, err
 	}
-	status := "disabled"
-	if item.Enable {
-		status = "waiting_endpoint"
-		if item.EndpointIP != "" && item.EndpointPort > 0 && item.CertificateFingerprint != "" {
-			status = "configured"
+	status, statusMessage := mytrnStatus(item, currentXrayConfig(), xrayApplyFailure())
+	if status == "pending_apply" {
+		if configIssue := getMyTRNConfigIssue(); configIssue != "" {
+			status, statusMessage = "apply_failed", configIssue
 		}
 	}
+	listenerMessage := mytrnControlListenerMessage(item)
 	return &MyTRNView{
 		Enable: item.Enable, Remark: item.Remark, UUID: item.UUID,
 		ControlTokenConfigured: item.ControlToken != "", ControlListen: item.ControlListen,
 		ControlPort: item.ControlPort, WarpHost: item.WarpHost, WarpPort: item.WarpPort,
 		CertificateFingerprint: item.CertificateFingerprint, EndpointIP: item.EndpointIP,
-		EndpointPort: item.EndpointPort, LastRegistration: item.LastRegistration, Status: status,
+		EndpointPort: item.EndpointPort, LastRegistration: item.LastRegistration,
+		Status: status, StatusMessage: statusMessage,
+		ControlListenerRestartRequired: isMyTRNControlListenerRestartRequired(item),
+		ControlListenerMessage: listenerMessage,
 	}, nil
+}
+
+// The database describes the DESIRED mapping. Only the configuration of a
+// currently running Xray process can prove it has actually been applied.
+// Neither state constitutes an end-to-end A -> B -> website health check.
+func mytrnStatus(item *model.MyTRN, active *xray.Config, applyError string) (string, string) {
+	if !item.Enable {
+		return "disabled", ""
+	}
+	if item.EndpointIP == "" || item.EndpointPort == 0 || item.CertificateFingerprint == "" {
+		return "waiting_endpoint", "等待 A Python 通过控制面注册可信公网映射"
+	}
+	fingerprint, err := parseACertificate(item.CertificatePEM)
+	if err != nil || fingerprint != item.CertificateFingerprint {
+		return "invalid_certificate", "A TLS 证书已过期、损坏或与已固定指纹不一致；更新 A 证书后在面板明确重置信任"
+	}
+	if mytrnMatchesRunningConfig(item, active) {
+		return "applied", "运行中的 Xray 已加载此映射；尚未收到 A 端实际代理上网成功的验证结果"
+	}
+	if applyError != "" {
+		return "apply_failed", applyError
+	}
+	return "pending_apply", "公网映射已保存，等待 Xray 完成配置应用"
+}
+
+func mytrnMatchesRunningConfig(item *model.MyTRN, active *xray.Config) bool {
+	if active == nil || active.MyTRNCertFingerprint != item.CertificateFingerprint {
+		return false
+	}
+	var outbounds []struct {
+		Tag      string `json:"tag"`
+		Protocol string `json:"protocol"`
+		Settings struct {
+			Address string `json:"address"`
+			Port int `json:"port"`
+			ID string `json:"id"`
+			Reverse struct { Tag string `json:"tag"` } `json:"reverse"`
+			Servers []struct {
+				Address string `json:"address"`
+				Port int `json:"port"`
+			} `json:"servers"`
+		} `json:"settings"`
+		StreamSettings struct {
+			Network string `json:"network"`
+			Security string `json:"security"`
+			Sockopt struct { DialerProxy string `json:"dialerProxy"` } `json:"sockopt"`
+		} `json:"streamSettings"`
+	}
+	if err := json.Unmarshal(active.OutboundConfigs, &outbounds); err != nil {
+		return false
+	}
+	var dialOK, warpOK bool
+	for _, outbound := range outbounds {
+		switch outbound.Tag {
+		case mytrnDialTag:
+			dialOK = outbound.Protocol == "vless" && outbound.Settings.Address == item.EndpointIP &&
+				outbound.Settings.Port == item.EndpointPort && outbound.Settings.ID == item.UUID &&
+				outbound.Settings.Reverse.Tag == mytrnInboundTag &&
+				outbound.StreamSettings.Network == "kcp" && outbound.StreamSettings.Security == "tls" &&
+				outbound.StreamSettings.Sockopt.DialerProxy == mytrnWarpTag
+		case mytrnWarpTag:
+			warpOK = outbound.Protocol == "socks" && len(outbound.Settings.Servers) == 1 &&
+				outbound.Settings.Servers[0].Address == item.WarpHost &&
+				outbound.Settings.Servers[0].Port == item.WarpPort
+		}
+	}
+	return dialOK && warpOK
 }
 
 func validPort(p int) bool { return p > 0 && p <= 65535 }
@@ -391,6 +481,9 @@ func mergeMyTRNConfig(conf *xray.Config, item *model.MyTRN, certFile string) err
 	if err := json.Unmarshal(routing["rules"], &rules); err != nil {
 		return fmt.Errorf("xray routing.rules 无效: %w", err)
 	}
+	if err := rejectShadowedMyTRNRouting(rules); err != nil {
+		return err
+	}
 	rule, err := json.Marshal(map[string]interface{}{
 		"type": "field", "inboundTag": []string{mytrnInboundTag}, "outboundTag": freedomTag,
 	})
@@ -408,23 +501,121 @@ func mergeMyTRNConfig(conf *xray.Config, item *model.MyTRN, certFile string) err
 	}
 	conf.OutboundConfigs = json_util.RawMessage(data)
 	conf.RouterConfig = json_util.RawMessage(rawRouting)
+	conf.MyTRNCertFingerprint = item.CertificateFingerprint
+	return nil
+}
+
+// An unscoped catch-all rule placed before our reverse-in rule would swallow
+// all MyTRN traffic. Refuse that template rather than silently routing A's
+// requests to its unrelated default outbound. Scoped API and existing
+// geoip:private/BitTorrent block rules remain in their original order.
+func rejectShadowedMyTRNRouting(rules []json.RawMessage) error {
+	for i, raw := range rules {
+		var rule map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &rule); err != nil {
+			return fmt.Errorf("xray routing.rules[%d] 无效: %w", i, err)
+		}
+		var inbounds []string
+		if tags, ok := rule["inboundTag"]; ok {
+			if err := json.Unmarshal(tags, &inbounds); err != nil {
+				return fmt.Errorf("routing.rules[%d].inboundTag 无效: %w", i, err)
+			}
+		}
+		for _, tag := range inbounds {
+			if tag == mytrnInboundTag {
+				return fmt.Errorf("routing.rules[%d] 已使用 MyTRN 专用反向入站 tag，拒绝覆盖", i)
+			}
+		}
+		if len(inbounds) != 0 {
+			continue
+		}
+		// Source/target/identity-specific policies are not unconditional.
+		// Merely specifying network=tcp,udp does NOT narrow a catch-all.
+		restricted := false
+		for _, field := range []string{"domain", "ip", "port", "sourcePort", "source", "user", "protocol", "attrs"} {
+			value := strings.TrimSpace(string(rule[field]))
+			if value == "" || value == "null" || value == "[]" || value == `""` {
+				continue
+			}
+			if field == "port" || field == "sourcePort" {
+				var ports string
+				if json.Unmarshal(rule[field], &ports) == nil &&
+					(ports == "0-65535" || ports == "1-65535" || ports == "0-65535,1-65535") {
+					continue
+				}
+			}
+			if field == "ip" || field == "source" {
+				var ranges []string
+				if json.Unmarshal(rule[field], &ranges) == nil && len(ranges) > 0 {
+					wildcard := false
+					for _, r := range ranges {
+						if r == "0.0.0.0/0" || r == "::/0" {
+							wildcard = true
+						}
+						}
+					if wildcard {
+						continue
+					}
+				}
+			}
+			if field == "domain" {
+				var domains []string
+				if json.Unmarshal(rule[field], &domains) == nil && len(domains) > 0 {
+					wildcard := false
+					for _, d := range domains {
+						if d == "regexp:.*" || d == "regexp:^.*$" {
+							wildcard = true
+						}
+					}
+					if wildcard {
+						continue
+					}
+				}
+			}
+			if value != "" {
+				restricted = true
+				break
+			}
+		}
+		if !restricted {
+			return fmt.Errorf("routing.rules[%d] 是无 inboundTag 的宽泛匹配规则，会覆盖 MyTRN 数据路由", i)
+		}
+	}
 	return nil
 }
 
 func (s *MyTRNService) ApplyToXrayConfig(config *xray.Config) error {
 	item, err := s.Get()
 	if err != nil || !item.Enable || item.EndpointIP == "" {
+		if err == nil {
+			setMyTRNConfigIssue("")
+		}
 		return err
 	}
 	fingerprint, err := parseACertificate(item.CertificatePEM)
 	if err != nil || fingerprint != item.CertificateFingerprint {
-		return fmt.Errorf("MyTRN A TLS 证书缺失、不可信或过期: %v", err)
+		// MyTRN's invalid certificate must not prevent the unrelated
+		// existing VLESS inbounds from cold-starting. The panel reports
+		// invalid_certificate and requires explicit re-trust.
+		setMyTRNConfigIssue("A TLS 证书无效，MyTRN 数据面未生成；更新 A 证书后重置信任")
+		logger.Warning("MyTRN data plane disabled: A TLS certificate invalid or expired")
+		return nil
 	}
 	certificate, err := ensureMyTRNCertificate(item.CertificatePEM)
 	if err != nil {
+		setMyTRNConfigIssue("无法写入 MyTRN A TLS 公钥证书文件：" + err.Error())
+		logger.Warning("MyTRN data plane disabled: could not stage A TLS certificate:", err)
+		// Keep the existing VLESS inbounds up while retrying the MyTRN
+		// certificate staging on the normal restart scheduler. When the
+		// filesystem recovers, the next generated config includes MyTRN.
+		(&XrayService{}).SetToNeedRestart()
+		return nil
+	}
+	if err := mergeMyTRNConfig(config, item, certificate); err != nil {
 		return err
 	}
-	return mergeMyTRNConfig(config, item, certificate)
+	setMyTRNConfigIssue("")
+	return nil
 }
 
 // ControlAddress describes only the ordinary Go HTTP listener, not any Xray

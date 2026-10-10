@@ -95,10 +95,16 @@
                             </template>
                             <template slot="settings" slot-scope="text, dbInbound">
                                 <template v-if="dbInbound.isMytrn">
-                                    <a-tag v-if="dbInbound.status === 'configured'" color="green">已配置 · 待实测</a-tag>
-                                    <a-tag v-else-if="dbInbound.enable" color="orange">等待 A 上报</a-tag>
+                                    <a-tag v-if="dbInbound.status === 'applied'" color="blue">Xray 已应用 · 数据面未验证</a-tag>
+                                    <a-tag v-else-if="dbInbound.status === 'apply_failed'" color="red">Xray 应用失败 · 自动重试中</a-tag>
+                                    <a-tag v-else-if="dbInbound.status === 'invalid_certificate'" color="red">A 证书失效 · 需重新信任</a-tag>
+                                    <a-tag v-else-if="dbInbound.status === 'pending_apply'" color="orange">等待 Xray 应用</a-tag>
+                                    <a-tag v-else-if="dbInbound.status === 'waiting_endpoint'" color="orange">等待 A 上报</a-tag>
                                     <a-tag v-else>未启用</a-tag>
                                     <div v-if="dbInbound.endpointIP">[[ dbInbound.endpointIP ]]:[[ dbInbound.endpointPort ]]</div>
+                                    <div v-if="dbInbound.statusMessage" style="overflow-wrap:anywhere">[[ dbInbound.statusMessage ]]</div>
+                                    <div v-if="dbInbound.controlListenerMessage" style="overflow-wrap:anywhere">[[ dbInbound.controlListenerMessage ]]</div>
+                                    <a-tag v-if="dbInbound.controlListenerRestartRequired" color="orange">控制监听变更需重启面板</a-tag>
                                 </template>
                                 <a-button v-else type="link" @click="showInfo(dbInbound)">查看</a-button>
                             </template>
@@ -152,6 +158,10 @@
                     </a-form-item>
                 </a-form>
                 <a-alert type="warning" show-icon message="A 映射变化时将重启 x-ui 管理的整个 Xray；现有 VLESS 会短暂断开"></a-alert>
+                <a-alert v-if="mytrn.controlListenerRestartRequired" type="warning" show-icon
+                         message="已保存控制监听地址；同端口改 IP 需重启 x-ui 面板后生效" style="margin-top:8px"></a-alert>
+                <a-alert v-if="mytrn.status === 'invalid_certificate'" type="error" show-icon
+                         message="A 证书已失效：先在 A 更新证书，再勾选重新信任并等待 A 重新注册；其他 VLESS 入站不受影响" style="margin-top:8px"></a-alert>
             </a-modal>
         </a-layout-content>
     </a-layout>
@@ -257,7 +267,7 @@
                 // MyTRN's strict settings API deliberately uses JSON instead.
                 let msg;
                 try {
-                    const response = await fetch('/xui/mytrn/save', {
+                    const response = await fetch(basePath + 'xui/mytrn/save', {
                         method: 'POST', credentials: 'same-origin',
                         headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
                         body: JSON.stringify(body),

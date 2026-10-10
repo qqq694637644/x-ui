@@ -28,15 +28,25 @@ const (
 	PortalTransportXHTTP = "xhttp"
 )
 
-type tunnelProbeStatus struct {
+type tunnelCheckStatus struct {
 	Status    string
 	Message   string
 	Timestamp time.Time
 }
 
-var tunnelProbeStatuses sync.Map
+var tunnelCheckStatuses sync.Map
 
 type TunnelService struct {
+	syncManagedRoutesHook func() error
+}
+
+func (s *TunnelService) syncManagedRoutes() error {
+	if s.syncManagedRoutesHook != nil {
+		err := s.syncManagedRoutesHook()
+		setManagedCaddyHealthy(err == nil)
+		return err
+	}
+	return (&EndpointService{}).SyncManagedRoutes()
 }
 
 func (s *TunnelService) GetTunnels(userId int) ([]*model.Tunnel, error) {
@@ -61,9 +71,9 @@ func (s *TunnelService) GetTunnelsTraced(userId int, traceID string) ([]*model.T
 	hydrateStarted := time.Now()
 	for _, tunnel := range tunnels {
 		s.normalizeTunnel(tunnel)
-		s.applyProbeStatus(tunnel)
+		s.applyCheckStatus(tunnel)
 		logger.Infof(
-			"[tunnel-trace] trace=%s event=tunnel.info id=%d enable=%t mode=%s portal_transport=%s protocol=%s network=%s listen=%s:%d target=%s:%d remote=%s:%d portal_listen=%d xhttp_path=%q probe_status=%s",
+			"[tunnel-trace] trace=%s event=tunnel.info id=%d enable=%t mode=%s portal_transport=%s protocol=%s network=%s listen=%s:%d target=%s:%d remote=%s:%d portal_listen=%d xhttp_path=%q check_status=%s",
 			traceID,
 			tunnel.Id,
 			tunnel.Enable,
@@ -143,6 +153,12 @@ func (s *TunnelService) normalizeTunnel(tunnel *model.Tunnel) {
 	}
 	if tunnel.PortalTransport == "" {
 		tunnel.PortalTransport = PortalTransportMkcp
+	}
+	if tunnel.Mode == TunnelModePortal && tunnel.PortalTransport == PortalTransportXHTTP {
+		tunnel.RemoteAddress = strings.ToLower(tunnel.RemoteAddress)
+		if tunnel.RemotePort == 0 {
+			tunnel.RemotePort = managedPublicPort
+		}
 	}
 	if tunnel.Protocol == "" {
 		if tunnel.Mode == TunnelModePortal {
@@ -227,15 +243,17 @@ func (s *TunnelService) checkTunnel(tunnel *model.Tunnel) error {
 			if tunnel.RemoteAddress == "" {
 				return common.NewError("Portal XHTTP CDN 域名不能为空")
 			}
-			if tunnel.RemotePort <= 0 || tunnel.RemotePort > 65535 {
-				return common.NewError("Portal XHTTP 公网端口不合法:", tunnel.RemotePort)
+			if tunnel.RemotePort != managedPublicPort {
+				return common.NewError("Portal XHTTP 公网端口固定为 443，不允许修改:", tunnel.RemotePort)
 			}
 			if tunnel.PortalListenPort <= 0 || tunnel.PortalListenPort > 65535 {
 				return common.NewError("Portal XHTTP 本地监听端口不合法:", tunnel.PortalListenPort)
 			}
-			if !strings.HasPrefix(tunnel.XHttpPath, "/") {
-				return common.NewError("Portal XHTTP 路径必须以 / 开头")
+			path, err := validateManagedFixedPath(tunnel.XHttpPath)
+			if err != nil {
+				return common.NewError("Portal XHTTP 路径不合法: ", err)
 			}
+			tunnel.XHttpPath = path
 		default:
 			return common.NewError("Portal 传输仅支持 mkcp 或 xhttp:", tunnel.PortalTransport)
 		}
@@ -279,6 +297,9 @@ func (s *TunnelService) AddTunnel(tunnel *model.Tunnel) error {
 	if err := s.checkTunnel(tunnel); err != nil {
 		return err
 	}
+	if err := s.validatePortalEndpointBinding(tunnel); err != nil {
+		return err
+	}
 	if err := checkTunnelListenerConflicts(tunnel, 0); err != nil {
 		return err
 	}
@@ -290,11 +311,39 @@ func (s *TunnelService) AddTunnel(tunnel *model.Tunnel) error {
 		return common.NewError("Portal UUID 已被其他隧道使用:", tunnel.UUID)
 	}
 	db := database.GetDB()
-	return db.Save(tunnel).Error
+	if err := db.Save(tunnel).Error; err != nil {
+		return err
+	}
+	managed, err := s.affectsManagedCaddy(tunnel)
+	if err != nil {
+		if rollbackErr := db.Delete(tunnel).Error; rollbackErr != nil {
+			setManagedDataHealthy(false)
+			return common.NewError("检查 Portal XHTTP 托管状态失败: ", err, "; 数据恢复失败: ", rollbackErr)
+		}
+		return err
+	}
+	if managed {
+		if err := s.syncManagedRoutes(); err != nil {
+			if rollbackErr := db.Delete(tunnel).Error; rollbackErr != nil {
+				setManagedDataHealthy(false)
+				return common.NewError("保存 Portal XHTTP 后 Caddy 同步失败: ", err, "; 数据恢复失败: ", rollbackErr)
+			}
+			return common.NewError("保存 Portal XHTTP 后 Caddy 同步失败，数据库已恢复: ", err)
+		}
+	}
+	return nil
 }
 
 func (s *TunnelService) DelTunnel(id int, userId int) error {
 	db := database.GetDB()
+	oldTunnel, err := s.GetTunnel(id, userId)
+	if err != nil {
+		return err
+	}
+	managed, err := s.affectsManagedCaddy(oldTunnel)
+	if err != nil {
+		return err
+	}
 	result := db.Where("id = ? and user_id = ?", id, userId).Delete(model.Tunnel{})
 	if result.Error != nil {
 		return result.Error
@@ -302,7 +351,16 @@ func (s *TunnelService) DelTunnel(id int, userId int) error {
 	if result.RowsAffected == 0 {
 		return common.NewError("隧道不存在或无权限:", id)
 	}
-	tunnelProbeStatuses.Delete(id)
+	tunnelCheckStatuses.Delete(id)
+	if managed {
+		if err := s.syncManagedRoutes(); err != nil {
+			if restoreErr := db.Save(oldTunnel).Error; restoreErr != nil {
+				setManagedDataHealthy(false)
+				return common.NewError("删除 Portal XHTTP 后 Caddy 同步失败: ", err, "; 数据恢复失败: ", restoreErr)
+			}
+			return common.NewError("删除 Portal XHTTP 后 Caddy 同步失败，数据库已恢复: ", err)
+		}
+	}
 	return nil
 }
 
@@ -314,13 +372,16 @@ func (s *TunnelService) GetTunnel(id int, userId int) (*model.Tunnel, error) {
 		return nil, err
 	}
 	s.normalizeTunnel(tunnel)
-	s.applyProbeStatus(tunnel)
+	s.applyCheckStatus(tunnel)
 	return tunnel, nil
 }
 
 func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	s.normalizeTunnel(tunnel)
 	if err := s.checkTunnel(tunnel); err != nil {
+		return err
+	}
+	if err := s.validatePortalEndpointBinding(tunnel); err != nil {
 		return err
 	}
 	if err := checkTunnelListenerConflicts(tunnel, tunnel.Id); err != nil {
@@ -335,6 +396,11 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	}
 
 	oldTunnel, err := s.GetTunnel(tunnel.Id, userId)
+	if err != nil {
+		return err
+	}
+	previous := *oldTunnel
+	oldManaged, err := s.affectsManagedCaddy(oldTunnel)
 	if err != nil {
 		return err
 	}
@@ -364,37 +430,145 @@ func (s *TunnelService) UpdateTunnel(tunnel *model.Tunnel, userId int) error {
 	oldTunnel.KcpWriteBufferSize = tunnel.KcpWriteBufferSize
 
 	db := database.GetDB()
-	tunnelProbeStatuses.Delete(tunnel.Id)
-	return db.Save(oldTunnel).Error
+	tunnelCheckStatuses.Delete(tunnel.Id)
+	if err := db.Save(oldTunnel).Error; err != nil {
+		return err
+	}
+	newManaged, err := s.affectsManagedCaddy(oldTunnel)
+	if err != nil {
+		if restoreErr := db.Save(&previous).Error; restoreErr != nil {
+			setManagedDataHealthy(false)
+			return common.NewError("检查更新后的 Portal XHTTP 托管状态失败: ", err, "; 数据恢复失败: ", restoreErr)
+		}
+		return err
+	}
+	if oldManaged || newManaged {
+		if err := s.syncManagedRoutes(); err != nil {
+			if restoreErr := db.Save(&previous).Error; restoreErr != nil {
+				setManagedDataHealthy(false)
+				return common.NewError("更新 Portal XHTTP 后 Caddy 同步失败: ", err, "; 数据恢复失败: ", restoreErr)
+			}
+			return common.NewError("更新 Portal XHTTP 后 Caddy 同步失败，数据库已恢复: ", err)
+		}
+	}
+	return nil
 }
 
-func (s *TunnelService) applyProbeStatus(tunnel *model.Tunnel) {
+// affectsManagedCaddy answers whether an already-stored Portal currently has
+// a route in the managed Caddy zone. It deliberately includes pending and
+// draining endpoints so delete/update rollback can remove legacy routes. New
+// or edited Portal bindings are authorized separately by the active-only
+// validatePortalEndpointBinding check.
+func (s *TunnelService) affectsManagedCaddy(tunnel *model.Tunnel) (bool, error) {
+	if tunnel == nil || !tunnel.Enable || tunnel.Mode != TunnelModePortal || tunnel.PortalTransport != PortalTransportXHTTP {
+		return false, nil
+	}
+	host := strings.ToLower(strings.TrimSpace(tunnel.RemoteAddress))
+	if host == "" {
+		return false, nil
+	}
+	var count int64
+	err := database.GetDB().Model(&model.PublicEndpoint{}).
+		Where("host = ? AND status IN ?", host, []string{model.EndpointStatusPending, model.EndpointStatusActive, model.EndpointStatusDraining}).
+		Count(&count).Error
+	return count > 0, err
+}
+
+func (s *TunnelService) validatePortalEndpointBinding(tunnel *model.Tunnel) error {
+	if tunnel == nil || !tunnel.Enable || tunnel.Mode != TunnelModePortal || tunnel.PortalTransport != PortalTransportXHTTP {
+		return nil
+	}
+	if tunnel.RemotePort != managedPublicPort {
+		return common.NewError("Portal XHTTP 公网端口固定为 443，不允许修改:", tunnel.RemotePort)
+	}
+	var historyCount int64
+	if err := database.GetDB().Model(&model.PublicEndpoint{}).Count(&historyCount).Error; err != nil {
+		return err
+	}
+	if historyCount == 0 {
+		return nil
+	}
+	return s.requirePortalEndpoint(tunnel, []string{model.EndpointStatusActive}, "active PublicEndpoint")
+}
+
+func (s *TunnelService) requirePortalEndpoint(tunnel *model.Tunnel, statuses []string, expectation string) error {
+	host := strings.ToLower(strings.TrimSpace(tunnel.RemoteAddress))
+	if host == "" {
+		return common.NewError("Portal XHTTP CDN 域名不能为空")
+	}
+	var count int64
+	if err := database.GetDB().Model(&model.PublicEndpoint{}).
+		Where("host = ? AND status IN ?", host, statuses).
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if count != 1 {
+		return common.NewError("Portal XHTTP CDN 域名必须精确匹配一个 ", expectation, ": ", host)
+	}
+	return nil
+}
+
+func (s *TunnelService) validateAllEnabledPortalBindings(allowPending bool) error {
+	var historyCount int64
+	if err := database.GetDB().Model(&model.PublicEndpoint{}).Count(&historyCount).Error; err != nil {
+		return err
+	}
+	if historyCount == 0 {
+		return nil
+	}
+	var tunnels []*model.Tunnel
+	if err := database.GetDB().Where("enable = ? AND mode = ? AND portal_transport = ?", true, TunnelModePortal, PortalTransportXHTTP).
+		Order("id asc").Find(&tunnels).Error; err != nil {
+		return err
+	}
+	for _, tunnel := range tunnels {
+		s.normalizeTunnel(tunnel)
+		if tunnel.RemotePort != managedPublicPort {
+			return common.NewError("Portal XHTTP #", tunnel.Id, " 公网端口必须固定为 443")
+		}
+		if _, err := validateManagedFixedPath(tunnel.XHttpPath); err != nil {
+			return common.NewError("Portal XHTTP #", tunnel.Id, " path 不合法: ", err)
+		}
+		statuses := []string{model.EndpointStatusActive}
+		expectation := "active PublicEndpoint"
+		if allowPending {
+			statuses = append(statuses, model.EndpointStatusPending)
+			expectation = "active 或本批 pending PublicEndpoint"
+		}
+		if err := s.requirePortalEndpoint(tunnel, statuses, expectation); err != nil {
+			return common.NewError("Portal XHTTP #", tunnel.Id, " 绑定不合法: ", err)
+		}
+	}
+	return nil
+}
+
+func (s *TunnelService) applyCheckStatus(tunnel *model.Tunnel) {
 	tunnel.Status = "not_tested"
 	tunnel.StatusMessage = "尚未进行 TCP 探测"
-	tunnel.ProbeTime = ""
-	if status, ok := tunnelProbeStatuses.Load(tunnel.Id); ok {
-		probe := status.(tunnelProbeStatus)
-		tunnel.Status = probe.Status
-		tunnel.StatusMessage = probe.Message
-		tunnel.ProbeTime = probe.Timestamp.Local().Format("2006-01-02 15:04:05")
+	tunnel.CheckTime = ""
+	if status, ok := tunnelCheckStatuses.Load(tunnel.Id); ok {
+		check := status.(tunnelCheckStatus)
+		tunnel.Status = check.Status
+		tunnel.StatusMessage = check.Message
+		tunnel.CheckTime = check.Timestamp.Local().Format("2006-01-02 15:04:05")
 	}
 }
 
-func (s *TunnelService) ProbeTunnel(id int, userId int) (*model.Tunnel, error) {
+func (s *TunnelService) CheckTunnel(id int, userId int) (*model.Tunnel, error) {
 	tunnel, err := s.GetTunnel(id, userId)
 	if err != nil {
 		return nil, err
 	}
 	if !tunnel.Enable {
-		probe := tunnelProbeStatus{Status: "not_tested", Message: "隧道未启用", Timestamp: time.Now()}
-		tunnelProbeStatuses.Store(tunnel.Id, probe)
-		s.applyProbeStatus(tunnel)
+		check := tunnelCheckStatus{Status: "not_tested", Message: "隧道未启用", Timestamp: time.Now()}
+		tunnelCheckStatuses.Store(tunnel.Id, check)
+		s.applyCheckStatus(tunnel)
 		return tunnel, nil
 	}
 	if tunnel.Network == "udp" {
-		probe := tunnelProbeStatus{Status: "not_tested", Message: "纯 UDP 隧道未执行 TCP 探测", Timestamp: time.Now()}
-		tunnelProbeStatuses.Store(tunnel.Id, probe)
-		s.applyProbeStatus(tunnel)
+		check := tunnelCheckStatus{Status: "not_tested", Message: "纯 UDP 隧道未执行 TCP 探测", Timestamp: time.Now()}
+		tunnelCheckStatuses.Store(tunnel.Id, check)
+		s.applyCheckStatus(tunnel)
 		return tunnel, nil
 	}
 
@@ -404,9 +578,9 @@ func (s *TunnelService) ProbeTunnel(id int, userId int) (*model.Tunnel, error) {
 	}
 	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(tunnel.ListenPort)), 2*time.Second)
 	if err != nil {
-		probe := tunnelProbeStatus{Status: "failed", Message: "TCP 入口连接失败: " + err.Error(), Timestamp: time.Now()}
-		tunnelProbeStatuses.Store(tunnel.Id, probe)
-		s.applyProbeStatus(tunnel)
+		check := tunnelCheckStatus{Status: "failed", Message: "TCP 入口连接失败: " + err.Error(), Timestamp: time.Now()}
+		tunnelCheckStatuses.Store(tunnel.Id, check)
+		s.applyCheckStatus(tunnel)
 		return tunnel, nil
 	}
 	defer conn.Close()
@@ -414,20 +588,20 @@ func (s *TunnelService) ProbeTunnel(id int, userId int) (*model.Tunnel, error) {
 	_ = conn.SetReadDeadline(time.Now().Add(1200 * time.Millisecond))
 	buf := make([]byte, 1)
 	_, readErr := conn.Read(buf)
-	probe := tunnelProbeStatus{Status: "success", Message: "TCP 连接探测成功；该结果不是实时在线状态", Timestamp: time.Now()}
+	check := tunnelCheckStatus{Status: "success", Message: "TCP 连接探测成功；该结果不是实时在线状态", Timestamp: time.Now()}
 	if readErr != nil {
 		if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
 			// A listener with no reverse worker is closed immediately by Xray. A
 			// connection that remains open through the deadline is useful evidence
 			// that the reverse path and the B-side target accepted the stream.
 		} else if readErr == io.EOF {
-			probe = tunnelProbeStatus{Status: "failed", Message: "TCP 连接被远端立即关闭", Timestamp: time.Now()}
+			check = tunnelCheckStatus{Status: "failed", Message: "TCP 连接被远端立即关闭", Timestamp: time.Now()}
 		} else {
-			probe = tunnelProbeStatus{Status: "failed", Message: "TCP 连接异常: " + readErr.Error(), Timestamp: time.Now()}
+			check = tunnelCheckStatus{Status: "failed", Message: "TCP 连接异常: " + readErr.Error(), Timestamp: time.Now()}
 		}
 	}
-	tunnelProbeStatuses.Store(tunnel.Id, probe)
-	s.applyProbeStatus(tunnel)
+	tunnelCheckStatuses.Store(tunnel.Id, check)
+	s.applyCheckStatus(tunnel)
 	return tunnel, nil
 }
 

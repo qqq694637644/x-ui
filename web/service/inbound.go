@@ -3,10 +3,12 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 	"x-ui/database"
 	"x-ui/database/model"
+	"x-ui/util/common"
 	"x-ui/util/xray_util"
 	"x-ui/xray"
 
@@ -14,6 +16,48 @@ import (
 )
 
 type InboundService struct {
+	syncManagedRoutesHook func() error
+}
+
+func (s *InboundService) syncManagedRoutes() error {
+	if s.syncManagedRoutesHook != nil {
+		err := s.syncManagedRoutesHook()
+		setManagedCaddyHealthy(err == nil)
+		return err
+	}
+	return (&EndpointService{}).SyncManagedRoutes()
+}
+
+func inboundJSONEquivalent(a string, b string) bool {
+	var left interface{}
+	var right interface{}
+	if err := json.Unmarshal([]byte(a), &left); err != nil {
+		return strings.TrimSpace(a) == strings.TrimSpace(b)
+	}
+	if err := json.Unmarshal([]byte(b), &right); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(left, right)
+}
+
+func managedInboundCriticalChanges(oldInbound *model.Inbound, nextInbound *model.Inbound) []string {
+	changes := make([]string, 0, 5)
+	if strings.TrimSpace(oldInbound.Listen) != strings.TrimSpace(nextInbound.Listen) {
+		changes = append(changes, "Listen")
+	}
+	if oldInbound.Port != nextInbound.Port {
+		changes = append(changes, "Port")
+	}
+	if oldInbound.Protocol != nextInbound.Protocol {
+		changes = append(changes, "Protocol")
+	}
+	if !inboundJSONEquivalent(oldInbound.Settings, nextInbound.Settings) {
+		changes = append(changes, "Settings")
+	}
+	if !inboundJSONEquivalent(oldInbound.StreamSettings, nextInbound.StreamSettings) {
+		changes = append(changes, "StreamSettings")
+	}
+	return changes
 }
 
 func validateInboundTransport(inbound *model.Inbound) error {
@@ -96,6 +140,9 @@ func (s *InboundService) assignUniqueInboundTag(inbound *model.Inbound, ignoreID
 }
 
 func (s *InboundService) AddInbound(inbound *model.Inbound) error {
+	// Public subscription state is only enabled through EndpointService after
+	// an active endpoint and strict managed configuration have been validated.
+	inbound.Publish = false
 	if err := xray_util.ValidateXray26327StreamSettings(inbound.StreamSettings); err != nil {
 		return err
 	}
@@ -116,6 +163,7 @@ func (s *InboundService) AddInbounds(inbounds []*model.Inbound) error {
 	reservedTags := make(map[string]struct{}, len(inbounds))
 	endpoints := make([]listenerEndpoint, 0, len(inbounds))
 	for _, inbound := range inbounds {
+		inbound.Publish = false
 		if err := xray_util.ValidateXray26327StreamSettings(inbound.StreamSettings); err != nil {
 			return err
 		}
@@ -163,7 +211,52 @@ func (s *InboundService) AddInbounds(inbounds []*model.Inbound) error {
 
 func (s *InboundService) DelInbound(id int) error {
 	db := database.GetDB()
-	return db.Delete(model.Inbound{}, id).Error
+	oldInbound := &model.Inbound{}
+	if err := db.First(oldInbound, id).Error; err != nil {
+		return err
+	}
+	var oldEndpoints []*model.PublicEndpoint
+	if err := db.Where("inbound_id = ?", id).Find(&oldEndpoints).Error; err != nil {
+		return err
+	}
+	tx := db.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	if err := tx.Model(&model.PublicEndpoint{}).Where("inbound_id = ?", id).
+		Updates(map[string]interface{}{"status": model.EndpointStatusRetired, "retire_at": time.Now().Unix()}).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := tx.Delete(model.Inbound{}, id).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := tx.Commit().Error; err != nil {
+		return err
+	}
+	if len(oldEndpoints) == 0 {
+		return nil
+	}
+	if err := s.syncManagedRoutes(); err != nil {
+		restoreErr := db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Save(oldInbound).Error; err != nil {
+				return err
+			}
+			for _, endpoint := range oldEndpoints {
+				if err := tx.Save(endpoint).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if restoreErr != nil {
+			setManagedDataHealthy(false)
+			return common.NewError("删除入站后的 Caddy 同步失败: ", err, "; 数据恢复失败: ", restoreErr)
+		}
+		return common.NewError("删除入站后的 Caddy 同步失败，数据库已恢复: ", err)
+	}
+	return nil
 }
 
 func (s *InboundService) GetInbound(id int) (*model.Inbound, error) {
@@ -187,9 +280,22 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
 	if err != nil {
 		return err
 	}
+	var liveEndpointCount int64
+	if err := database.GetDB().Model(&model.PublicEndpoint{}).
+		Where("inbound_id = ? AND status IN ?", inbound.Id, []string{model.EndpointStatusPending, model.EndpointStatusActive, model.EndpointStatusDraining}).
+		Count(&liveEndpointCount).Error; err != nil {
+		return err
+	}
+	if liveEndpointCount > 0 {
+		if changes := managedInboundCriticalChanges(oldInbound, inbound); len(changes) > 0 {
+			return common.NewError("已有公网入口的入站不允许修改连接关键字段 ", strings.Join(changes, ", "), "；如需修改请删除并重新建立节点")
+		}
+	}
 	if err := checkInboundListenerConflicts(inbound, inbound.Id); err != nil {
 		return err
 	}
+	previous := *oldInbound
+	enableChanged := previous.Enable != inbound.Enable
 	oldInbound.Up = inbound.Up
 	oldInbound.Down = inbound.Down
 	oldInbound.Total = inbound.Total
@@ -205,9 +311,34 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
 	// Preserve the existing unique tag when the listen port changes. Multiple
 	// inbounds may now share a numeric port when their address/protocols do not
 	// overlap, so a port-only tag is no longer unique.
+	if oldInbound.Publish {
+		if _, err := validateManagedInbound(oldInbound); err != nil {
+			return common.NewError("已发布入站不允许保存为非托管 VLESS/XHTTP 配置: ", err)
+		}
+		endpoint, err := (&EndpointService{}).activeEndpoint(oldInbound.Id)
+		if err != nil {
+			return common.NewError("已发布入站缺少 active 公网入口: ", err)
+		}
+		if _, err := (&LinkService{}).GenerateInboundLink(oldInbound, endpoint); err != nil {
+			return common.NewError("已发布入站无法生成严格订阅链接: ", err)
+		}
+	}
 
 	db := database.GetDB()
-	return db.Save(oldInbound).Error
+	if err := db.Save(oldInbound).Error; err != nil {
+		return err
+	}
+	if liveEndpointCount == 0 || !enableChanged {
+		return nil
+	}
+	if err := s.syncManagedRoutes(); err != nil {
+		if restoreErr := db.Save(&previous).Error; restoreErr != nil {
+			setManagedDataHealthy(false)
+			return common.NewError("更新入站后的 Caddy 同步失败: ", err, "; 数据恢复失败: ", restoreErr)
+		}
+		return common.NewError("更新入站后的 Caddy 同步失败，数据库已恢复: ", err)
+	}
+	return nil
 }
 
 func (s *InboundService) AddTraffic(traffics []*xray.Traffic) (err error) {
@@ -239,12 +370,59 @@ func (s *InboundService) AddTraffic(traffics []*xray.Traffic) (err error) {
 }
 
 func (s *InboundService) DisableInvalidInbounds() (int64, error) {
+	endpointMutationLock.Lock()
+	defer endpointMutationLock.Unlock()
+
 	db := database.GetDB()
 	now := time.Now().Unix() * 1000
-	result := db.Model(model.Inbound{}).
+	var invalid []*model.Inbound
+	if err := db.Model(model.Inbound{}).
 		Where("((total > 0 and up + down >= total) or (expiry_time > 0 and expiry_time <= ?)) and enable = ?", now, true).
-		Update("enable", false)
-	err := result.Error
-	count := result.RowsAffected
-	return count, err
+		Find(&invalid).Error; err != nil {
+		return 0, err
+	}
+	if len(invalid) == 0 {
+		return 0, nil
+	}
+	ids := make([]int, 0, len(invalid))
+	for _, inbound := range invalid {
+		ids = append(ids, inbound.Id)
+	}
+	result := db.Model(&model.Inbound{}).Where("id IN ? AND enable = ?", ids, true).Update("enable", false)
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return 0, nil
+	}
+
+	var managedEndpointCount int64
+	if err := db.Model(&model.PublicEndpoint{}).
+		Where("inbound_id IN ? AND status IN ?", ids, []string{model.EndpointStatusPending, model.EndpointStatusActive, model.EndpointStatusDraining}).
+		Count(&managedEndpointCount).Error; err != nil {
+		if rollbackErr := db.Model(&model.Inbound{}).Where("id IN ?", ids).Update("enable", true).Error; rollbackErr != nil {
+			setManagedDataHealthy(false)
+			return 0, common.NewError("自动禁用入站后检查托管 Endpoint 失败: ", err, "; 数据恢复失败: ", rollbackErr)
+		}
+		return 0, err
+	}
+	if managedEndpointCount == 0 {
+		return result.RowsAffected, nil
+	}
+
+	var syncErr error
+	if s.syncManagedRoutesHook != nil {
+		syncErr = s.syncManagedRoutesHook()
+		setManagedCaddyHealthy(syncErr == nil)
+	} else {
+		_, syncErr = (&EndpointService{}).applyCurrentRoutes()
+	}
+	if syncErr == nil {
+		return result.RowsAffected, nil
+	}
+	if rollbackErr := db.Model(&model.Inbound{}).Where("id IN ?", ids).Update("enable", true).Error; rollbackErr != nil {
+		setManagedDataHealthy(false)
+		return 0, common.NewError("自动禁用入站后的 Caddy 同步失败: ", syncErr, "; 数据恢复失败: ", rollbackErr)
+	}
+	return 0, common.NewError("自动禁用入站后的 Caddy 同步失败，数据库已恢复: ", syncErr)
 }

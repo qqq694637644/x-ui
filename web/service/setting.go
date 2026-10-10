@@ -4,6 +4,8 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -15,25 +17,35 @@ import (
 	"x-ui/util/random"
 	"x-ui/util/reflect_util"
 	"x-ui/web/entity"
+
+	"gorm.io/gorm"
 )
 
 //go:embed config.json
 var xrayTemplateConfig string
 
 var defaultValueMap = map[string]string{
-	"xrayTemplateConfig": xrayTemplateConfig,
-	"webListen":          "",
-	"webPort":            "54321",
-	"webCertFile":        "",
-	"webKeyFile":         "",
-	"secret":             random.Seq(32),
-	"webBasePath":        "/",
-	"timeLocation":       "Asia/Shanghai",
-	"tgBotEnable":        "false",
-	"tgBotToken":         "",
-	"tgBotChatId":        "0",
-	"tgRunTime":          "",
-	"caddyPath":          "/opt/caddy",
+	"xrayTemplateConfig":   xrayTemplateConfig,
+	"webListen":            "",
+	"webPort":              "54321",
+	"webCertFile":          "",
+	"webKeyFile":           "",
+	"secret":               random.Seq(32),
+	"webBasePath":          "/",
+	"timeLocation":         "Asia/Shanghai",
+	"tgBotEnable":          "false",
+	"tgBotToken":           "",
+	"tgBotChatId":          "0",
+	"tgRunTime":            "",
+	"caddyPath":            "/opt/caddy",
+	"subscriptionEnable":   "false",
+	"subscriptionToken":    "",
+	"subscriptionBaseUrl":  "",
+	"publicBaseDomain":     "",
+	"hostRandomLength":     "10",
+	"endpointDrainSeconds": "1800",
+	"caddyTlsCertFile":     "",
+	"caddyTlsKeyFile":      "",
 }
 
 type SettingService struct {
@@ -116,6 +128,13 @@ func (s *SettingService) GetAllSetting() (*entity.AllSetting, error) {
 
 func (s *SettingService) ResetSettings() error {
 	db := database.GetDB()
+	var endpointHistoryCount int64
+	if err := db.Model(&model.PublicEndpoint{}).Count(&endpointHistoryCount).Error; err != nil {
+		return err
+	}
+	if endpointHistoryCount > 0 {
+		return common.NewError("存在 PublicEndpoint 历史记录时禁止 setting -reset；请先显式清理托管 Endpoint 状态")
+	}
 	return db.Where("1 = 1").Delete(model.Setting{}).Error
 }
 
@@ -197,6 +216,199 @@ func (s *SettingService) GetCaddyPath() (string, error) {
 
 func (s *SettingService) SetCaddyPath(path string) error {
 	return s.setString("caddyPath", path)
+}
+
+func (s *SettingService) GetEndpointSettings() (*entity.EndpointSettings, error) {
+	token, err := s.GetSubscriptionToken()
+	if err != nil {
+		return nil, err
+	}
+	enabled, err := s.getBool("subscriptionEnable")
+	if err != nil {
+		return nil, err
+	}
+	subscriptionBaseURL, err := s.getString("subscriptionBaseUrl")
+	if err != nil {
+		return nil, err
+	}
+	domain, err := s.getString("publicBaseDomain")
+	if err != nil {
+		return nil, err
+	}
+	hostLength, err := s.getInt("hostRandomLength")
+	if err != nil {
+		return nil, err
+	}
+	drainSeconds, err := s.getInt("endpointDrainSeconds")
+	if err != nil {
+		return nil, err
+	}
+	certFile, err := s.getString("caddyTlsCertFile")
+	if err != nil {
+		return nil, err
+	}
+	keyFile, err := s.getString("caddyTlsKeyFile")
+	if err != nil {
+		return nil, err
+	}
+	return &entity.EndpointSettings{
+		SubscriptionEnable:   enabled,
+		SubscriptionToken:    token,
+		SubscriptionBaseURL:  subscriptionBaseURL,
+		PublicBaseDomain:     domain,
+		HostRandomLength:     hostLength,
+		EndpointDrainSeconds: drainSeconds,
+		CaddyTLSCertFile:     certFile,
+		CaddyTLSKeyFile:      keyFile,
+	}, nil
+}
+
+func (s *SettingService) UpdateEndpointSettings(settings *entity.EndpointSettings) error {
+	settings.PublicBaseDomain = normalizeDomain(settings.PublicBaseDomain)
+	normalizedSubscriptionBaseURL, err := normalizeSubscriptionBaseURL(settings.SubscriptionBaseURL)
+	if err != nil {
+		return err
+	}
+	settings.SubscriptionBaseURL = normalizedSubscriptionBaseURL
+	settings.CaddyTLSCertFile = strings.TrimSpace(settings.CaddyTLSCertFile)
+	settings.CaddyTLSKeyFile = strings.TrimSpace(settings.CaddyTLSKeyFile)
+	if settings.PublicBaseDomain != "" && !validDomain(settings.PublicBaseDomain) {
+		return common.NewError("公网基础域名不合法: ", settings.PublicBaseDomain)
+	}
+	if settings.SubscriptionEnable && settings.SubscriptionBaseURL == "" {
+		return common.NewError("启用客户端订阅时必须配置稳定订阅基础 URL")
+	}
+	if settings.SubscriptionBaseURL != "" {
+		u, _ := url.Parse(settings.SubscriptionBaseURL)
+		if hostBelongsToManagedZone(u.Hostname(), settings.PublicBaseDomain) {
+			return common.NewError("稳定订阅域名不得属于托管基础域名区域: ", u.Hostname())
+		}
+	}
+	if settings.HostRandomLength < 4 || settings.HostRandomLength > 32 {
+		return common.NewError("随机子域名长度必须在 4 到 32 之间")
+	}
+	if settings.EndpointDrainSeconds < 60 || settings.EndpointDrainSeconds > 7*24*60*60 {
+		return common.NewError("旧入口保留时间必须在 60 到 604800 秒之间")
+	}
+	if (settings.CaddyTLSCertFile == "") != (settings.CaddyTLSKeyFile == "") {
+		return common.NewError("Caddy TLS 证书与私钥路径必须同时填写或同时留空")
+	}
+	pairs := map[string]string{
+		"subscriptionEnable":   strconv.FormatBool(settings.SubscriptionEnable),
+		"subscriptionBaseUrl":  settings.SubscriptionBaseURL,
+		"publicBaseDomain":     settings.PublicBaseDomain,
+		"hostRandomLength":     strconv.Itoa(settings.HostRandomLength),
+		"endpointDrainSeconds": strconv.Itoa(settings.EndpointDrainSeconds),
+		"caddyTlsCertFile":     settings.CaddyTLSCertFile,
+		"caddyTlsKeyFile":      settings.CaddyTLSKeyFile,
+	}
+	return database.GetDB().Transaction(func(tx *gorm.DB) error {
+		for key, value := range pairs {
+			stored := &model.Setting{}
+			err := tx.Where("key = ?", key).First(stored).Error
+			if database.IsNotFound(err) {
+				if err := tx.Create(&model.Setting{Key: key, Value: value}).Error; err != nil {
+					return err
+				}
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			stored.Value = value
+			if err := tx.Save(stored).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func normalizeSubscriptionBaseURL(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	u, err := url.Parse(value)
+	if err != nil {
+		return "", common.NewError("稳定订阅基础 URL 不合法: ", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", common.NewError("稳定订阅基础 URL 仅支持 http 或 https")
+	}
+	if u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", common.NewError("稳定订阅基础 URL 必须是无用户信息、查询参数和 fragment 的绝对 URL")
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	return strings.TrimRight(u.String(), "/"), nil
+}
+
+func requestHostname(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		return strings.ToLower(strings.Trim(host, "[]."))
+	}
+	return strings.ToLower(strings.Trim(value, "[]."))
+}
+
+func hostBelongsToManagedZone(host string, baseDomain string) bool {
+	host = strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]."))
+	baseDomain = normalizeDomain(baseDomain)
+	if host == "" || baseDomain == "" {
+		return false
+	}
+	return host == baseDomain || strings.HasSuffix(host, "."+baseDomain)
+}
+
+func (s *SettingService) GetSubscriptionToken() (string, error) {
+	token, err := s.getString("subscriptionToken")
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(token) != "" {
+		return token, nil
+	}
+	return s.RegenerateSubscriptionToken()
+}
+
+func (s *SettingService) RegenerateSubscriptionToken() (string, error) {
+	token, err := random.SecureToken(32)
+	if err != nil {
+		return "", err
+	}
+	if err := s.saveSetting("subscriptionToken", token); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func normalizeDomain(value string) string {
+	return strings.ToLower(strings.Trim(strings.TrimSpace(value), "."))
+}
+
+func validDomain(value string) bool {
+	if value == "" || len(value) > 253 {
+		return false
+	}
+	labels := strings.Split(value, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, ch := range label {
+			if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }
 
 func (s *SettingService) GetListen() (string, error) {

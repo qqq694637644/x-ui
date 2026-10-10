@@ -11,10 +11,11 @@ import (
 type XUIController struct {
 	BaseController
 
-	inboundController *InboundController
-	tunnelController  *TunnelController
-	caddyController   *CaddyController
-	settingController *SettingController
+	inboundController  *InboundController
+	tunnelController   *TunnelController
+	caddyController    *CaddyController
+	settingController  *SettingController
+	endpointController *EndpointController
 }
 
 func NewXUIController(g *gin.RouterGroup) *XUIController {
@@ -31,12 +32,14 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	g.GET("/inbounds", a.inbounds)
 	g.GET("/tunnels", a.tunnels)
 	g.GET("/caddy", a.caddy)
+	g.GET("/subscription", a.subscription)
 	g.GET("/setting", a.setting)
 
 	a.inboundController = NewInboundController(g)
 	a.tunnelController = NewTunnelController(g)
 	a.caddyController = NewCaddyController(g)
 	a.settingController = NewSettingController(g)
+	a.endpointController = NewEndpointController(g)
 }
 
 func (a *XUIController) index(c *gin.Context) {
@@ -59,6 +62,10 @@ func (a *XUIController) tunnels(c *gin.Context) {
 
 func (a *XUIController) caddy(c *gin.Context) {
 	html(c, "caddy.html", "Caddy 配置", nil)
+}
+
+func (a *XUIController) subscription(c *gin.Context) {
+	html(c, "subscription.html", "订阅 / 公网入口", nil)
 }
 
 func (a *XUIController) setting(c *gin.Context) {

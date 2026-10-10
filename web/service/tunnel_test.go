@@ -3,7 +3,13 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	"x-ui/database"
 	"x-ui/database/model"
 	"x-ui/util/json_util"
 )
@@ -158,6 +164,264 @@ func TestNormalizeTunnelDefaultsLegacyRecordToDirect(t *testing.T) {
 	if tunnel.Mode != TunnelModeDirect {
 		t.Fatalf("mode = %q, want %q", tunnel.Mode, TunnelModeDirect)
 	}
+}
+
+func TestNormalizePortalXHTTPRemoteAddressToLowercase(t *testing.T) {
+	tunnel := &model.Tunnel{
+		Mode:            TunnelModePortal,
+		PortalTransport: PortalTransportXHTTP,
+		RemoteAddress:   "CDN.ASDASDASDAS.SHOP",
+	}
+	(&TunnelService{}).normalizeTunnel(tunnel)
+	if got, want := tunnel.RemoteAddress, "cdn.asdasdasdas.shop"; got != want {
+		t.Fatalf("Portal XHTTP RemoteAddress = %q, want %q", got, want)
+	}
+}
+
+func TestPortalXHTTPRejectsNonFixedManagedPaths(t *testing.T) {
+	paths := []string{"/foo*", "/foo bar", "/foo{", "/__xui_health"}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			tunnel := &model.Tunnel{
+				Mode:                TunnelModePortal,
+				ListenPort:          18081,
+				Network:             "tcp",
+				TargetAddress:       "127.0.0.1",
+				TargetPort:          18081,
+				RemoteAddress:       "CDN.ASDASDASDAS.SHOP",
+				RemotePort:          443,
+				Protocol:            "vless",
+				UUID:                "11111111-1111-1111-1111-111111111111",
+				PortalTransport:     PortalTransportXHTTP,
+				PortalListenPort:    26418,
+				XHttpPath:           path,
+				KcpFinalMaskType:    "none",
+				KcpMtu:              1350,
+				KcpTti:              20,
+				KcpUplinkCapacity:   5,
+				KcpDownlinkCapacity: 20,
+				KcpReadBufferSize:   2,
+				KcpWriteBufferSize:  2,
+			}
+			service := &TunnelService{}
+			service.normalizeTunnel(tunnel)
+			if err := service.checkTunnel(tunnel); err == nil {
+				t.Fatalf("Portal XHTTP path %q unexpectedly passed strict managed validation", path)
+			}
+		})
+	}
+}
+
+func TestPortalXHTTPRejectsNon443PublicPort(t *testing.T) {
+	tunnel := &model.Tunnel{
+		Mode:                TunnelModePortal,
+		ListenPort:          18081,
+		Network:             "tcp",
+		TargetAddress:       "127.0.0.1",
+		TargetPort:          18081,
+		RemoteAddress:       "cdn.example.com",
+		RemotePort:          8443,
+		Protocol:            "vless",
+		UUID:                "11111111-1111-1111-1111-111111111111",
+		PortalTransport:     PortalTransportXHTTP,
+		PortalListenPort:    26418,
+		XHttpPath:           "/portal-xhttp",
+		KcpFinalMaskType:    "none",
+		KcpMtu:              1350,
+		KcpTti:              20,
+		KcpUplinkCapacity:   5,
+		KcpDownlinkCapacity: 20,
+		KcpReadBufferSize:   2,
+		KcpWriteBufferSize:  2,
+	}
+	service := &TunnelService{}
+	service.normalizeTunnel(tunnel)
+	if err := service.checkTunnel(tunnel); err == nil || !strings.Contains(err.Error(), "443") {
+		t.Fatalf("Portal XHTTP non-443 public port error = %v", err)
+	}
+}
+
+func TestAddPortalXHTTPRequiresActiveManagedEndpointAfterOwnershipExists(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "portal-binding.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	_, _ = createPublishedManagedInboundForTest(t, "portal-binding", "portal-binding", 26417, "/fixed", "cdn.asdasdasdas.shop")
+
+	tunnel := &model.Tunnel{
+		UserId:           1,
+		Enable:           true,
+		Mode:             TunnelModePortal,
+		Remark:           "typo-portal",
+		Listen:           "127.0.0.1",
+		ListenPort:       18081,
+		Network:          "tcp",
+		TargetAddress:    "127.0.0.1",
+		TargetPort:       18082,
+		RemoteAddress:    "typo.asdasdasdas.shop",
+		RemotePort:       443,
+		Protocol:         "vless",
+		UUID:             "88888888-8888-8888-8888-888888888888",
+		PortalTransport:  PortalTransportXHTTP,
+		PortalListenPort: 26418,
+		XHttpPath:        "/portal-fixed",
+	}
+	service := &TunnelService{}
+	err := service.AddTunnel(tunnel)
+	if err == nil || !strings.Contains(err.Error(), "active PublicEndpoint") {
+		t.Fatalf("AddTunnel() unbound managed Portal error = %v", err)
+	}
+	var count int64
+	if err := database.GetDB().Model(&model.Tunnel{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("unbound Portal persisted despite managed ownership: count=%d", count)
+	}
+}
+
+func TestAddPortalXHTTPRejectsDrainingEndpointBinding(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "portal-draining-binding.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	inbound, _ := createPublishedManagedInboundForTest(t, "portal-draining-binding", "portal-draining", 26417, "/fixed", "active.asdasdasdas.shop")
+	draining := &model.PublicEndpoint{
+		InboundId: inbound.Id,
+		Host:      "draining.asdasdasdas.shop",
+		Port:      443,
+		Status:    model.EndpointStatusDraining,
+		CreatedAt: time.Now().Unix(),
+		RetireAt:  time.Now().Add(time.Minute).Unix(),
+	}
+	if err := database.GetDB().Create(draining).Error; err != nil {
+		t.Fatal(err)
+	}
+	tunnel := &model.Tunnel{
+		UserId:           1,
+		Enable:           true,
+		Mode:             TunnelModePortal,
+		Remark:           "draining-portal",
+		Listen:           "127.0.0.1",
+		ListenPort:       18081,
+		Network:          "tcp",
+		TargetAddress:    "127.0.0.1",
+		TargetPort:       18082,
+		RemoteAddress:    draining.Host,
+		RemotePort:       443,
+		Protocol:         "vless",
+		UUID:             "98989898-9898-9898-9898-989898989898",
+		PortalTransport:  PortalTransportXHTTP,
+		PortalListenPort: 26418,
+		XHttpPath:        "/portal-fixed",
+	}
+	err := (&TunnelService{}).AddTunnel(tunnel)
+	if err == nil || !strings.Contains(err.Error(), "active PublicEndpoint") {
+		t.Fatalf("AddTunnel() draining Portal binding error = %v", err)
+	}
+	var count int64
+	if err := database.GetDB().Model(&model.Tunnel{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("Portal bound to draining endpoint was persisted: count=%d", count)
+	}
+}
+
+func TestUpdatePortalXHTTPRejectsRetargetToDrainingEndpoint(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "portal-update-draining-binding.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	inbound, active := createPublishedManagedInboundForTest(t, "portal-update-draining", "portal-update-draining", 26417, "/fixed", "active.asdasdasdas.shop")
+	draining := &model.PublicEndpoint{
+		InboundId: inbound.Id,
+		Host:      "draining.asdasdasdas.shop",
+		Port:      443,
+		Status:    model.EndpointStatusDraining,
+		CreatedAt: time.Now().Unix(),
+		RetireAt:  time.Now().Add(time.Minute).Unix(),
+	}
+	if err := database.GetDB().Create(draining).Error; err != nil {
+		t.Fatal(err)
+	}
+	tunnel := &model.Tunnel{
+		UserId:           1,
+		Enable:           true,
+		Mode:             TunnelModePortal,
+		Remark:           "active-portal",
+		Listen:           "127.0.0.1",
+		ListenPort:       18081,
+		Network:          "tcp",
+		TargetAddress:    "127.0.0.1",
+		TargetPort:       18082,
+		RemoteAddress:    active.Host,
+		RemotePort:       443,
+		Protocol:         "vless",
+		UUID:             "97979797-9797-9797-9797-979797979797",
+		PortalTransport:  PortalTransportXHTTP,
+		PortalListenPort: 26418,
+		XHttpPath:        "/portal-fixed",
+	}
+	service := &TunnelService{syncManagedRoutesHook: func() error { return nil }}
+	if err := service.AddTunnel(tunnel); err != nil {
+		t.Fatalf("AddTunnel() active Portal error = %v", err)
+	}
+	tunnel.RemoteAddress = draining.Host
+	if err := service.UpdateTunnel(tunnel, 1); err == nil || !strings.Contains(err.Error(), "active PublicEndpoint") {
+		t.Fatalf("UpdateTunnel() draining retarget error = %v", err)
+	}
+	stored, err := service.GetTunnel(tunnel.Id, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.RemoteAddress != active.Host {
+		t.Fatalf("Portal RemoteAddress changed to draining host despite rejection: %q", stored.RemoteAddress)
+	}
+}
+
+func TestAddManagedPortalCaddyFailureRollsBackAndFailsClosed(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "portal-add-caddy-fail.db")); err != nil {
+		t.Fatal(err)
+	}
+	configureEndpointSettingsForTest(t)
+	_, endpoint := createPublishedManagedInboundForTest(t, "portal-add-caddy-fail", "portal-owner", 26417, "/fixed", "portal-owner.asdasdasdas.shop")
+	tunnel := &model.Tunnel{
+		UserId:           1,
+		Enable:           true,
+		Mode:             TunnelModePortal,
+		Remark:           "managed-portal",
+		Listen:           "127.0.0.1",
+		ListenPort:       18081,
+		Network:          "tcp",
+		TargetAddress:    "127.0.0.1",
+		TargetPort:       18082,
+		RemoteAddress:    endpoint.Host,
+		RemotePort:       443,
+		Protocol:         "vless",
+		UUID:             "77777777-7777-7777-7777-777777777777",
+		PortalTransport:  PortalTransportXHTTP,
+		PortalListenPort: 26418,
+		XHttpPath:        "/portal-fixed",
+	}
+	service := &TunnelService{syncManagedRoutesHook: func() error {
+		return errors.New("injected managed Caddy failure")
+	}}
+	err := service.AddTunnel(tunnel)
+	if err == nil || !strings.Contains(err.Error(), "Caddy") {
+		t.Fatalf("AddTunnel() Caddy failure error = %v", err)
+	}
+	var count int64
+	if err := database.GetDB().Model(&model.Tunnel{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("managed Portal persisted after failed Caddy sync: count=%d", count)
+	}
+	if isManagedStateHealthy() {
+		t.Fatal("managed state stayed healthy after Portal Caddy sync failure")
+	}
+	defer setManagedStateHealthy(true)
 }
 
 func TestLegacyDirectTunnelShortIDCanStillBeEdited(t *testing.T) {

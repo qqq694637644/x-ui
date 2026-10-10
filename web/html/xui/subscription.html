@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+{{template "head" .}}
+<style>
+    @media (min-width: 769px) {
+        .ant-layout-content {
+            margin: 24px 16px;
+        }
+    }
+
+    .endpoint-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+    }
+
+    .subscription-url {
+        font-family: monospace;
+        word-break: break-all;
+    }
+
+    .endpoint-history {
+        max-width: 360px;
+    }
+
+    .endpoint-history .ant-tag {
+        margin-bottom: 4px;
+    }
+</style>
+<body>
+<a-layout id="app" v-cloak>
+    {{ template "commonSider" . }}
+    <a-layout id="content-layout">
+        <a-layout-content>
+            <a-spin :spinning="spinning" :delay="300" tip="处理中">
+                <a-card hoverable style="margin-bottom: 20px;">
+                    <a-alert
+                        type="info"
+                        show-icon
+                        message="稳定订阅 + 一键全部随机子域名"
+                        description="严格模式只托管 VLESS + XHTTP + 127.0.0.1 + security=none 的 Inbound。公网固定使用 Caddy TLS，Caddy 到 Xray 固定使用 h2c；点击“全部随机一次”只更换子域名，XHTTP path 永远保持不变。">
+                    </a-alert>
+                </a-card>
+
+                <a-card hoverable title="订阅与公网入口设置" style="margin-bottom: 20px;">
+                    <a-alert
+                        type="warning"
+                        show-icon
+                        style="margin-bottom: 16px;"
+                        message="破坏式接管 Caddy wildcard 区域"
+                        description="首次初始化必须一次录入全部启用且符合严格托管条件的 Inbound 当前 Host，x-ui 批量写入 pending 后只应用一次完整 Caddy，再统一切 active。公网端口固定 443。管理面板和稳定订阅入口必须位于托管基础域名之外；托管状态 fail-closed 后请重启面板完成重新校验。">
+                    </a-alert>
+                    <a-form layout="vertical">
+                        <a-row :gutter="16">
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="启用客户端订阅">
+                                    <a-switch v-model="settings.subscriptionEnable"></a-switch>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="基础域名">
+                                    <a-input v-model.trim="settings.publicBaseDomain" placeholder="asdasdasdas.shop"></a-input>
+                                </a-form-item>
+                            </a-col>
+                        </a-row>
+                        <a-row :gutter="16">
+                            <a-col :span="24">
+                                <a-form-item label="稳定订阅基础 URL">
+                                    <a-input v-model.trim="settings.subscriptionBaseUrl" placeholder="https://sub.example.net/xui/"></a-input>
+                                    <div style="color:#888;font-size:12px;">填写客户端长期保存的 x-ui 外部基础 URL（包含 Web Base Path，如有）；域名不得属于上面的托管基础域名。</div>
+                                </a-form-item>
+                            </a-col>
+                        </a-row>
+                        <a-row :gutter="16">
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="随机子域名长度">
+                                    <a-input-number style="width: 100%" :min="4" :max="32" v-model="settings.hostRandomLength"></a-input-number>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="旧入口保留秒数">
+                                    <a-input-number style="width: 100%" :min="60" :max="604800" v-model="settings.endpointDrainSeconds"></a-input-number>
+                                </a-form-item>
+                            </a-col>
+                        </a-row>
+                        <a-row :gutter="16">
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="Caddy wildcard TLS 证书">
+                                    <a-input v-model.trim="settings.caddyTlsCertFile" placeholder="/etc/caddy/wildcard.crt"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="Caddy wildcard TLS 私钥">
+                                    <a-input v-model.trim="settings.caddyTlsKeyFile" placeholder="/etc/caddy/wildcard.key"></a-input>
+                                </a-form-item>
+                            </a-col>
+                        </a-row>
+                        <div class="endpoint-toolbar">
+                            <a-button type="primary" @click="saveSettings">保存设置</a-button>
+                            <a-button @click="loadAll">刷新</a-button>
+                        </div>
+                    </a-form>
+                </a-card>
+
+                <a-card hoverable title="客户端订阅" style="margin-bottom: 20px;">
+                    <a-row :gutter="16">
+                        <a-col :xs="24" :md="18">
+                            <a-form-item label="订阅 URL">
+                                <a-input readonly class="subscription-url" :value="subscriptionUrl"></a-input>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="6">
+                            <a-form-item label="操作">
+                                <a-space>
+                                    <a-button @click="copyText(subscriptionUrl)">复制</a-button>
+                                    <a-button @click="showSubscriptionQR">二维码</a-button>
+                                    <a-button type="danger" @click="regenerateToken">换 Token</a-button>
+                                </a-space>
+                            </a-form-item>
+                        </a-col>
+                    </a-row>
+                    <a-alert
+                        type="warning"
+                        show-icon
+                        message="订阅 Token 等同于访问密钥"
+                        description="重新生成 Token 后，旧订阅 URL 会立即失效，客户端必须改用新 URL。">
+                    </a-alert>
+                </a-card>
+
+                <a-card hoverable>
+                    <div slot="title" class="endpoint-toolbar">
+                        <span>代理公网入口</span>
+                        <a-button
+                            type="primary"
+                            :disabled="!canInitializeBatch"
+                            @click="openInitBatch">
+                            批量初始化当前入口
+                        </a-button>
+                        <a-button
+                            type="danger"
+                            icon="sync"
+                            :disabled="!canRotateAll"
+                            @click="rotateAll">
+                            全部随机一次
+                        </a-button>
+                    </div>
+
+                    <a-table
+                        :columns="columns"
+                        :data-source="rows"
+                        row-key="inboundId"
+                        :pagination="false"
+                        :scroll="{x: 1200}">
+                        <template slot="name" slot-scope="text, row">
+                            <div><strong>[[ row.remark || ('Inbound #' + row.inboundId) ]]</strong></div>
+                            <a-tag>[[ row.protocol ]]</a-tag>
+                            <a-tag>[[ row.network || '-' ]]</a-tag>
+                            <a-tag :color="row.enable ? 'green' : 'default'">[[ row.enable ? '启用' : '停用' ]]</a-tag>
+                        </template>
+
+                        <template slot="path" slot-scope="text, row">
+                            <code>[[ row.path || '/' ]]</code>
+                            <div style="color: #888; font-size: 12px;">固定，不参与随机</div>
+                        </template>
+
+                        <template slot="endpoint" slot-scope="text, row">
+                            <template v-if="row.active">
+                                <div><code>[[ row.active.host ]]:[[ row.active.port ]]</code></div>
+                                <a-tag color="green">active</a-tag>
+                                <a-tag>TLS → h2c</a-tag>
+                            </template>
+                            <a-tag v-else color="orange">未初始化</a-tag>
+                        </template>
+
+                        <template slot="publish" slot-scope="text, row">
+                            <a-switch
+                                :checked="row.publish"
+                                :disabled="!row.supported || !row.active"
+                                @change="setPublish(row, $event)">
+                            </a-switch>
+                        </template>
+
+                        <template slot="history" slot-scope="text, row">
+                            <div class="endpoint-history">
+                                <template v-for="endpoint in row.endpoints">
+                                    <a-tag
+                                        :key="endpoint.id"
+                                        :color="endpoint.status === 'active' ? 'green' : (endpoint.status === 'draining' ? 'orange' : 'default')">
+                                        [[ endpoint.host ]] · [[ endpoint.status ]]
+                                    </a-tag>
+                                    <a-button
+                                        v-if="endpoint.status === 'draining' || endpoint.status === 'pending'"
+                                        :key="'retire-' + endpoint.id"
+                                        type="link"
+                                        size="small"
+                                        @click="retire(endpoint)">
+                                        下线
+                                    </a-button>
+                                </template>
+                            </div>
+                        </template>
+
+                        <template slot="actions" slot-scope="text, row">
+                            <a-space>
+                                <a-button v-if="row.link" @click="copyText(row.link)">复制链接</a-button>
+                                <a-button v-if="row.link" @click="qrModal.show(row.remark || '代理链接', row.link)">二维码</a-button>
+                            </a-space>
+                            <div v-if="!row.supported" style="color:#999; margin-top:6px;">仅支持 VLESS + XHTTP + 127.0.0.1 + security=none + 单客户端</div>
+                        </template>
+                    </a-table>
+                </a-card>
+            </a-spin>
+        </a-layout-content>
+    </a-layout>
+
+    <a-modal
+        v-model="initModal.visible"
+        title="批量初始化公网入口"
+        ok-text="一次性接管并验证全部入口"
+        cancel-text="取消"
+        :confirm-loading="initModal.loading"
+        @ok="initializeBatch">
+        <a-alert
+            type="warning"
+            show-icon
+            style="margin-bottom: 16px;"
+            message="首次接管是批量原子操作"
+            description="下面会列出所有启用、符合严格托管条件且尚未初始化的 Inbound。请把它们当前正在使用的公网 Host 全部录入；系统会一次写 pending、一次生成完整 Caddy、逐项健康检查，全部成功后统一 active。">
+        </a-alert>
+        <div v-for="item in initModal.items" :key="item.inboundId" style="margin-bottom:16px;">
+            <div style="margin-bottom:6px;"><strong>[[ item.remark || ('Inbound #' + item.inboundId) ]]</strong> · <code>[[ item.path ]]</code></div>
+            <a-row :gutter="8">
+                <a-col :span="24">
+                    <a-input v-model.trim="item.host" placeholder="cdn.example.com"></a-input>
+                </a-col>
+            </a-row>
+        </div>
+        <a-alert type="info" show-icon message="公网 TLS 与 SNI 固定跟随各自 Host；固定 XHTTP Path 不参与随机。"></a-alert>
+    </a-modal>
+</a-layout>
+
+{{template "js" .}}
+{{template "qrcodeModal"}}
+<script>
+    const app = new Vue({
+        delimiters: ['[[', ']]'],
+        el: '#app',
+        data: {
+            siderDrawer,
+            qrModal,
+            spinning: false,
+            settings: {
+                subscriptionEnable: false,
+                subscriptionToken: '',
+                subscriptionBaseUrl: '',
+                publicBaseDomain: '',
+                hostRandomLength: 10,
+                endpointDrainSeconds: 1800,
+                caddyTlsCertFile: '',
+                caddyTlsKeyFile: '',
+            },
+            rows: [],
+            columns: [
+                {title: '代理', key: 'name', scopedSlots: {customRender: 'name'}, width: 210},
+                {title: '固定 Path', key: 'path', scopedSlots: {customRender: 'path'}, width: 180},
+                {title: '当前公网入口', key: 'endpoint', scopedSlots: {customRender: 'endpoint'}, width: 280},
+                {title: '发布', key: 'publish', scopedSlots: {customRender: 'publish'}, width: 90},
+                {title: '历史入口', key: 'history', scopedSlots: {customRender: 'history'}, width: 320},
+                {title: '操作', key: 'actions', scopedSlots: {customRender: 'actions'}, width: 230},
+            ],
+            initModal: {
+                visible: false,
+                loading: false,
+                items: [],
+            },
+        },
+        computed: {
+            subscriptionUrl() {
+                if (!this.settings.subscriptionToken || !this.settings.subscriptionBaseUrl) {
+                    return '';
+                }
+                const root = this.settings.subscriptionBaseUrl.replace(/\/+$/, '');
+                return root + '/sub/' + this.settings.subscriptionToken;
+            },
+            canInitializeBatch() {
+                return this.rows.some(row => row.enable && row.supported && !row.active);
+            },
+            canRotateAll() {
+                const published = this.rows.filter(row => row.enable && row.publish);
+                return published.length > 0 && published.every(row => row.supported && row.active);
+            },
+        },
+        methods: {
+            async loadSettings() {
+                const msg = await HttpUtil.post('/xui/endpoint/settings');
+                if (msg.success) {
+                    this.settings = Object.assign({}, this.settings, msg.obj || {});
+                } else {
+                    this.$message.error(msg.msg || '读取设置失败');
+                }
+            },
+            async loadRows() {
+                const msg = await HttpUtil.post('/xui/endpoint/list');
+                if (msg.success) {
+                    this.rows = msg.obj || [];
+                } else {
+                    this.$message.error(msg.msg || '读取入口失败');
+                }
+            },
+            async loadAll() {
+                this.spinning = true;
+                try {
+                    await this.loadSettings();
+                    await this.loadRows();
+                } finally {
+                    this.spinning = false;
+                }
+            },
+            async saveSettings() {
+                this.spinning = true;
+                try {
+                    const msg = await HttpUtil.post('/xui/endpoint/settings/update', this.settings);
+                    if (msg.success) {
+                        this.$message.success(msg.msg || '保存成功');
+                        await this.loadAll();
+                    } else {
+                        this.$message.error(msg.msg || '保存失败');
+                    }
+                } finally {
+                    this.spinning = false;
+                }
+            },
+            async regenerateToken() {
+                let confirmed = false;
+                await new Promise(resolve => {
+                    this.$confirm({
+                        title: '重新生成订阅 Token',
+                        content: '旧订阅 URL 会立即失效，确定继续吗？',
+                        okText: '重新生成',
+                        cancelText: '取消',
+                        onOk: () => { confirmed = true; resolve(); },
+                        onCancel: () => resolve(),
+                    });
+                });
+                if (!confirmed) return;
+                this.spinning = true;
+                try {
+                    const msg = await HttpUtil.post('/xui/endpoint/token/regenerate');
+                    if (msg.success) {
+                        this.settings.subscriptionToken = msg.obj;
+                        this.$message.success('Token 已更新');
+                    } else {
+                        this.$message.error(msg.msg || '生成 Token 失败');
+                    }
+                } finally {
+                    this.spinning = false;
+                }
+            },
+            openInitBatch() {
+                this.initModal.items = this.rows
+                    .filter(row => row.enable && row.supported && !row.active)
+                    .map(row => ({
+                        inboundId: row.inboundId,
+                        remark: row.remark,
+                        path: row.path,
+                        host: '',
+                    }));
+                this.initModal.visible = true;
+            },
+            async initializeBatch() {
+                if (!this.initModal.items.length) return;
+                if (this.initModal.items.some(item => !item.host)) {
+                    this.$message.error('请填写全部当前公网 Host');
+                    return;
+                }
+                this.initModal.loading = true;
+                try {
+                    const items = this.initModal.items.map(item => ({
+                        inboundId: item.inboundId,
+                        host: item.host,
+                    }));
+                    const msg = await HttpUtil.post('/xui/endpoint/init-batch', {items});
+                    if (msg.success) {
+                        this.$message.success('已原子初始化 ' + ((msg.obj && msg.obj.count) || items.length) + ' 个公网入口');
+                        this.initModal.visible = false;
+                        await this.loadRows();
+                    } else {
+                        this.$message.error(msg.msg || '初始化失败');
+                    }
+                } finally {
+                    this.initModal.loading = false;
+                }
+            },
+            async setPublish(row, publish) {
+                this.spinning = true;
+                try {
+                    const msg = await HttpUtil.post('/xui/endpoint/publish/' + row.inboundId, {publish});
+                    if (!msg.success) {
+                        this.$message.error(msg.msg || '修改发布状态失败');
+                    }
+                    await this.loadRows();
+                } finally {
+                    this.spinning = false;
+                }
+            },
+            async rotateAll() {
+                let confirmed = false;
+                await new Promise(resolve => {
+                    this.$confirm({
+                        title: '全部随机一次',
+                        content: '将为所有已启用且已发布的代理生成新的随机子域名；固定 Path 不变。Caddy 只 Reload 一次，全部健康检查通过后才切换订阅。确定继续吗？',
+                        okText: '开始切换',
+                        cancelText: '取消',
+                        onOk: () => { confirmed = true; resolve(); },
+                        onCancel: () => resolve(),
+                    });
+                });
+                if (!confirmed) return;
+                this.spinning = true;
+                try {
+                    const msg = await HttpUtil.post('/xui/endpoint/rotate-all');
+                    if (msg.success) {
+                        this.$message.success('已切换 ' + ((msg.obj && msg.obj.count) || 0) + ' 个公网入口');
+                    } else {
+                        this.$message.error(msg.msg || '批量轮换失败');
+                    }
+                    await this.loadRows();
+                } finally {
+                    this.spinning = false;
+                }
+            },
+            async retire(endpoint) {
+                this.spinning = true;
+                try {
+                    const msg = await HttpUtil.post('/xui/endpoint/retire/' + endpoint.id);
+                    if (!msg.success) {
+                        this.$message.error(msg.msg || '下线失败');
+                    } else {
+                        this.$message.success(msg.msg || '已下线');
+                    }
+                    await this.loadRows();
+                } finally {
+                    this.spinning = false;
+                }
+            },
+            showSubscriptionQR() {
+                if (!this.subscriptionUrl) {
+                    this.$message.warning('订阅 URL 尚未生成');
+                    return;
+                }
+                qrModal.show('客户端订阅', this.subscriptionUrl);
+            },
+            copyText(value) {
+                if (!value) return;
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(value)
+                        .then(() => this.$message.success('已复制'))
+                        .catch(() => this.copyFallback(value));
+                    return;
+                }
+                this.copyFallback(value);
+            },
+            copyFallback(value) {
+                const textarea = document.createElement('textarea');
+                textarea.value = value;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                this.$message.success('已复制');
+            },
+        },
+        async mounted() {
+            await this.loadAll();
+        },
+    });
+</script>
+</body>
+</html>

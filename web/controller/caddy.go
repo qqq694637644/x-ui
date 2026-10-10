@@ -37,10 +37,17 @@ func (a *CaddyController) initRouter(g *gin.RouterGroup) {
 
 func (a *CaddyController) getConfig(c *gin.Context) {
 	config, err := a.caddyService.GetConfig()
+	if err == nil {
+		config.ManagedReadOnly, err = a.caddyService.ManualMutationLocked()
+	}
 	jsonObj(c, config, err)
 }
 
 func (a *CaddyController) updatePath(c *gin.Context) {
+	if err := a.caddyService.EnsureManualMutationAllowed(); err != nil {
+		jsonMsg(c, "保存 Caddy 路径", err)
+		return
+	}
 	form := &caddyPathForm{}
 	err := c.ShouldBind(form)
 	if err != nil {
@@ -63,6 +70,10 @@ func (a *CaddyController) validate(c *gin.Context) {
 }
 
 func (a *CaddyController) save(c *gin.Context) {
+	if err := a.caddyService.EnsureManualMutationAllowed(); err != nil {
+		jsonMsg(c, "保存 Caddyfile", err)
+		return
+	}
 	form := &caddyContentForm{}
 	err := c.ShouldBind(form)
 	if err != nil {
@@ -74,11 +85,19 @@ func (a *CaddyController) save(c *gin.Context) {
 }
 
 func (a *CaddyController) reload(c *gin.Context) {
+	if err := a.caddyService.EnsureManualMutationAllowed(); err != nil {
+		jsonMsg(c, "Reload Caddy", err)
+		return
+	}
 	result, err := a.caddyService.Reload()
 	jsonMsgObj(c, "Reload Caddy", result, err)
 }
 
 func (a *CaddyController) saveReload(c *gin.Context) {
+	if err := a.caddyService.EnsureManualMutationAllowed(); err != nil {
+		jsonMsg(c, "保存并 Reload Caddy", err)
+		return
+	}
 	form := &caddyContentForm{}
 	err := c.ShouldBind(form)
 	if err != nil {

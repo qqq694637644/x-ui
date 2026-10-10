@@ -92,7 +92,7 @@
                                         [[ tunnel.status === 'success' ? '成功' : (tunnel.status === 'failed' ? '失败' : '未测试') ]]
                                     </a-tag>
                                 </a-tooltip>
-                                <div v-if="tunnel.probeTime" style="font-size: 12px; color: #999; margin-top: 4px;">[[ tunnel.probeTime ]]</div>
+                                <div v-if="tunnel.checkTime" style="font-size: 12px; color: #999; margin-top: 4px;">[[ tunnel.checkTime ]]</div>
                             </template>
                         </a-table>
                     </a-card>
@@ -189,8 +189,8 @@
                     </a-form-item>
                 </a-col>
                 <a-col :xs="24" :md="12">
-                    <a-form-item :label="modal.tunnel.mode === 'portal' && modal.tunnel.portalTransport === 'xhttp' ? 'CDN 公网端口' : (modal.tunnel.mode === 'portal' ? 'Portal mKCP UDP 端口' : '远端 mKCP 端口')">
-                        <a-input type="number" v-model.number="modal.tunnel.remotePort"></a-input>
+                    <a-form-item :label="modal.tunnel.mode === 'portal' && modal.tunnel.portalTransport === 'xhttp' ? 'CDN 公网端口（固定 443）' : (modal.tunnel.mode === 'portal' ? 'Portal mKCP UDP 端口' : '远端 mKCP 端口')">
+                        <a-input type="number" :disabled="modal.tunnel.mode === 'portal' && modal.tunnel.portalTransport === 'xhttp'" v-model.number="modal.tunnel.remotePort"></a-input>
                     </a-form-item>
                 </a-col>
             </a-row>
@@ -366,11 +366,12 @@
             kcpWriteBufferSize: 2,
             status: 'not_tested',
             statusMessage: '尚未进行 TCP 探测',
-            probeTime: '',
+            checkTime: '',
         }, data || {});
         if (!tunnel.mode) tunnel.mode = 'direct';
         if (!tunnel.portalTransport) tunnel.portalTransport = 'mkcp';
         if (!tunnel.xhttpPath) tunnel.xhttpPath = '/portal-xhttp';
+        if (tunnel.mode === 'portal' && tunnel.portalTransport === 'xhttp') tunnel.remotePort = 443;
         return tunnel;
     }
 
@@ -422,7 +423,7 @@
                 this.modal.tunnel.portalTransport = transport;
                 if (transport === 'xhttp') {
                     this.modal.tunnel.protocol = 'vless';
-                    if (!this.modal.tunnel.remotePort || this.modal.tunnel.remotePort === 40000) this.modal.tunnel.remotePort = 443;
+                    this.modal.tunnel.remotePort = 443;
                     if (!this.modal.tunnel.portalListenPort) this.modal.tunnel.portalListenPort = 26418;
                     if (!this.modal.tunnel.xhttpPath || this.modal.tunnel.xhttpPath === '/') {
                         this.modal.tunnel.xhttpPath = '/portal-xhttp';

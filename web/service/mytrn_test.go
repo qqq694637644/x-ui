@@ -37,10 +37,10 @@ func mytrnTestCert(t *testing.T) string {
 	}
 	cert := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
-		Subject: pkix.Name{CommonName: mytrnServerName},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+		Subject:      pkix.Name{CommonName: mytrnServerName},
+		NotBefore:    time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
 		DNSNames: []string{mytrnServerName}, IsCA: true, BasicConstraintsValid: true,
-		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		KeyUsage:    x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, cert, cert, &key.PublicKey, key)
@@ -115,7 +115,9 @@ func testMyTRNOutboundsAndRules(t *testing.T, config *xray.Config, item *model.M
 	if warp["address"] != "127.0.0.1" || int(warp["port"].(float64)) != 40000 {
 		t.Fatalf("WARP must only be the existing SOCKS5 port: %#v", warp)
 	}
-	var routing struct { Rules []map[string]interface{} `json:"rules"` }
+	var routing struct {
+		Rules []map[string]interface{} `json:"rules"`
+	}
 	if err := json.Unmarshal(config.RouterConfig, &routing); err != nil {
 		t.Fatal(err)
 	}
@@ -142,8 +144,12 @@ func TestMyTRNMergeKeepsExistingXrayAndNoSecondFreedom(t *testing.T) {
 	config := mytrnTestConfig(t)
 	item := mytrnTestRecord(t)
 	cert := filepath.Join(t.TempDir(), "a-cert.pem")
-	if err := os.WriteFile(cert, []byte(item.CertificatePEM), 0600); err != nil { t.Fatal(err) }
-	if err := mergeMyTRNConfig(config, item, cert); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(cert, []byte(item.CertificatePEM), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := mergeMyTRNConfig(config, item, cert); err != nil {
+		t.Fatal(err)
+	}
 	testMyTRNOutboundsAndRules(t, config, item)
 }
 
@@ -153,10 +159,16 @@ func TestMyTRNMergeDisabledAndUnknownEndpointAreNoOps(t *testing.T) {
 		before, _ := json.Marshal(config)
 		item := mytrnTestRecord(t)
 		item.Enable = enabled
-		if enabled { item.EndpointIP = "" }
-		if err := mergeMyTRNConfig(config, item, ""); err != nil { t.Fatal(err) }
+		if enabled {
+			item.EndpointIP = ""
+		}
+		if err := mergeMyTRNConfig(config, item, ""); err != nil {
+			t.Fatal(err)
+		}
 		after, _ := json.Marshal(config)
-		if !bytes.Equal(before, after) { t.Fatal("disabled/unregistered MyTRN changed existing Xray") }
+		if !bytes.Equal(before, after) {
+			t.Fatal("disabled/unregistered MyTRN changed existing Xray")
+		}
 	}
 }
 
@@ -189,19 +201,27 @@ func TestMyTRNCertificateTrustAndPublicAddressValidation(t *testing.T) {
 	if fingerprint, err := parseACertificate(cert); err != nil || len(fingerprint) != 64 {
 		t.Fatalf("valid A PEM rejected: fingerprint=%s err=%v", fingerprint, err)
 	}
-	for _, raw := range []string{"", "not-pem", cert+cert} {
-		if _, err := parseACertificate(raw); err == nil { t.Fatalf("accepted bad PEM of length %d", len(raw)) }
+	for _, raw := range []string{"", "not-pem", cert + cert} {
+		if _, err := parseACertificate(raw); err == nil {
+			t.Fatalf("accepted bad PEM of length %d", len(raw))
+		}
 	}
 	for _, value := range []string{"127.0.0.1", "192.168.1.1", "10.0.0.2", "100.64.0.5", "0.0.0.0", "224.0.0.1", "not-an-ip"} {
-		if isPublicIPv4(value) { t.Fatalf("non-public address was accepted: %s", value) }
+		if isPublicIPv4(value) {
+			t.Fatalf("non-public address was accepted: %s", value)
+		}
 	}
-	if !isPublicIPv4("119.98.144.218") { t.Fatal("public China Telecom NAT endpoint rejected") }
+	if !isPublicIPv4("119.98.144.218") {
+		t.Fatal("public China Telecom NAT endpoint rejected")
+	}
 }
 
 func freeMyTRNPort(t *testing.T) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	port := listener.Addr().(*net.TCPAddr).Port
 	listener.Close()
 	return port
@@ -210,22 +230,32 @@ func freeMyTRNPort(t *testing.T) int {
 func postMyTRN(t *testing.T, url, token string, body interface{}) (int, []byte) {
 	t.Helper()
 	payload, err := json.Marshal(body)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Control-Token", token)
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Do(req)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	return resp.StatusCode, data
 }
 
 func TestMyTRNGoControlMatchesExistingPythonA(t *testing.T) {
-	if err := database.InitDB(filepath.Join(t.TempDir(), "mytrn.db")); err != nil { t.Fatal(err) }
+	if err := database.InitDB(filepath.Join(t.TempDir(), "mytrn.db")); err != nil {
+		t.Fatal(err)
+	}
 	defer StopMyTRNControl()
 	service := &MyTRNService{}
 	port := freeMyTRNPort(t)
@@ -235,7 +265,9 @@ func TestMyTRNGoControlMatchesExistingPythonA(t *testing.T) {
 		WarpHost: "127.0.0.1", WarpPort: 40000,
 	}
 	changed, err := service.UpdateSettings(settings)
-	if err != nil || !changed { t.Fatalf("enable settings: changed=%v error=%v", changed, err) }
+	if err != nil || !changed {
+		t.Fatalf("enable settings: changed=%v error=%v", changed, err)
+	}
 	url := fmt.Sprintf("http://127.0.0.1:%d/control/mapping", port)
 	registration := MyTRNRegistration{Node: "a", IP: "119.98.144.218", Port: 57197, Certificate: mytrnTestCert(t)}
 	if status, _ := postMyTRN(t, url, "wrong", registration); status != 403 {
@@ -249,11 +281,15 @@ func TestMyTRNGoControlMatchesExistingPythonA(t *testing.T) {
 		t.Fatalf("first registration HTTP=%d %s", status, data)
 	}
 	stored, err := service.Get()
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if stored.EndpointIP != registration.IP || stored.EndpointPort != registration.Port || stored.CertificateFingerprint == "" {
 		t.Fatalf("registration did not persist: %#v", stored.EndpointIP)
 	}
-	if stored.CertificatePEM != registration.Certificate { t.Fatal("registered public cert differs") }
+	if stored.CertificatePEM != registration.Certificate {
+		t.Fatal("registered public cert differs")
+	}
 	if status, data = postMyTRN(t, url, mytrnTestToken, registration); status != 200 || !bytes.Contains(data, []byte(`"changed":false`)) {
 		t.Fatalf("same endpoint forced restart: HTTP=%d %s", status, data)
 	}
@@ -271,33 +307,55 @@ func TestMyTRNGoControlMatchesExistingPythonA(t *testing.T) {
 		t.Fatalf("mapping change rejected HTTP=%d %s", status, data)
 	}
 	stored, err = service.Get()
-	if err != nil || stored.EndpointPort != 55001 { t.Fatalf("new NAT mapping not persisted: %#v %v", stored, err) }
+	if err != nil || stored.EndpointPort != 55001 {
+		t.Fatalf("new NAT mapping not persisted: %#v %v", stored, err)
+	}
 	settings.ControlToken = ""
 	if changed, err = service.UpdateSettings(settings); err != nil || changed {
 		t.Fatalf("identical UI save changed data: changed=%v err=%v", changed, err)
 	}
 	stored, _ = service.Get()
-	if stored.ControlToken != mytrnTestToken { t.Fatal("blank UI token overwrote existing credential") }
+	if stored.ControlToken != mytrnTestToken {
+		t.Fatal("blank UI token overwrote existing credential")
+	}
 	settings.ResetTrust = true
-	if changed, err = service.UpdateSettings(settings); err != nil || !changed { t.Fatalf("reset trust did not require restart: %v %v", changed, err) }
+	if changed, err = service.UpdateSettings(settings); err != nil || !changed {
+		t.Fatalf("reset trust did not require restart: %v %v", changed, err)
+	}
 	stored, _ = service.Get()
-	if stored.CertificateFingerprint != "" || stored.EndpointIP != "" { t.Fatal("explicit trust reset left old cert/endpoint") }
+	if stored.CertificateFingerprint != "" || stored.EndpointIP != "" {
+		t.Fatal("explicit trust reset left old cert/endpoint")
+	}
 }
 
 func TestMyTRNGeneratedJSONAcceptedByRealXray26327(t *testing.T) {
 	binary := os.Getenv("XUI_HEALTHCHECK_XRAY_BIN")
-	if binary == "" { t.Skip("CI pinned Xray binary is not installed") }
+	if binary == "" {
+		t.Skip("CI pinned Xray binary is not installed")
+	}
 	config := mytrnTestConfig(t)
 	item := mytrnTestRecord(t)
 	certificate := filepath.Join(t.TempDir(), "mytrn-a-cert.pem")
-	if err := os.WriteFile(certificate, []byte(item.CertificatePEM), 0600); err != nil { t.Fatal(err) }
-	if err := mergeMyTRNConfig(config, item, certificate); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(certificate, []byte(item.CertificatePEM), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := mergeMyTRNConfig(config, item, certificate); err != nil {
+		t.Fatal(err)
+	}
 	payload, err := json.MarshalIndent(config, "", "  ")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	configPath := filepath.Join(t.TempDir(), "xray.json")
-	if err := os.WriteFile(configPath, payload, 0600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(configPath, payload, 0600); err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.Command(binary, "run", "-test", "-config", configPath)
 	output, err := cmd.CombinedOutput()
-	if err != nil { t.Fatalf("real Xray 26.3.27 rejected MyTRN merged config: %v\n%s\n%s", err, output, payload) }
-	if !strings.Contains(string(output), "Reading config") { t.Logf("Xray validation output: %s", output) }
+	if err != nil {
+		t.Fatalf("real Xray 26.3.27 rejected MyTRN merged config: %v\n%s\n%s", err, output, payload)
+	}
+	if !strings.Contains(string(output), "Reading config") {
+		t.Logf("Xray validation output: %s", output)
+	}
 }

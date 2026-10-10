@@ -367,7 +367,7 @@ func mergeMyTRNConfig(conf *xray.Config, item *model.MyTRN, certFile string) err
 			"tlsSettings": map[string]interface{}{
 				"serverName": mytrnServerName, "allowInsecure": false,
 				"disableSystemRoot": true,
-				"certificates": []interface{}{map[string]interface{}{"certificateFile": certFile, "usage": "verify"}},
+				"certificates":      []interface{}{map[string]interface{}{"certificateFile": certFile, "usage": "verify"}},
 			},
 			"sockopt": map[string]interface{}{"dialerProxy": mytrnWarpTag},
 		},

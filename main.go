@@ -1,16 +1,19 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 	_ "unsafe"
 	"x-ui/config"
 	"x-ui/database"
 	"x-ui/logger"
+	"x-ui/reverseexit"
 	"x-ui/v2ui"
 	"x-ui/web"
 	"x-ui/web/global"
@@ -239,6 +242,10 @@ func main() {
 	settingCmd.IntVar(&tgbotchatid, "tgbotchatid", 0, "set telegrame bot chat id")
 	settingCmd.BoolVar(&enabletgbot, "enabletgbot", false, "enable telegram bot notify")
 
+	reverseCmd := flag.NewFlagSet("reverse-socks-exit", flag.ExitOnError)
+	visitor := reverseCmd.String("visitor", "127.0.0.1:6000", "local frpc XTCP Visitor address")
+	retry := reverseCmd.Duration("retry", 2*time.Second, "reconnect interval")
+
 	oldUsage := flag.Usage
 	flag.Usage = func() {
 		oldUsage()
@@ -247,6 +254,7 @@ func main() {
 		fmt.Println("    run            run web panel")
 		fmt.Println("    v2-ui          migrate form v2-ui")
 		fmt.Println("    setting        set settings")
+		fmt.Println("    reverse-socks-exit   run outbound SOCKS5 exit agent over frpc XTCP Visitor")
 	}
 
 	flag.Parse()
@@ -289,6 +297,16 @@ func main() {
 		}
 		if (tgbottoken != "") || (tgbotchatid != 0) || (tgbotRuntime != "") {
 			updateTgbotSetting(tgbottoken, tgbotchatid, tgbotRuntime)
+		}
+	case "reverse-socks-exit":
+		if err := reverseCmd.Parse(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		err := reverseexit.Run(ctx, *visitor, os.Getenv("REVERSE_SOCKS_TOKEN"), *retry)
+		if err != nil && err != context.Canceled {
+			log.Fatal(err)
 		}
 	default:
 		fmt.Println("except 'run' or 'v2-ui' or 'setting' subcommands")

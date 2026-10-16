@@ -14,6 +14,7 @@
 - 支持一键SSL证书申请且自动续签
 - 更多高级配置项，详见面板
 - 隧道支持公网直连和 VMess/mKCP Portal 反向模式；无公网 IP 的 B 端可主动连接 A
+- 独立 RSX1 反向 SOCKS5 出口 Agent：境外主动经现有 frpc XTCP Visitor 连接境内 Python NAT Node，支持 SOCKS5 TCP/UDP，详见 [部署说明](docs/REVERSE_SOCKS_EXIT.md)
 
 ## 隧道模式
 

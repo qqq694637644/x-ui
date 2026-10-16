@@ -1,0 +1,37 @@
+name: RSX2 WARP DATAGRAM
+
+on:
+  push:
+    branches:
+      - gpt/xtcp-reverse-socks-exit
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  exit-panel:
+    name: Go exit / Web panel / Python SOCKS5 interoperability
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.8'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Test RSX2 Go and Web configuration
+        run: go test -count=1 ./reverseexit ./web/service -run 'TestExitRequiresWARPAndLoopbackOnly|TestReverseSocksWebConfigSecretsAndLifecycle'
+      - name: Build full x-ui Linux panel and Go exit agent
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$RUNNER_TEMP/xui-panel" .
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$RUNNER_TEMP/reverse-socks-exit" ./cmd/reverse-socks-exit
+      - name: Get Python 3.13 NAT node companion
+        run: |
+          git clone --depth 1 --branch gpt/xtcp-reverse-socks5 \
+            https://github.com/qqq694637644/nat_node.git "$RUNNER_TEMP/nat_node"
+      - name: Run Python/Go actual agent against fake WARP SOCKS5
+        working-directory: ${{ runner.temp }}/nat_node
+        env:
+          REVERSE_SOCKS_EXIT_BIN: ${{ runner.temp }}/reverse-socks-exit
+        run: python -m unittest -v tests.test_protocol tests.test_end_to_end

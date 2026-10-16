@@ -1,6 +1,6 @@
 package reverseexit
 
-// RSX1 framing and address encoding. Keep in sync with nat_node/reverse_socks/protocol.py.
+// RSX2 control framing. UDP_DATA on the reliable stream is forbidden.
 
 import (
 	"bytes"
@@ -21,11 +21,13 @@ const (
 	tcpFIN    byte = 4
 	tcpRST    byte = 5
 	openUDP   byte = 6
-	udpData   byte = 7
+	udpResult byte = 7
 	udpClose  byte = 8
 	ping      byte = 9
 	pong      byte = 10
 )
+
+const udpLinkMax = 1100 // including the 4-byte session ID
 
 type frame struct {
 	kind byte
@@ -40,7 +42,7 @@ func readFrame(r io.Reader) (frame, error) {
 	}
 	size := binary.BigEndian.Uint32(header[5:])
 	if size > maxPayload {
-		return frame{}, errors.New("RSX1 oversized frame")
+		return frame{}, errors.New("RSX2 oversized frame")
 	}
 	data := make([]byte, int(size))
 	if _, err := io.ReadFull(r, data); err != nil {
@@ -51,7 +53,7 @@ func readFrame(r io.Reader) (frame, error) {
 
 func writeFrame(w io.Writer, f frame) error {
 	if len(f.data) > maxPayload {
-		return errors.New("RSX1 oversized payload")
+		return errors.New("RSX2 oversized payload")
 	}
 	var header [9]byte
 	header[0] = f.kind
@@ -135,18 +137,4 @@ func decodeUDP(b []byte) (string, int, []byte, error) {
 		return "", 0, nil, err
 	}
 	return host, port, b[3+offset:], nil
-}
-
-func encodeUDP(src *net.UDPAddr, body []byte) ([]byte, error) {
-	addr, err := encodeAddress(src.IP, src.Port)
-	if err != nil {
-		return nil, err
-	}
-	if len(body)+3+len(addr) > maxPayload {
-		return nil, errors.New("UDP payload exceeds mux frame limit")
-	}
-	out := make([]byte, 0, 3+len(addr)+len(body))
-	out = append(out, 0, 0, 0)
-	out = append(out, addr...)
-	return append(out, body...), nil
 }

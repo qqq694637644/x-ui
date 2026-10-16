@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+{{template "head" .}}
+<body>
+<a-layout id="app" v-cloak>
+    {{template "commonSider" .}}
+    <a-layout id="content-layout">
+        <a-layout-content style="margin: 24px 16px;">
+            <a-spin :spinning="loading">
+                <a-card title="XTCP 反向 SOCKS5 / WARP 出口" style="margin-bottom: 18px;">
+                    <a-alert type="info" show-icon
+                        message="境外 frpc Visitor 主动连接境内 Proxy"
+                        description="TCP 经 XTCP Stream；UDP 经 XTCP QUIC DATAGRAM。出口所有目标连接必须通过本地 WARP SOCKS5，代理失败时禁止 VPS 直连。服务端 frps 无需修改。"
+                        style="margin-bottom: 20px;"></a-alert>
+                    <a-space>
+                        <a-tag :color="status.state === 'online' ? 'green' : (status.state === 'error' ? 'red' : 'blue')">
+                            状态：[[ stateLabel ]]
+                        </a-tag>
+                        <a-tag :color="form.enabled ? 'green' : 'default'">
+                            [[ form.enabled ? '已启用' : '已停用' ]]
+                        </a-tag>
+                    </a-space>
+                    <a-alert v-if="status.error" type="error" show-icon :message="status.error"
+                        style="margin-top: 15px;"></a-alert>
+                </a-card>
+
+                <a-card title="TCP / UDP 数据通道和 WARP 强制出口">
+                    <a-form layout="vertical">
+                        <a-row :gutter="18">
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="XTCP Visitor TCP 地址（frpc bindAddr:bindPort）">
+                                    <a-input v-model.trim="form.visitorAddr" placeholder="127.0.0.1:6000"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="WARP SOCKS5 地址（必须本机）">
+                                    <a-input v-model.trim="form.warpAddr" placeholder="127.0.0.1:40000"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="Go UDP 本地绑定（visitors.datagram.peerAddr）">
+                                    <a-input v-model.trim="form.udpBindAddr" placeholder="127.0.0.1:6002"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="frpc UDP 本地接收（visitors.datagram.listenAddr）">
+                                    <a-input v-model.trim="form.udpPeerAddr" placeholder="127.0.0.1:6001"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="WARP SOCKS5 用户名（无认证留空）">
+                                    <a-input v-model="form.warpUsername" autocomplete="off"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="WARP SOCKS5 密码">
+                                    <a-input-password v-model="form.warpPassword" autocomplete="new-password"
+                                        :placeholder="hasWarpPassword ? '已配置，留空保持原值' : '无认证留空'"></a-input-password>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="24">
+                                <a-form-item label="RSX2 共享密钥（境内 Python REVERSE_SOCKS_TOKEN）">
+                                    <a-input-password v-model="form.token" autocomplete="new-password"
+                                        :placeholder="hasToken ? '已配置，留空保持原值' : '至少 16 个字符'"></a-input-password>
+                                </a-form-item>
+                            </a-col>
+                        </a-row>
+                        <a-alert type="warning" show-icon
+                            message="不兼容旧 RSX1"
+                            description="保存启用后必须同时部署新版 Python nat_node 和定制的两端 frpc。UDP 数据通过原生 QUIC DATAGRAM，单包上限 1100 字节（含会话 ID），超限丢弃，不通过 TCP 重传。WARP SOCKS5 必须支持 UDP ASSOCIATE。"
+                            style="margin: 8px 0 18px;"></a-alert>
+                        <a-space :size="10">
+                            <a-switch v-model="form.enabled" checked-children="启用" un-checked-children="停用"></a-switch>
+                            <a-button type="primary" @click="save">保存并应用</a-button>
+                            <a-button @click="start">启动当前保存配置</a-button>
+                            <a-button type="danger" @click="stop">停止</a-button>
+                            <a-button @click="refresh">刷新状态</a-button>
+                        </a-space>
+                    </a-form>
+                </a-card>
+            </a-spin>
+        </a-layout-content>
+    </a-layout>
+</a-layout>
+{{template "js" .}}
+<script>
+    const app = new Vue({
+        delimiters: ['[[', ']]'],
+        el: '#app',
+        data: {
+            siderDrawer,
+            loading: false,
+            form: {
+                enabled: false,
+                visitorAddr: '127.0.0.1:6000',
+                udpBindAddr: '127.0.0.1:6002',
+                udpPeerAddr: '127.0.0.1:6001',
+                warpAddr: '',
+                warpUsername: '',
+                warpPassword: '',
+                token: ''
+            },
+            hasWarpPassword: false,
+            hasToken: false,
+            status: {state: 'stopped', error: ''}
+        },
+        computed: {
+            stateLabel() {
+                return ({
+                    online: '已连接',
+                    connecting: '连接中',
+                    error: '连接异常',
+                    stopped: '已停止'
+                })[this.status.state] || this.status.state;
+            }
+        },
+        methods: {
+            applyView(v) {
+                if (!v) return;
+                for (const key of ['enabled', 'visitorAddr', 'udpBindAddr',
+                    'udpPeerAddr', 'warpAddr', 'warpUsername']) {
+                    this.form[key] = v[key];
+                }
+                this.form.warpPassword = '';
+                this.form.token = '';
+                this.hasWarpPassword = !!v.hasWarpPassword;
+                this.hasToken = !!v.hasToken;
+                this.status = v.status || {state: 'stopped', error: ''};
+            },
+            async refresh() {
+                const res = await HttpUtil.post('/xui/reverse-socks/config');
+                if (res.success) this.applyView(res.obj);
+            },
+            async save() {
+                this.loading = true;
+                try {
+                    const res = await HttpUtil.post('/xui/reverse-socks/save', this.form);
+                    if (res.success) this.applyView(res.obj);
+                } finally {
+                    this.loading = false;
+                }
+            },
+            async start() {
+                this.loading = true;
+                try {
+                    const res = await HttpUtil.post('/xui/reverse-socks/start');
+                    if (res.success) this.applyView(res.obj);
+                } finally {
+                    this.loading = false;
+                }
+            },
+            async stop() {
+                this.loading = true;
+                try {
+                    const res = await HttpUtil.post('/xui/reverse-socks/stop');
+                    if (res.success) this.applyView(res.obj);
+                } finally {
+                    this.loading = false;
+                }
+            }
+        },
+        async mounted() {
+            await this.refresh();
+            this.refreshTimer = setInterval(() => {
+                if (this.loading) return;
+                // Refresh only runtime status. Do not overwrite unsaved edits.
+                HttpUtil.post('/xui/reverse-socks/config').then(res => {
+                    if (res.success && res.obj) this.status = res.obj.status || this.status;
+                });
+            }, 4000);
+        },
+        beforeDestroy() {
+            clearInterval(this.refreshTimer);
+        }
+    });
+</script>
+</body>
+</html>

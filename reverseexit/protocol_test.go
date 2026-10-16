@@ -14,7 +14,7 @@ func TestFrameRoundTrip(t *testing.T) {
 	input := []frame{
 		{tcpData, 7, []byte("hello")},
 		{openUDP, 100, nil},
-		{udpData, 300, bytes.Repeat([]byte{0xff}, maxPayload)},
+		{udpResult, 300, bytes.Repeat([]byte{0xff}, maxPayload)},
 	}
 	var buf bytes.Buffer
 	for _, f := range input {
@@ -54,10 +54,7 @@ func TestAddressesAndUDP(t *testing.T) {
 		if err != nil || !net.ParseIP(host).Equal(ip) || port != 5353 || used != len(raw) {
 			t.Fatalf("addr %s: got %s:%d used=%d err=%v", ip, host, port, used, err)
 		}
-		pkt, err := encodeUDP(&net.UDPAddr{IP: ip, Port: 5353}, []byte("dns"))
-		if err != nil {
-			t.Fatal(err)
-		}
+		pkt := append(append([]byte{0, 0, 0}, raw...), []byte("dns")...)
 		decodedHost, decodedPort, body, err := decodeUDP(pkt)
 		if err != nil || decodedHost != host || decodedPort != port || string(body) != "dns" {
 			t.Fatalf("UDP: %s %d %s %v", decodedHost, decodedPort, body, err)
@@ -80,7 +77,7 @@ func TestChallengeAuthentication(t *testing.T) {
 	defer b.Close()
 	outcome := make(chan error, 1)
 	go func() {
-		challenge := append([]byte("RSX1"), bytes.Repeat([]byte{0x42}, 32)...)
+		challenge := append([]byte("RSX2"), bytes.Repeat([]byte{0x42}, 32)...)
 		if _, err := b.Write(challenge); err != nil {
 			outcome <- err
 			return

@@ -244,6 +244,10 @@ func main() {
 
 	reverseCmd := flag.NewFlagSet("reverse-socks-exit", flag.ExitOnError)
 	visitor := reverseCmd.String("visitor", "127.0.0.1:6000", "local frpc XTCP Visitor address")
+	udpBind := reverseCmd.String("udp-bind", "127.0.0.1:6002", "Go UDP socket (frpc datagram.peerAddr)")
+	udpPeer := reverseCmd.String("udp-frpc", "127.0.0.1:6001", "frpc datagram.listenAddr")
+	warpSocks := reverseCmd.String("warp-socks", "", "mandatory loopback WARP SOCKS5 endpoint")
+	warpUser := reverseCmd.String("warp-user", "", "optional WARP SOCKS5 username")
 	retry := reverseCmd.Duration("retry", 2*time.Second, "reconnect interval")
 
 	oldUsage := flag.Usage
@@ -304,7 +308,12 @@ func main() {
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
-		err := reverseexit.Run(ctx, *visitor, os.Getenv("REVERSE_SOCKS_TOKEN"), *retry)
+		err := reverseexit.Run(ctx, reverseexit.Config{
+			VisitorAddr: *visitor, UDPBindAddr: *udpBind, UDPPeerAddr: *udpPeer,
+			WARPAddr: *warpSocks, WARPUsername: *warpUser,
+			WARPPassword: os.Getenv("WARP_SOCKS_PASSWORD"),
+			Token:        os.Getenv("REVERSE_SOCKS_TOKEN"), RetryInterval: *retry,
+		}, nil)
 		if err != nil && err != context.Canceled {
 			log.Fatal(err)
 		}

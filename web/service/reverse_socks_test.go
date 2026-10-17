@@ -48,21 +48,18 @@ func TestReverseSocksWebConfigSecretsAndLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !view.HasToken || !view.HasWARPPassword || !view.HasFRPSToken || !view.HasXTCPSecretKey || view.Enabled {
+	if view.Token != form.Token || view.WARPPassword != form.WARPPassword ||
+		view.FRPSToken != form.FRPSToken || view.XTCPSecretKey != form.XTCPSecretKey || view.Enabled {
 		t.Fatalf("unexpected saved view: %+v", view)
 	}
 	encoded, err := json.Marshal(view)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), form.Token) || strings.Contains(string(encoded), form.WARPPassword) ||
-		strings.Contains(string(encoded), form.FRPSToken) || strings.Contains(string(encoded), form.XTCPSecretKey) {
-		t.Fatal("Web JSON exposed an RSX2/WARP secret")
+	if !strings.Contains(string(encoded), form.Token) || !strings.Contains(string(encoded), form.WARPPassword) ||
+		!strings.Contains(string(encoded), form.FRPSToken) || !strings.Contains(string(encoded), form.XTCPSecretKey) {
+		t.Fatal("single-user Web response did not contain configured secrets")
 	}
-	form.WARPPassword = ""
-	form.Token = ""
-	form.FRPSToken = ""
-	form.XTCPSecretKey = ""
 	form.Enabled = true
 	if _, err := service.Save(form); err != nil {
 		t.Fatal(err)
@@ -74,7 +71,7 @@ func TestReverseSocksWebConfigSecretsAndLifecycle(t *testing.T) {
 	if saved.Token != "super-secret-rsx2-token-123" ||
 		saved.WARPPassword != "super-secret-warp-password" ||
 		saved.FRPSToken != "private-frps-token" || saved.XTCPSecretKey != "private-xtcp-key" || !saved.Enabled {
-		t.Fatal("update cleared stored secrets or did not enable service")
+		t.Fatal("Web editor changed secrets or did not enable service")
 	}
 	view, err = service.SetEnabled(false)
 	if err != nil {
@@ -99,8 +96,21 @@ func TestReverseSocksWebConfigSecretsAndLifecycle(t *testing.T) {
 	}
 	defer other.Stop()
 	view, err = other.Get()
-	if err != nil || view.WARPAddr != "127.0.0.1:40000" || !view.HasToken {
+	if err != nil || view.WARPAddr != "127.0.0.1:40000" || view.Token != form.Token {
 		t.Fatalf("restart did not restore saved config: %+v, err=%v", view, err)
+	}
+	// Unlike the old masked 'leave blank to keep' UI, clearing a field
+	// really clears it when the user explicitly saves a disabled form.
+	form.Enabled = false
+	form.WARPAddr = "127.0.0.1:40000"
+	form.Token, form.WARPPassword, form.FRPSToken, form.XTCPSecretKey = "", "", "", ""
+	if _, err := other.Save(form); err != nil {
+		t.Fatal(err)
+	}
+	view, err = other.Get()
+	if err != nil || view.Token != "" || view.WARPPassword != "" ||
+		view.FRPSToken != "" || view.XTCPSecretKey != "" {
+		t.Fatalf("explicitly cleared credentials were retained: %+v, err=%v", view, err)
 	}
 }
 
@@ -177,9 +187,27 @@ func TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation(t *testing.T) {
 			t.Fatalf("managed frpc config must be 0600, stat=%v err=%v", stat, err)
 		}
 	}
-	if err := s.VerifyFRPC(); err != nil {
-		t.Fatalf("verify saved frpc configuration: %v", err)
+	if err := s.VerifyFRPC(form); err != nil {
+		t.Fatalf("verify current form: %v", err)
 	}
+	// Screenshot regression: the stored STUN is still 1.1.1.1:3478,
+	// while the browser shows an unsaved DNS name or numeric Google IP.
+	// Verify must test the browser form, not the outdated database value.
+	for _, pendingSTUN := range []string{"stun.miwifi.com:3478", "74.125.250.129:19302"} {
+		form.STUNServer = pendingSTUN
+		if err := s.VerifyFRPC(form); err != nil {
+			t.Fatalf("valid current unsaved STUN %q was rejected: %v", pendingSTUN, err)
+		}
+		saved, err := s.load()
+		if err != nil || saved.STUNServer != "1.1.1.1:3478" {
+			t.Fatal("VerifyFRPC persisted unsaved STUN value")
+		}
+	}
+	form.STUNServer = "invalid..host:3478"
+	if err := s.VerifyFRPC(form); err == nil {
+		t.Fatal("VerifyFRPC ignored the currently entered invalid STUN hostname")
+	}
+	form.STUNServer = "1.1.1.1:3478"
 	if view, err = s.Restart(); err != nil || view.FRPC.State != "running" || view.FRPC.PID == firstPID {
 		t.Fatalf("managed frpc did not restart: %+v %v", view.FRPC, err)
 	}
@@ -192,6 +220,7 @@ func TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation(t *testing.T) {
 		FRPCBinaryPath: bin, FRPCConfigPath: configFile,
 		FRPSServerAddr: form.FRPSServerAddr, FRPSServerPort: form.FRPSServerPort,
 		XTCPServerName: form.XTCPServerName, STUNServer: form.STUNServer,
+		FRPSToken: form.FRPSToken, XTCPSecretKey: form.XTCPSecretKey,
 	}); err == nil || !strings.Contains(err.Error(), "unsafe") {
 		t.Fatalf("insecure legacy frpc accepted despite ignoring private XTCP options: %v", err)
 	}

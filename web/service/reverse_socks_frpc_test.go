@@ -71,6 +71,18 @@ func TestManagedFRPCRealForkPrivacyValidation(t *testing.T) {
 		t.Fatalf("real private frpc did not pass positive AND negative config validation: %v", err)
 	}
 	defer os.Remove(temp)
+	for _, stun := range []string{"stun.miwifi.com:3478", "74.125.250.129:19302"} {
+		cfg.STUNServer = stun
+		content, err := renderManagedFRPC(cfg, agent)
+		if err != nil {
+			t.Fatalf("render STUN %q: %v", stun, err)
+		}
+		temp, err := stageFRPCConfig(context.Background(), cfg, content)
+		if err != nil {
+			t.Fatalf("real custom frpc rejected valid STUN %q: %v", stun, err)
+		}
+		_ = os.Remove(temp)
+	}
 }
 
 func TestManagedFRPCWithoutDatabase(t *testing.T) {
@@ -167,9 +179,22 @@ func TestManagedFRPCWithoutDatabase(t *testing.T) {
 		t.Fatal("overwrote an unmanaged frpc.toml")
 	}
 
-	cfg.STUNServer = "stun.example.com:3478"
-	if _, err := renderManagedFRPC(cfg, agent); err == nil {
-		t.Fatal("allowed STUN hostname to bypass DNS privacy policy")
+	for _, stun := range []string{"stun.miwifi.com:3478", "74.125.250.129:19302"} {
+		cfg.STUNServer = stun
+		if rendered, err := renderManagedFRPC(cfg, agent); err != nil ||
+			!strings.Contains(rendered, "natHoleSTUNServer = \""+stun+"\"") {
+			t.Fatalf("valid STUN domain/IP rejected or not rendered: %q %v", stun, err)
+		}
+	}
+	for _, stun := range []string{
+		"", "stun.miwifi.com", "stun.miwifi.com:0", "stun..miwifi.com:3478",
+		"-stun.example.com:3478", "stun.example.com:65536", "74.125.250.999:19302",
+		"[::1]:3478",
+	} {
+		cfg.STUNServer = stun
+		if _, err := renderManagedFRPC(cfg, agent); err == nil {
+			t.Fatalf("invalid STUN server %q accepted", stun)
+		}
 	}
 	agent.WARPAddr = "0.0.0.0:40000"
 	cfg.STUNServer = "1.1.1.1:3478"

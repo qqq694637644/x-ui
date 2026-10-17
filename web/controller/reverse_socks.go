@@ -48,7 +48,12 @@ func (a *ReverseSocksController) stop(c *gin.Context) {
 }
 
 func (a *ReverseSocksController) verifyFRPC(c *gin.Context) {
-	jsonMsg(c, "校验自定义 frpc", a.service.VerifyFRPC())
+	var form service.ReverseSocksForm
+	if err := c.ShouldBind(&form); err != nil {
+		jsonMsg(c, "读取当前 frpc 表单", err)
+		return
+	}
+	jsonMsg(c, "校验自定义 frpc", a.service.VerifyFRPC(form))
 }
 
 func (a *ReverseSocksController) restart(c *gin.Context) {

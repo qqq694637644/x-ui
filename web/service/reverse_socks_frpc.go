@@ -93,15 +93,54 @@ func (c reverseFRPCConfig) validate() error {
 	if c.XTCPServerName == "" || strings.ContainsAny(c.XTCPServerName, " \r\n\t") {
 		return fmt.Errorf("XTCP server name must match the mainland proxy name")
 	}
-	// An IP literal avoids unproxied host DNS lookups during STUN resolution.
-	host, port, err := net.SplitHostPort(c.STUNServer)
-	ip := net.ParseIP(host)
-	if err != nil || ip == nil || ip.To4() == nil {
-		return fmt.Errorf("STUN server must be a numeric IPv4 address:port to avoid DNS leaks")
+	return validateSTUNServer(c.STUNServer)
+}
+
+// STUN accepts an IPv4 literal OR a DNS hostname. This is a syntax check
+// only: validation must never trigger an unexpected host-side DNS request.
+// For a hostname the frpc resolver may later make a normal DNS query,
+// independently from the SOCKS5 UDP relay used for STUN traffic.
+func validateSTUNServer(address string) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || host == "" {
+		return fmt.Errorf("STUN server must be a hostname or IPv4 address with port (e.g. stun.miwifi.com:3478)")
 	}
 	n, err := strconv.Atoi(port)
 	if err != nil || n < 1 || n > 65535 {
-		return fmt.Errorf("STUN server requires a valid UDP port")
+		return fmt.Errorf("STUN server requires a port between 1 and 65535")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.To4() != nil {
+			return nil
+		}
+		return fmt.Errorf("STUN server currently requires an IPv4 address or DNS hostname")
+	}
+	if len(host) > 253 {
+		return fmt.Errorf("STUN hostname is too long")
+	}
+	labels := strings.Split(strings.TrimSuffix(host, "."), ".")
+	if len(labels) == 0 {
+		return fmt.Errorf("invalid STUN hostname")
+	}
+	numericOnly := true
+	for _, label := range labels {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return fmt.Errorf("invalid STUN hostname %q", host)
+		}
+		for _, ch := range label {
+			switch {
+			case ch >= 'a' && ch <= 'z', ch >= 'A' && ch <= 'Z':
+				numericOnly = false
+			case ch >= '0' && ch <= '9':
+			case ch == '-':
+				numericOnly = false
+			default:
+				return fmt.Errorf("invalid STUN hostname %q", host)
+			}
+		}
+	}
+	if numericOnly {
+		return fmt.Errorf("invalid STUN IPv4 address %q", host)
 	}
 	return nil
 }

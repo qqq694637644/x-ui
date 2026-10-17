@@ -19,7 +19,7 @@ type reverseSocksSaved struct {
 }
 
 // ReverseSocksForm is used only inside the authenticated x-ui dashboard.
-// Empty secret fields mean "keep the current value".
+// The single-user editor submits complete values; empty secrets clear them.
 type ReverseSocksForm struct {
 	Enabled        bool   `json:"enabled" form:"enabled"`
 	VisitorAddr    string `json:"visitorAddr" form:"visitorAddr"`
@@ -41,25 +41,25 @@ type ReverseSocksForm struct {
 }
 
 type ReverseSocksView struct {
-	Enabled          bool                      `json:"enabled"`
-	VisitorAddr      string                    `json:"visitorAddr"`
-	UDPBindAddr      string                    `json:"udpBindAddr"`
-	UDPPeerAddr      string                    `json:"udpPeerAddr"`
-	WARPAddr         string                    `json:"warpAddr"`
-	WARPProbe        string                    `json:"warpProbe"`
-	WARPUsername     string                    `json:"warpUsername"`
-	HasWARPPassword  bool                      `json:"hasWarpPassword"`
-	HasToken         bool                      `json:"hasToken"`
-	FRPCBinaryPath   string                    `json:"frpcBinaryPath"`
-	FRPCConfigPath   string                    `json:"frpcConfigPath"`
-	FRPSServerAddr   string                    `json:"frpsServerAddr"`
-	FRPSServerPort   int                       `json:"frpsServerPort"`
-	XTCPServerName   string                    `json:"xtcpServerName"`
-	STUNServer       string                    `json:"stunServer"`
-	HasFRPSToken     bool                      `json:"hasFrpsToken"`
-	HasXTCPSecretKey bool                      `json:"hasXtcpSecretKey"`
-	FRPC             frpcRuntime               `json:"frpc"`
-	Status           reverseexit.RuntimeStatus `json:"status"`
+	Enabled        bool                      `json:"enabled"`
+	VisitorAddr    string                    `json:"visitorAddr"`
+	UDPBindAddr    string                    `json:"udpBindAddr"`
+	UDPPeerAddr    string                    `json:"udpPeerAddr"`
+	WARPAddr       string                    `json:"warpAddr"`
+	WARPProbe      string                    `json:"warpProbe"`
+	WARPUsername   string                    `json:"warpUsername"`
+	WARPPassword   string                    `json:"warpPassword"`
+	Token          string                    `json:"token"`
+	FRPCBinaryPath string                    `json:"frpcBinaryPath"`
+	FRPCConfigPath string                    `json:"frpcConfigPath"`
+	FRPSServerAddr string                    `json:"frpsServerAddr"`
+	FRPSServerPort int                       `json:"frpsServerPort"`
+	FRPSToken      string                    `json:"frpsToken"`
+	XTCPServerName string                    `json:"xtcpServerName"`
+	XTCPSecretKey  string                    `json:"xtcpSecretKey"`
+	STUNServer     string                    `json:"stunServer"`
+	FRPC           frpcRuntime               `json:"frpc"`
+	Status         reverseexit.RuntimeStatus `json:"status"`
 }
 
 type ReverseSocksService struct {
@@ -132,25 +132,25 @@ func (s *ReverseSocksService) view(config reverseSocksSaved) ReverseSocksView {
 		status = reverseexit.RuntimeStatus{Enabled: config.Enabled, State: "error", Error: s.startupError}
 	}
 	return ReverseSocksView{
-		Enabled:          config.Enabled,
-		VisitorAddr:      config.VisitorAddr,
-		UDPBindAddr:      config.UDPBindAddr,
-		UDPPeerAddr:      config.UDPPeerAddr,
-		WARPAddr:         config.WARPAddr,
-		WARPProbe:        config.WARPProbe,
-		WARPUsername:     config.WARPUsername,
-		HasWARPPassword:  config.WARPPassword != "",
-		HasToken:         config.Token != "",
-		FRPCBinaryPath:   config.FRPCBinaryPath,
-		FRPCConfigPath:   config.FRPCConfigPath,
-		FRPSServerAddr:   config.FRPSServerAddr,
-		FRPSServerPort:   config.FRPSServerPort,
-		XTCPServerName:   config.XTCPServerName,
-		STUNServer:       config.STUNServer,
-		HasFRPSToken:     config.FRPSToken != "",
-		HasXTCPSecretKey: config.XTCPSecretKey != "",
-		FRPC:             s.frpc.Status(),
-		Status:           status,
+		Enabled:        config.Enabled,
+		VisitorAddr:    config.VisitorAddr,
+		UDPBindAddr:    config.UDPBindAddr,
+		UDPPeerAddr:    config.UDPPeerAddr,
+		WARPAddr:       config.WARPAddr,
+		WARPProbe:      config.WARPProbe,
+		WARPUsername:   config.WARPUsername,
+		WARPPassword:   config.WARPPassword,
+		Token:          config.Token,
+		FRPCBinaryPath: config.FRPCBinaryPath,
+		FRPCConfigPath: config.FRPCConfigPath,
+		FRPSServerAddr: config.FRPSServerAddr,
+		FRPSServerPort: config.FRPSServerPort,
+		FRPSToken:      config.FRPSToken,
+		XTCPServerName: config.XTCPServerName,
+		XTCPSecretKey:  config.XTCPSecretKey,
+		STUNServer:     config.STUNServer,
+		FRPC:           s.frpc.Status(),
+		Status:         status,
 	}
 }
 
@@ -228,36 +228,30 @@ func (s *ReverseSocksService) Save(form ReverseSocksForm) (ReverseSocksView, err
 	if err != nil {
 		return ReverseSocksView{}, err
 	}
+	return s.persistAndApply(configFromReverseSocksForm(config, form))
+}
+
+// Save and Verify must read the same browser values. Previously, Verify
+// ignored the current STUN field and checked an outdated SQLite value.
+func configFromReverseSocksForm(config reverseSocksSaved, form ReverseSocksForm) reverseSocksSaved {
 	config.Enabled = form.Enabled
 	config.VisitorAddr = form.VisitorAddr
 	config.UDPBindAddr = form.UDPBindAddr
 	config.UDPPeerAddr = form.UDPPeerAddr
 	config.WARPAddr = form.WARPAddr
-	if form.WARPProbe != "" {
-		config.WARPProbe = form.WARPProbe
-	}
+	config.WARPProbe = form.WARPProbe
 	config.WARPUsername = form.WARPUsername
+	config.WARPPassword = form.WARPPassword
+	config.Token = form.Token
 	config.FRPCBinaryPath = form.FRPCBinaryPath
 	config.FRPCConfigPath = form.FRPCConfigPath
 	config.FRPSServerAddr = form.FRPSServerAddr
 	config.FRPSServerPort = form.FRPSServerPort
+	config.FRPSToken = form.FRPSToken
 	config.XTCPServerName = form.XTCPServerName
+	config.XTCPSecretKey = form.XTCPSecretKey
 	config.STUNServer = form.STUNServer
-	if form.WARPUsername == "" {
-		config.WARPPassword = ""
-	} else if form.WARPPassword != "" {
-		config.WARPPassword = form.WARPPassword
-	}
-	if form.Token != "" {
-		config.Token = form.Token
-	}
-	if form.FRPSToken != "" {
-		config.FRPSToken = form.FRPSToken
-	}
-	if form.XTCPSecretKey != "" {
-		config.XTCPSecretKey = form.XTCPSecretKey
-	}
-	return s.persistAndApply(config)
+	return config
 }
 
 func (s *ReverseSocksService) SetEnabled(enabled bool) (ReverseSocksView, error) {
@@ -271,15 +265,16 @@ func (s *ReverseSocksService) SetEnabled(enabled bool) (ReverseSocksView, error)
 	return s.persistAndApply(config)
 }
 
-// VerifyFRPC verifies the currently stored settings without modifying the
-// configuration file or touching the live frpc process.
-func (s *ReverseSocksService) VerifyFRPC() error {
+// VerifyFRPC checks the current form without saving it, touching the active
+// config file, or restarting any process.
+func (s *ReverseSocksService) VerifyFRPC(form ReverseSocksForm) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	config, err := s.load()
 	if err != nil {
 		return err
 	}
+	config = configFromReverseSocksForm(config, form)
 	content, err := renderManagedFRPC(config.reverseFRPCConfig, config.Config)
 	if err != nil {
 		return err

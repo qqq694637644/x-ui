@@ -20,6 +20,7 @@ const (
 	tcpData   byte = 3
 	tcpFIN    byte = 4
 	tcpRST    byte = 5
+	tcpWindow byte = 11
 	openUDP   byte = 6
 	udpResult byte = 7
 	udpClose  byte = 8

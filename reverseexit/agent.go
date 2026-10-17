@@ -17,6 +17,7 @@ import (
 )
 
 const maxSessions = 1024
+const tcpWindowFrames = 32
 
 type stream interface {
 	deliver(frame)
@@ -81,6 +82,31 @@ func serve(ctx context.Context, c net.Conn, cfg Config, status func(string, stri
 		streams: make(map[uint32]stream)}
 	go a.datagramLoop()
 	status("online", "")
+	probeCtx, cancelProbe := context.WithCancel(ctx)
+	defer cancelProbe()
+	go func() {
+		for {
+			status("warp-checking", "")
+			err := probeWARP(probeCtx, cfg)
+			if probeCtx.Err() != nil {
+				return
+			}
+			if err != nil {
+				status("warp-error", err.Error())
+			} else {
+				status("warp-ready", "")
+			}
+			timer := time.NewTimer(30 * time.Second)
+			select {
+			case <-timer.C:
+			case <-probeCtx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return
+			}
+		}
+	}()
 	done := make(chan struct{})
 	go func() {
 		select {
@@ -103,8 +129,11 @@ func serve(ctx context.Context, c net.Conn, cfg Config, status func(string, stri
 				_ = a.send(frame{tcpResult, f.id, []byte{5}})
 				continue
 			}
-			s := &tcpStream{agent: a, id: f.id, in: make(chan frame, 32),
-				done: make(chan struct{})}
+			s := &tcpStream{agent: a, id: f.id, in: make(chan frame, tcpWindowFrames+2),
+				credits: make(chan struct{}, tcpWindowFrames), done: make(chan struct{})}
+			for i := 0; i < tcpWindowFrames; i++ {
+				s.credits <- struct{}{}
+			}
 			if !a.register(f.id, s) {
 				_ = a.send(frame{tcpResult, f.id, []byte{5}})
 				continue
@@ -119,7 +148,7 @@ func serve(ctx context.Context, c net.Conn, cfg Config, status func(string, stri
 			if a.register(f.id, s) {
 				go s.run()
 			}
-		case tcpData, tcpFIN, tcpRST, udpClose:
+		case tcpData, tcpFIN, tcpRST, tcpWindow, udpClose:
 			a.mu.Lock()
 			s := a.streams[f.id]
 			a.mu.Unlock()
@@ -231,13 +260,14 @@ func (a *agent) stopAll() {
 }
 
 type tcpStream struct {
-	agent *agent
-	id    uint32
-	in    chan frame
-	done  chan struct{}
-	once  sync.Once
-	mu    sync.Mutex
-	conn  *net.TCPConn
+	agent   *agent
+	id      uint32
+	in      chan frame
+	credits chan struct{}
+	done    chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	conn    *net.TCPConn
 }
 
 func (s *tcpStream) stop() {
@@ -253,6 +283,28 @@ func (s *tcpStream) stop() {
 }
 
 func (s *tcpStream) deliver(f frame) {
+	if f.kind == tcpWindow {
+		if len(f.data) != 2 {
+			s.stop()
+			return
+		}
+		grant := int(binary.BigEndian.Uint16(f.data))
+		if grant < 1 || grant > tcpWindowFrames {
+			s.stop()
+			return
+		}
+		for i := 0; i < grant; i++ {
+			select {
+			case s.credits <- struct{}{}:
+			case <-s.done:
+				return
+			default:
+				s.stop() // unexpected extra credit from peer
+				return
+			}
+		}
+		return
+	}
 	select {
 	case <-s.done:
 		return
@@ -262,7 +314,7 @@ func (s *tcpStream) deliver(f frame) {
 	case s.in <- f:
 	case <-s.done:
 	default:
-		s.stop() // A slow destination must not stall all mux sessions.
+		s.stop() // peer exceeded its negotiated receive window
 		go s.agent.send(frame{tcpRST, s.id, nil})
 	}
 }
@@ -294,6 +346,11 @@ func (s *tcpStream) run(host string, port int) {
 		defer close(readDone)
 		buf := make([]byte, tcpChunk)
 		for {
+			select {
+			case <-s.done:
+				return
+			case <-s.credits:
+			}
 			n, err := c.Read(buf)
 			if n > 0 {
 				if s.agent.send(frame{tcpData, s.id, append([]byte(nil), buf[:n]...)}) != nil {
@@ -311,6 +368,7 @@ func (s *tcpStream) run(host string, port int) {
 		}
 	}()
 	inboundFIN := false
+	creditsReady := 0
 	for {
 		if inboundFIN && readDone == nil {
 			return
@@ -330,7 +388,22 @@ func (s *tcpStream) run(host string, port int) {
 					_ = s.agent.send(frame{tcpRST, s.id, nil})
 					return
 				}
+				creditsReady++
+				if creditsReady >= 8 {
+					var grant [2]byte
+					binary.BigEndian.PutUint16(grant[:], uint16(creditsReady))
+					if err := s.agent.send(frame{tcpWindow, s.id, grant[:]}); err != nil {
+						return
+					}
+					creditsReady = 0
+				}
 			case tcpFIN:
+				if creditsReady > 0 {
+					var grant [2]byte
+					binary.BigEndian.PutUint16(grant[:], uint16(creditsReady))
+					_ = s.agent.send(frame{tcpWindow, s.id, grant[:]})
+					creditsReady = 0
+				}
 				inboundFIN = true
 				_ = c.CloseWrite()
 			case tcpRST:

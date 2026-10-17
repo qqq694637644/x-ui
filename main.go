@@ -247,6 +247,7 @@ func main() {
 	udpBind := reverseCmd.String("udp-bind", "127.0.0.1:6002", "Go UDP socket (frpc datagram.peerAddr)")
 	udpPeer := reverseCmd.String("udp-frpc", "127.0.0.1:6001", "frpc datagram.listenAddr")
 	warpSocks := reverseCmd.String("warp-socks", "", "mandatory loopback WARP SOCKS5 endpoint")
+	warpProbe := reverseCmd.String("warp-probe", "1.1.1.1:443", "WARP TCP CONNECT healthcheck destination")
 	warpUser := reverseCmd.String("warp-user", "", "optional WARP SOCKS5 username")
 	retry := reverseCmd.Duration("retry", 2*time.Second, "reconnect interval")
 
@@ -311,6 +312,7 @@ func main() {
 		err := reverseexit.Run(ctx, reverseexit.Config{
 			VisitorAddr: *visitor, UDPBindAddr: *udpBind, UDPPeerAddr: *udpPeer,
 			WARPAddr: *warpSocks, WARPUsername: *warpUser,
+			WARPProbe:    *warpProbe,
 			WARPPassword: os.Getenv("WARP_SOCKS_PASSWORD"),
 			Token:        os.Getenv("REVERSE_SOCKS_TOKEN"), RetryInterval: *retry,
 		}, nil)

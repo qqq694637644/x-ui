@@ -104,6 +104,27 @@ func warpTCP(ctx context.Context, cfg Config, host string, port int) (*net.TCPCo
 	return c, err
 }
 
+// probeWARP validates that a real outbound TCP CONNECT can be established
+// through WARP, and that an independent UDP ASSOCIATE is accepted. This is
+// stronger than testing whether the local SOCKS5 TCP port merely listens,
+// but it does not certify a particular remote public egress IP.
+func probeWARP(ctx context.Context, cfg Config) error {
+	host, portRaw, _ := net.SplitHostPort(cfg.WARPProbe) // cfg.Validate
+	port, _ := strconv.Atoi(portRaw)
+	c, err := warpTCP(ctx, cfg, host, port)
+	if err != nil {
+		return fmt.Errorf("WARP TCP CONNECT probe: %w", err)
+	}
+	_ = c.Close()
+	control, udp, _, err := warpUDP(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("WARP UDP ASSOCIATE probe: %w", err)
+	}
+	_ = control.Close()
+	_ = udp.Close()
+	return nil
+}
+
 // warpUDP holds its SOCKS5 TCP control connection open. The only UDP socket it
 // creates is bound to loopback and sends exclusively to WARP's loopback relay.
 func warpUDP(ctx context.Context, cfg Config) (*net.TCPConn, *net.UDPConn, *net.UDPAddr, error) {

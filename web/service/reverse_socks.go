@@ -24,6 +24,7 @@ type ReverseSocksForm struct {
 	UDPBindAddr  string `json:"udpBindAddr" form:"udpBindAddr"`
 	UDPPeerAddr  string `json:"udpPeerAddr" form:"udpPeerAddr"`
 	WARPAddr     string `json:"warpAddr" form:"warpAddr"`
+	WARPProbe    string `json:"warpProbe" form:"warpProbe"`
 	WARPUsername string `json:"warpUsername" form:"warpUsername"`
 	WARPPassword string `json:"warpPassword" form:"warpPassword"`
 	Token        string `json:"token" form:"token"`
@@ -35,6 +36,7 @@ type ReverseSocksView struct {
 	UDPBindAddr     string                    `json:"udpBindAddr"`
 	UDPPeerAddr     string                    `json:"udpPeerAddr"`
 	WARPAddr        string                    `json:"warpAddr"`
+	WARPProbe       string                    `json:"warpProbe"`
 	WARPUsername    string                    `json:"warpUsername"`
 	HasWARPPassword bool                      `json:"hasWarpPassword"`
 	HasToken        bool                      `json:"hasToken"`
@@ -99,6 +101,7 @@ func (s *ReverseSocksService) view(config reverseSocksSaved) ReverseSocksView {
 		UDPBindAddr:     config.UDPBindAddr,
 		UDPPeerAddr:     config.UDPPeerAddr,
 		WARPAddr:        config.WARPAddr,
+		WARPProbe:       config.WARPProbe,
 		WARPUsername:    config.WARPUsername,
 		HasWARPPassword: config.WARPPassword != "",
 		HasToken:        config.Token != "",
@@ -149,6 +152,9 @@ func (s *ReverseSocksService) Save(form ReverseSocksForm) (ReverseSocksView, err
 	config.UDPBindAddr = form.UDPBindAddr
 	config.UDPPeerAddr = form.UDPPeerAddr
 	config.WARPAddr = form.WARPAddr
+	if form.WARPProbe != "" {
+		config.WARPProbe = form.WARPProbe
+	}
 	config.WARPUsername = form.WARPUsername
 	if form.WARPUsername == "" {
 		config.WARPPassword = ""

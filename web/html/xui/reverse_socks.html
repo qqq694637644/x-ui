@@ -14,13 +14,21 @@
                         style="margin-bottom: 20px;"></a-alert>
                     <a-space>
                         <a-tag :color="status.state === 'online' ? 'green' : (status.state === 'error' ? 'red' : 'blue')">
-                            状态：[[ stateLabel ]]
+                            XTCP/RSX2：[[ stateLabel ]]
+                        </a-tag>
+                        <a-tag :color="status.warpState === 'ready' ? 'green' : (status.warpState === 'unavailable' ? 'red' : 'default')">
+                            WARP TCP/UDP：[[ warpLabel ]]
                         </a-tag>
                         <a-tag :color="form.enabled ? 'green' : 'default'">
                             [[ form.enabled ? '已启用' : '已停用' ]]
                         </a-tag>
                     </a-space>
                     <a-alert v-if="status.error" type="error" show-icon :message="status.error"
+                        style="margin-top: 15px;"></a-alert>
+                    <a-alert v-if="status.warpError" type="error" show-icon :message="status.warpError"
+                        style="margin-top: 15px;"></a-alert>
+                    <a-alert type="warning" show-icon message="健康探测只验证 WARP SOCKS5 的 CONNECT / UDP ASSOCIATE 成功"
+                        description="它不能证明最终公网 IP 或 XTCP STUN 打洞候选地址已被隐藏，需要另行抓包验收。"
                         style="margin-top: 15px;"></a-alert>
                 </a-card>
 
@@ -35,6 +43,11 @@
                             <a-col :xs="24" :md="12">
                                 <a-form-item label="WARP SOCKS5 地址（必须本机）">
                                     <a-input v-model.trim="form.warpAddr" placeholder="127.0.0.1:40000"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="WARP TCP CONNECT 健康检查目标">
+                                    <a-input v-model.trim="form.warpProbe" placeholder="1.1.1.1:443"></a-input>
                                 </a-form-item>
                             </a-col>
                             <a-col :xs="24" :md="12">
@@ -78,6 +91,50 @@
                         </a-space>
                     </a-form>
                 </a-card>
+                <a-card title="境外 frpc 默认配置（隐藏原始 IP 模式）" style="margin-top: 18px;">
+                    <a-alert type="warning" show-icon
+                        message="必须使用本项目定制的 frpc；SOCKS5 控制连接与 UDP 打洞都走 WARP"
+                        description="transport.proxyURL 只代理 TCP 控制连接；额外的 natTraversal.udpProxyURL 才会强制 STUN、打洞和 QUIC 通过 SOCKS5 UDP ASSOCIATE。任何一条通道失败均不得回退直连。真实 WARP P2P 入站能力需上线验证。"
+                        style="margin-bottom: 16px;"></a-alert>
+                    <a-row :gutter="16">
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="frps 地址（服务商提供）">
+                                <a-input v-model.trim="tpl.frpsAddr" placeholder="REPLACE_WITH_FRPS_IP"></a-input>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="frps 端口">
+                                <a-input-number v-model="tpl.frpsPort" :min="1" :max="65535" style="width: 100%;"></a-input-number>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="frps Token（只用于生成模板，不保存）">
+                                <a-input-password v-model="tpl.frpsToken" autocomplete="off"></a-input-password>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="XTCP secretKey（只用于生成模板，不保存）">
+                                <a-input-password v-model="tpl.xtcpSecret" autocomplete="off"></a-input-password>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="XTCP Proxy 名称（与境内一致）">
+                                <a-input v-model.trim="tpl.proxyName"></a-input>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="STUN 服务器（推荐使用验证过的 IP:端口）">
+                                <a-input v-model.trim="tpl.stunServer"></a-input>
+                            </a-form-item>
+                        </a-col>
+                    </a-row>
+                    <a-alert type="info" show-icon style="margin-bottom: 12px;"
+                        message="复制的是完整境外 frpc.toml 示例"
+                        description="默认使用 frps 0.69 已验证的 wireProtocol=v1；重连间隔 10 秒、每小时最多 120 次；关闭辅助候选地址；禁止 XTCP fallbackTo。若 STUN 使用域名，本机 DNS 查询仍可能产生额外网络流量。"></a-alert>
+                    <a-textarea ref="frpcTextarea" :value="frpcTemplate" :rows="25" readonly
+                        style="font-family: monospace; font-size: 12px;"></a-textarea>
+                    <a-button style="margin-top: 12px;" @click="copyFrpc"><a-icon type="copy"></a-icon>复制 frpc.toml</a-button>
+                </a-card>
             </a-spin>
         </a-layout-content>
     </a-layout>
@@ -96,13 +153,22 @@
                 udpBindAddr: '127.0.0.1:6002',
                 udpPeerAddr: '127.0.0.1:6001',
                 warpAddr: '',
+                warpProbe: '1.1.1.1:443',
                 warpUsername: '',
                 warpPassword: '',
                 token: ''
             },
             hasWarpPassword: false,
             hasToken: false,
-            status: {state: 'stopped', error: ''}
+            status: {state: 'stopped', error: '', warpState: 'unknown'},
+            tpl: {
+                frpsAddr: 'REPLACE_WITH_FRPS_IP',
+                frpsPort: 7000,
+                frpsToken: 'REPLACE_WITH_FRPS_TOKEN',
+                xtcpSecret: 'REPLACE_WITH_XTCP_SECRET',
+                proxyName: 'rsx2_node',
+                stunServer: 'REPLACE_WITH_VERIFIED_STUN_IP:3478'
+            }
         },
         computed: {
             stateLabel() {
@@ -112,13 +178,81 @@
                     error: '连接异常',
                     stopped: '已停止'
                 })[this.status.state] || this.status.state;
+            },
+            warpLabel() {
+                return ({
+                    ready: '握手成功',
+                    checking: '检查中',
+                    unavailable: '连接失败',
+                    unknown: '尚未检测'
+                })[this.status.warpState] || '尚未检测';
+            },
+            frpcTemplate() {
+                const port = (this.form.visitorAddr || '127.0.0.1:6000').split(':').pop();
+                const peer = this.form.udpBindAddr || '127.0.0.1:6002';
+                const udpPort = this.form.udpPeerAddr || '127.0.0.1:6001';
+                const proxy = this.form.warpAddr || '127.0.0.1:REPLACE_WARP_SOCKS_PORT';
+                const credentials = this.form.warpUsername
+                    ? encodeURIComponent(this.form.warpUsername) + ':REPLACE_WITH_WARP_PASSWORD@'
+                    : '';
+                const socks = 'socks5://' + credentials + proxy;
+                const quoted = (v) => JSON.stringify(String(v));
+                return [
+                    '# 境外 Visitor，配合定制 frpc (只接第三方 frps 0.69)',
+                    '# 不会自动启动 frpc；手动保存为 frpc.toml',
+                    'serverAddr = ' + quoted(this.tpl.frpsAddr),
+                    'serverPort = ' + Number(this.tpl.frpsPort || 7000),
+                    'auth.method = "token"',
+                    'auth.token = ' + quoted(this.tpl.frpsToken),
+                    'transport.protocol = "tcp"',
+                    'transport.wireProtocol = "v1"',
+                    'transport.proxyURL = ' + quoted(socks),
+                    'natHoleSTUNServer = ' + quoted(this.tpl.stunServer),
+                    '',
+                    '[[visitors]]',
+                    'name = "rsx2_outside"',
+                    'type = "xtcp"',
+                    'serverName = ' + quoted(this.tpl.proxyName),
+                    'secretKey = ' + quoted(this.tpl.xtcpSecret),
+                    'protocol = "quic"',
+                    'keepTunnelOpen = true',
+                    'minRetryInterval = 10',
+                    'maxRetriesAnHour = 120',
+                    'bindAddr = "127.0.0.1"',
+                    'bindPort = ' + Number(port),
+                    '',
+                    '[visitors.datagram]',
+                    'listenAddr = ' + quoted(udpPort),
+                    'peerAddr = ' + quoted(peer),
+                    '',
+                    '[visitors.natTraversal]',
+                    'disableAssistedAddrs = true',
+                    'udpProxyURL = ' + quoted(socks),
+                    '',
+                    '# frps TCP / STUN UDP / XTCP P2P UDP 必须经过上述同一个 WARP SOCKS5',
+                    '# 若 WARP SOCKS5 不支持 P2P 入站，此配置会失败；不会直连回退'
+                ].join('\n');
             }
         },
         methods: {
+            async copyFrpc() {
+                try {
+                    if (navigator.clipboard && window.isSecureContext) {
+                        await navigator.clipboard.writeText(this.frpcTemplate);
+                    } else {
+                        const element = this.$refs.frpcTextarea.$el.querySelector('textarea');
+                        element.select();
+                        if (!document.execCommand('copy')) throw new Error('clipboard unavailable');
+                    }
+                    this.$message.success('frpc.toml 已复制');
+                } catch (_) {
+                    this.$message.warning('自动复制失败，请选中配置文本手动复制');
+                }
+            },
             applyView(v) {
                 if (!v) return;
                 for (const key of ['enabled', 'visitorAddr', 'udpBindAddr',
-                    'udpPeerAddr', 'warpAddr', 'warpUsername']) {
+                    'udpPeerAddr', 'warpAddr', 'warpProbe', 'warpUsername']) {
                     this.form[key] = v[key];
                 }
                 this.form.warpPassword = '';

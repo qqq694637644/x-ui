@@ -13,6 +13,7 @@ type Config struct {
 	UDPBindAddr   string        `json:"udpBindAddr"`
 	UDPPeerAddr   string        `json:"udpPeerAddr"`
 	WARPAddr      string        `json:"warpAddr"`
+	WARPProbe     string        `json:"warpProbe"`
 	WARPUsername  string        `json:"warpUsername"`
 	WARPPassword  string        `json:"warpPassword"`
 	Token         string        `json:"token"`
@@ -24,6 +25,7 @@ func DefaultConfig() Config {
 		VisitorAddr:   "127.0.0.1:6000",
 		UDPBindAddr:   "127.0.0.1:6002",
 		UDPPeerAddr:   "127.0.0.1:6001",
+		WARPProbe:     "1.1.1.1:443",
 		RetryInterval: 2 * time.Second,
 	}
 }
@@ -50,6 +52,14 @@ func (c Config) Validate() error {
 	}
 	if c.UDPBindAddr == c.UDPPeerAddr {
 		return errors.New("UDP bind and frpc peer ports must differ")
+	}
+	probeHost, probePort, err := net.SplitHostPort(c.WARPProbe)
+	if err != nil || probeHost == "" {
+		return errors.New("WARP TCP probe must be host:port")
+	}
+	probePortNum, err := strconv.Atoi(probePort)
+	if err != nil || probePortNum < 1 || probePortNum > 65535 {
+		return errors.New("WARP TCP probe requires valid port")
 	}
 	if len(c.Token) < 16 {
 		return errors.New("RSX2 token must contain at least 16 characters")

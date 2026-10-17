@@ -8,9 +8,11 @@ import (
 
 // RuntimeStatus does not expose authentication material.
 type RuntimeStatus struct {
-	Enabled bool   `json:"enabled"`
-	State   string `json:"state"`
-	Error   string `json:"error"`
+	Enabled   bool   `json:"enabled"`
+	State     string `json:"state"`
+	Error     string `json:"error"`
+	WARPState string `json:"warpState"`
+	WARPError string `json:"warpError"`
 }
 
 // Manager owns precisely one in-process exit Agent. Save/Start/Stop are
@@ -24,7 +26,7 @@ type Manager struct {
 }
 
 func NewManager() *Manager {
-	return &Manager{status: RuntimeStatus{State: "stopped"}}
+	return &Manager{status: RuntimeStatus{State: "stopped", WARPState: "unknown"}}
 }
 
 func (m *Manager) Status() RuntimeStatus {
@@ -35,8 +37,25 @@ func (m *Manager) Status() RuntimeStatus {
 
 func (m *Manager) setStatus(state, message string) {
 	m.mu.Lock()
+	if state == "warp-ready" || state == "warp-error" || state == "warp-checking" {
+		switch state {
+		case "warp-ready":
+			m.status.WARPState = "ready"
+		case "warp-error":
+			m.status.WARPState = "unavailable"
+		default:
+			m.status.WARPState = "checking"
+		}
+		m.status.WARPError = message
+		m.mu.Unlock()
+		return
+	}
 	m.status.State = state
 	m.status.Error = message
+	if state != "online" {
+		m.status.WARPState = "unknown"
+		m.status.WARPError = ""
+	}
 	m.mu.Unlock()
 }
 
@@ -58,7 +77,7 @@ func (m *Manager) Apply(parent context.Context, config Config, enabled bool) err
 	m.mu.Lock()
 	m.cancel = nil
 	m.done = nil
-	m.status = RuntimeStatus{Enabled: enabled, State: "stopped"}
+	m.status = RuntimeStatus{Enabled: enabled, State: "stopped", WARPState: "unknown"}
 	if !enabled {
 		m.mu.Unlock()
 		return nil

@@ -24,7 +24,8 @@ jobs:
         run: go test -count=1 ./reverseexit ./web/service -run 'TestExitRequiresWARPAndLoopbackOnly|TestWARPHealthProbeChecksTCPAndUDPSeparately|TestManagerTracksXTCPAndWARPIndependently|TestReverseSocksWebConfigSecretsAndLifecycle|TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation|TestManagedFRPCWithoutDatabase|TestManagedFRPCRealForkPrivacyValidation|TestReverseSocksSavedSettingsPreserveManagedFRPCFields'
       - name: Build private frpc fork and verify its fail-closed XTCP capabilities
         run: |
-          git clone --depth 1 --branch gpt/xtcp-quic-datagram \
+          # The custom frp PR is merged into dev; the feature branch was removed.
+          git clone --depth 1 --branch dev \
             https://github.com/qqq694637644/frp.git "$RUNNER_TEMP/frp"
           cd "$RUNNER_TEMP/frp"
           CGO_ENABLED=0 go build -tags 'frpc,noweb' -o "$RUNNER_TEMP/frpc-private" ./cmd/frpc

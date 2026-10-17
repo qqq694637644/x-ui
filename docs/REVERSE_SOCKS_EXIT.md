@@ -2,7 +2,7 @@
 
 本仓库 x-ui 负责 **境外 VPS**。境外 Go Agent 通过本地 frpc XTCP Visitor TCP 端口 **主动连接境内** Python 3.13 SOCKS5 服务；境内 frpc 仍为 XTCP Proxy。第三方 frps 不需任何改动。
 
-要求两端使用 [定制 frpc QUIC DATAGRAM](https://github.com/qqq694637644/frp/pull/1)。Go Agent 与 [nat_node](https://github.com/qqq694637644/nat_node/pull/1) 使用 **RSX2**，故意不兼容旧 RSX1，无 UDP-over-TCP 兜底。
+要求两端使用 [已经合并到 frp/dev 的定制 frpc QUIC DATAGRAM](https://github.com/qqq694637644/frp/pull/1)。Go Agent 与 [nat_node](https://github.com/qqq694637644/nat_node/pull/1) 使用 **RSX2**，故意不兼容旧 RSX1，无 UDP-over-TCP 兜底。
 
 ## TCP / UDP
 

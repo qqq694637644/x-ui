@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 	"x-ui/reverseexit"
@@ -13,50 +14,82 @@ const reverseSocksSettingKey = "reverseSocksConfig"
 
 type reverseSocksSaved struct {
 	reverseexit.Config
+	reverseFRPCConfig
 	Enabled bool `json:"enabled"`
 }
 
 // ReverseSocksForm is used only inside the authenticated x-ui dashboard.
 // Empty secret fields mean "keep the current value".
 type ReverseSocksForm struct {
-	Enabled      bool   `json:"enabled" form:"enabled"`
-	VisitorAddr  string `json:"visitorAddr" form:"visitorAddr"`
-	UDPBindAddr  string `json:"udpBindAddr" form:"udpBindAddr"`
-	UDPPeerAddr  string `json:"udpPeerAddr" form:"udpPeerAddr"`
-	WARPAddr     string `json:"warpAddr" form:"warpAddr"`
-	WARPProbe    string `json:"warpProbe" form:"warpProbe"`
-	WARPUsername string `json:"warpUsername" form:"warpUsername"`
-	WARPPassword string `json:"warpPassword" form:"warpPassword"`
-	Token        string `json:"token" form:"token"`
+	Enabled        bool   `json:"enabled" form:"enabled"`
+	VisitorAddr    string `json:"visitorAddr" form:"visitorAddr"`
+	UDPBindAddr    string `json:"udpBindAddr" form:"udpBindAddr"`
+	UDPPeerAddr    string `json:"udpPeerAddr" form:"udpPeerAddr"`
+	WARPAddr       string `json:"warpAddr" form:"warpAddr"`
+	WARPProbe      string `json:"warpProbe" form:"warpProbe"`
+	WARPUsername   string `json:"warpUsername" form:"warpUsername"`
+	WARPPassword   string `json:"warpPassword" form:"warpPassword"`
+	Token          string `json:"token" form:"token"`
+	FRPCBinaryPath string `json:"frpcBinaryPath" form:"frpcBinaryPath"`
+	FRPCConfigPath string `json:"frpcConfigPath" form:"frpcConfigPath"`
+	FRPSServerAddr string `json:"frpsServerAddr" form:"frpsServerAddr"`
+	FRPSServerPort int    `json:"frpsServerPort" form:"frpsServerPort"`
+	FRPSToken      string `json:"frpsToken" form:"frpsToken"`
+	XTCPServerName string `json:"xtcpServerName" form:"xtcpServerName"`
+	XTCPSecretKey  string `json:"xtcpSecretKey" form:"xtcpSecretKey"`
+	STUNServer     string `json:"stunServer" form:"stunServer"`
 }
 
 type ReverseSocksView struct {
-	Enabled         bool                      `json:"enabled"`
-	VisitorAddr     string                    `json:"visitorAddr"`
-	UDPBindAddr     string                    `json:"udpBindAddr"`
-	UDPPeerAddr     string                    `json:"udpPeerAddr"`
-	WARPAddr        string                    `json:"warpAddr"`
-	WARPProbe       string                    `json:"warpProbe"`
-	WARPUsername    string                    `json:"warpUsername"`
-	HasWARPPassword bool                      `json:"hasWarpPassword"`
-	HasToken        bool                      `json:"hasToken"`
-	Status          reverseexit.RuntimeStatus `json:"status"`
+	Enabled          bool                      `json:"enabled"`
+	VisitorAddr      string                    `json:"visitorAddr"`
+	UDPBindAddr      string                    `json:"udpBindAddr"`
+	UDPPeerAddr      string                    `json:"udpPeerAddr"`
+	WARPAddr         string                    `json:"warpAddr"`
+	WARPProbe        string                    `json:"warpProbe"`
+	WARPUsername     string                    `json:"warpUsername"`
+	HasWARPPassword  bool                      `json:"hasWarpPassword"`
+	HasToken         bool                      `json:"hasToken"`
+	FRPCBinaryPath   string                    `json:"frpcBinaryPath"`
+	FRPCConfigPath   string                    `json:"frpcConfigPath"`
+	FRPSServerAddr   string                    `json:"frpsServerAddr"`
+	FRPSServerPort   int                       `json:"frpsServerPort"`
+	XTCPServerName   string                    `json:"xtcpServerName"`
+	STUNServer       string                    `json:"stunServer"`
+	HasFRPSToken     bool                      `json:"hasFrpsToken"`
+	HasXTCPSecretKey bool                      `json:"hasXtcpSecretKey"`
+	FRPC             frpcRuntime               `json:"frpc"`
+	Status           reverseexit.RuntimeStatus `json:"status"`
 }
 
 type ReverseSocksService struct {
 	mu           sync.Mutex
 	settings     SettingService
 	manager      *reverseexit.Manager
+	frpc         *managedFRPC
 	parent       context.Context
 	startupError string
 }
 
 func NewReverseSocksService() *ReverseSocksService {
-	return &ReverseSocksService{manager: reverseexit.NewManager(), parent: context.Background()}
+	s := &ReverseSocksService{manager: reverseexit.NewManager(), parent: context.Background()}
+	s.frpc = newManagedFRPC(func() {
+		// Serialized with Save/Restart; only unexpected exits may stop the
+		// in-process Agent, never a manually launched unrelated frpc.
+		go func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.frpc.Status().State == "error" {
+				s.manager.Stop()
+			}
+		}()
+	})
+	return s
 }
 
 func (s *ReverseSocksService) load() (reverseSocksSaved, error) {
-	result := reverseSocksSaved{Config: reverseexit.DefaultConfig()}
+	result := reverseSocksSaved{Config: reverseexit.DefaultConfig(),
+		reverseFRPCConfig: defaultReverseFRPCConfig()}
 	raw, err := s.settings.getString(reverseSocksSettingKey)
 	if err != nil {
 		return result, err
@@ -77,8 +110,8 @@ func (s *ReverseSocksService) Start(ctx context.Context) error {
 	defer s.mu.Unlock()
 	s.parent = ctx
 	config, err := s.load()
-	if err == nil {
-		err = s.manager.Apply(ctx, config.Config, config.Enabled)
+	if err == nil && config.Enabled {
+		_, err = s.applyLocked(config, false)
 	}
 	if err != nil {
 		s.startupError = err.Error()
@@ -87,7 +120,10 @@ func (s *ReverseSocksService) Start(ctx context.Context) error {
 }
 
 func (s *ReverseSocksService) Stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.manager.Stop()
+	s.frpc.Stop()
 }
 
 func (s *ReverseSocksService) view(config reverseSocksSaved) ReverseSocksView {
@@ -96,16 +132,25 @@ func (s *ReverseSocksService) view(config reverseSocksSaved) ReverseSocksView {
 		status = reverseexit.RuntimeStatus{Enabled: config.Enabled, State: "error", Error: s.startupError}
 	}
 	return ReverseSocksView{
-		Enabled:         config.Enabled,
-		VisitorAddr:     config.VisitorAddr,
-		UDPBindAddr:     config.UDPBindAddr,
-		UDPPeerAddr:     config.UDPPeerAddr,
-		WARPAddr:        config.WARPAddr,
-		WARPProbe:       config.WARPProbe,
-		WARPUsername:    config.WARPUsername,
-		HasWARPPassword: config.WARPPassword != "",
-		HasToken:        config.Token != "",
-		Status:          status,
+		Enabled:          config.Enabled,
+		VisitorAddr:      config.VisitorAddr,
+		UDPBindAddr:      config.UDPBindAddr,
+		UDPPeerAddr:      config.UDPPeerAddr,
+		WARPAddr:         config.WARPAddr,
+		WARPProbe:        config.WARPProbe,
+		WARPUsername:     config.WARPUsername,
+		HasWARPPassword:  config.WARPPassword != "",
+		HasToken:         config.Token != "",
+		FRPCBinaryPath:   config.FRPCBinaryPath,
+		FRPCConfigPath:   config.FRPCConfigPath,
+		FRPSServerAddr:   config.FRPSServerAddr,
+		FRPSServerPort:   config.FRPSServerPort,
+		XTCPServerName:   config.XTCPServerName,
+		STUNServer:       config.STUNServer,
+		HasFRPSToken:     config.FRPSToken != "",
+		HasXTCPSecretKey: config.XTCPSecretKey != "",
+		FRPC:             s.frpc.Status(),
+		Status:           status,
 	}
 }
 
@@ -120,22 +165,58 @@ func (s *ReverseSocksService) Get() (ReverseSocksView, error) {
 }
 
 func (s *ReverseSocksService) persistAndApply(config reverseSocksSaved) (ReverseSocksView, error) {
+	return s.applyLocked(config, true)
+}
+
+// applyLocked preflights the exact custom frpc *before* touching a running
+// child. A failed verification leaves the prior process and DB untouched.
+// Once accepted, both managed components restart together; an activation
+// failure is terminal, never a legacy or direct-connect fallback.
+func (s *ReverseSocksService) applyLocked(config reverseSocksSaved, persist bool) (ReverseSocksView, error) {
 	config.RetryInterval = 2 * time.Second
+	var staged string
 	if config.Enabled {
-		if err := config.Config.Validate(); err != nil {
+		content, err := renderManagedFRPC(config.reverseFRPCConfig, config.Config)
+		if err != nil {
+			return ReverseSocksView{}, err
+		}
+		staged, err = stageFRPCConfig(s.parent, config.reverseFRPCConfig, content)
+		if err != nil {
+			return ReverseSocksView{}, err
+		}
+		defer os.Remove(staged)
+	}
+	if persist {
+		bytes, err := json.Marshal(config)
+		if err != nil {
+			return ReverseSocksView{}, err
+		}
+		if err := s.settings.setString(reverseSocksSettingKey, string(bytes)); err != nil {
 			return ReverseSocksView{}, err
 		}
 	}
-	bytes, err := json.Marshal(config)
-	if err != nil {
-		return ReverseSocksView{}, err
-	}
-	if err := s.settings.setString(reverseSocksSettingKey, string(bytes)); err != nil {
-		return ReverseSocksView{}, err
-	}
 	s.startupError = ""
-	if err := s.manager.Apply(s.parent, config.Config, config.Enabled); err != nil {
-		return ReverseSocksView{}, err
+	// Always stop the Agent before replacing its local Visitor.
+	s.manager.Stop()
+	s.frpc.Stop()
+	if config.Enabled {
+		if err := ensureVisitorPortAvailable(config.VisitorAddr); err != nil {
+			s.startupError = err.Error()
+			return ReverseSocksView{}, err
+		}
+		if err := activateFRPCConfig(config.reverseFRPCConfig, staged); err != nil {
+			s.startupError = err.Error()
+			return ReverseSocksView{}, err
+		}
+		if err := s.frpc.Start(config.FRPCBinaryPath, config.FRPCConfigPath); err != nil {
+			s.startupError = err.Error()
+			return ReverseSocksView{}, err
+		}
+		if err := s.manager.Apply(s.parent, config.Config, true); err != nil {
+			s.frpc.Stop()
+			s.startupError = err.Error()
+			return ReverseSocksView{}, err
+		}
 	}
 	return s.view(config), nil
 }
@@ -156,6 +237,12 @@ func (s *ReverseSocksService) Save(form ReverseSocksForm) (ReverseSocksView, err
 		config.WARPProbe = form.WARPProbe
 	}
 	config.WARPUsername = form.WARPUsername
+	config.FRPCBinaryPath = form.FRPCBinaryPath
+	config.FRPCConfigPath = form.FRPCConfigPath
+	config.FRPSServerAddr = form.FRPSServerAddr
+	config.FRPSServerPort = form.FRPSServerPort
+	config.XTCPServerName = form.XTCPServerName
+	config.STUNServer = form.STUNServer
 	if form.WARPUsername == "" {
 		config.WARPPassword = ""
 	} else if form.WARPPassword != "" {
@@ -163,6 +250,12 @@ func (s *ReverseSocksService) Save(form ReverseSocksForm) (ReverseSocksView, err
 	}
 	if form.Token != "" {
 		config.Token = form.Token
+	}
+	if form.FRPSToken != "" {
+		config.FRPSToken = form.FRPSToken
+	}
+	if form.XTCPSecretKey != "" {
+		config.XTCPSecretKey = form.XTCPSecretKey
 	}
 	return s.persistAndApply(config)
 }
@@ -176,4 +269,37 @@ func (s *ReverseSocksService) SetEnabled(enabled bool) (ReverseSocksView, error)
 	}
 	config.Enabled = enabled
 	return s.persistAndApply(config)
+}
+
+// VerifyFRPC verifies the currently stored settings without modifying the
+// configuration file or touching the live frpc process.
+func (s *ReverseSocksService) VerifyFRPC() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	config, err := s.load()
+	if err != nil {
+		return err
+	}
+	content, err := renderManagedFRPC(config.reverseFRPCConfig, config.Config)
+	if err != nil {
+		return err
+	}
+	temp, err := stageFRPCConfig(s.parent, config.reverseFRPCConfig, content)
+	if err != nil {
+		return err
+	}
+	return os.Remove(temp)
+}
+
+func (s *ReverseSocksService) Restart() (ReverseSocksView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	config, err := s.load()
+	if err != nil {
+		return ReverseSocksView{}, err
+	}
+	if !config.Enabled {
+		return ReverseSocksView{}, fmt.Errorf("enable reverse SOCKS5 before restart")
+	}
+	return s.applyLocked(config, false)
 }

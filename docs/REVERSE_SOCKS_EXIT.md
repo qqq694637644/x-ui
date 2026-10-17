@@ -15,7 +15,20 @@
 
 ## x-ui Web 配置
 
-登录面板，左侧打开 **反向 SOCKS5 / WARP**，可配置：
+登录面板，左侧打开 **反向 SOCKS5 / WARP**（`/xui/reverse-socks`）。**本页面现在直接管理一份独立的自定义 frpc，而不再只是生成 TOML 让用户手动启动。**
+
+先配置 **自定义 frpc 进程与服务端配置**：
+
+| 字段 | 默认/说明 |
+| --- | --- |
+| 自定义 frpc 可执行文件 | `/opt/customfrp/frpc_linux_amd64`（用户已放置的私有 frpc） |
+| x-ui 专用 frpc.toml | `/etc/x-ui/reverse-socks/frpc.toml`（由 x-ui 自动生成和覆盖） |
+| frps IP/域名与 TCP 端口 | 按服务商实际信息填写；端口默认 `7000` |
+| frps Auth Token | 服务商提供；Web 查询只返回“是否已设置” |
+| 境内 XTCP Proxy 名称与 secretKey | 默认 `rsx2_node`，密钥与境内 Proxy 完全相同 |
+| STUN 服务器 | **数值 IPv4:端口**，例如你已经验证可用的 STUN IP，避免本地 DNS 泄漏 |
+
+再配置出口通道：
 
 - XTCP Visitor TCP：127.0.0.1:6000
 - Go UDP 本地绑定（frpc datagram.peerAddr）：127.0.0.1:6002
@@ -23,9 +36,23 @@
 - WARP SOCKS5 地址（必填、本地回环）：127.0.0.1:40000，用户名/密码可选
 - RSX2 共享密钥（至少 16 字符，与境内 REVERSE_SOCKS_TOKEN 一致）
 - 启用/停止、保存并立即应用、独立的 XTCP/RSX2 状态与 WARP CONNECT/UDP ASSOCIATE 探测状态（每 30 秒）。健康探测并不能证明最终 WARP 公网 IP。
-- 新增 **境外 frpc 默认配置（隐藏原始 IP 模式）** 生成器：同时填写本地 WARP SOCKS5 控制连接代理及 SOCKS5 UDP 打洞代理，默认 `wireProtocol=v1`（官方 frps 0.69.0 测试通过）、`minRetryInterval=10`、`maxRetriesAnHour=120`、`disableAssistedAddrs=true`。模板中的 frps Token / XTCP secret 只在浏览器当前页面填写，不持久化。
+- 受管 **frpc** 单独显示运行状态、PID 和最近退出错误；提供 **校验已保存的 frpc 配置** 与 **重启 frpc + Agent** 按钮。
+- 下方 **frpc.toml 脱敏预览** 只作参考，真实文件由后端直接生成，不需要复制模板。
 
-面板将配置持久化在本机 SQLite 中，启动时恢复启用状态。GET 配置接口仅返回是否已设置密钥和 WARP 密码，绝不返回它们的原文。请妥善保护本机 SQLite 和备份。
+### 管理进程与严格校验
+
+启用时 x-ui 执行如下步骤，顺序不可反转：
+
+1. 验证配置字段、**指定的绝对 frpc 路径是否存在且可执行**、WARP 只能使用 `127.0.0.1`，并将完整 TOML 写入临时 `0600` 文件；
+2. 调用指定的 frpc 执行 `verify -c <临时配置>`；然后再用 **删除 `udpProxyURL`**、**删除 `transport.proxyURL`** 的两份不安全配置分别执行 `verify -c`，确认这个 frpc **确实拒绝**缺少隐私必需字段的配置。旧版/官方 frpc 若忽略新字段，即使第一轮验证成功，也会被拒绝；
+3. 停止本面板原来的 Go Agent 与**自己启动**的 frpc，先检测 Visitor TCP 端口是否被其他进程占用；
+4. 将验证过的文件原子替换为目标 `frpc.toml`（`0600`），启动受管 frpc，再启动 Go Exit Agent。
+
+**如果校验失败，旧的受管进程与数据库配置不会被改变；如果更新后启动失败，两组件保持失败/停止状态，绝不回退为未经 WARP 的原生 UDP。** 未设置的敏感密码在 Web 提交时会保持原值；GET 接口只回显 `hasToken` / `hasWarpPassword` / `hasFrpsToken` / `hasXtcpSecretKey` 布尔标志。
+
+页面「停止」只停止 x-ui 自己启动的 frpc（优先 SIGTERM，超时强制结束**该 PID**），不会 `pkill frpc`、不会接管服务商或其他 systemd/frpc 实例。面板重新启动后会从本机 SQLite 恢复已启用的受管 frpc 和 Go Agent。原有不含 frpc 配置信息的旧版 SQLite 配置**不能自动启用**，必须通过本页面填写后重新验证，这是故意的破坏式更新。
+
+执行文件/配置文件建议仅允许运行 x-ui 的账户访问；不要将密钥文件交给其他用户。如果 `/opt/customfrp/frpc_linux_amd64` 没有可执行权限，先在 VPS 执行 `chmod 755 /opt/customfrp/frpc_linux_amd64`。若 x-ui 不是以有权写入 `/etc/x-ui/reverse-socks` 的账户运行，需要先调整专用目录权限或在 Web 指定其他绝对路径。
 
 ## 命令行（不用面板）
 
@@ -49,9 +76,9 @@ export REVERSE_SOCKS_TOKEN='same-strong-rsx2-token-as-nat-node'
 
 如需自定义定期 WARP 出口连通探测目标，两种 CLI 都支持 `-warp-probe 1.1.1.1:443`，面板也有对应输入框。探测分别尝试真实的 SOCKS5 CONNECT 和 UDP ASSOCIATE，不会使用 VPS 直连，不能代替出口 IP 核验。
 
-## 境外 frpc 配置（既有第三方 frps 保持不变）
+## 境外 frpc 自动生成配置参考（既有第三方 frps 保持不变）
 
-**仅配置 `transport.proxyURL` 不够。** XTCP 默认 STUN/打洞仍使用原生 UDP Socket；为阻止泄漏，必须使用本 fork 的 `natTraversal.udpProxyURL` 将 STUN、打洞及 QUIC 改为本地 WARP SOCKS5 UDP ASSOCIATE。两端代理字段必须指向同一个回环 SOCKS5 端口，否则新 frpc 拒绝启动对应 Visitor。以下段落为境外独立 `frpc.toml` 示例：
+**仅配置 `transport.proxyURL` 不够。** XTCP 默认 STUN/打洞仍使用原生 UDP Socket；为阻止泄漏，必须使用本 fork 的 `natTraversal.udpProxyURL` 将 STUN、打洞及 QUIC 改为本地 WARP SOCKS5 UDP ASSOCIATE。两端代理字段必须指向同一个回环 SOCKS5 端口，否则新 frpc 拒绝启动对应 Visitor。下面仅展示 x-ui 写入的 TOML 格式，**不应手动覆盖受管文件**：
 
 ```toml
 serverAddr = "REPLACE_WITH_FRPS_IP"
@@ -92,7 +119,8 @@ udpProxyURL = "socks5://127.0.0.1:40000"
 
 ```sh
 go test ./reverseexit
+go test ./web/service -run 'TestReverseSocksWebConfigSecretsAndLifecycle|TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation|TestManagedFRPCWithoutDatabase|TestManagedFRPCRealForkPrivacyValidation'
 go build -o reverse-socks-exit ./cmd/reverse-socks-exit
 ```
 
-另在 nat_node 仓库设置 REVERSE_SOCKS_EXIT_BIN 指向刚编译的 Go Agent，执行 python3.13 -m unittest -v tests.test_end_to_end。测试覆盖慢速视频 TCP 背压、浏览器暂停读取、WARP TCP/UDP 和断线恢复。frp fork 另有官方 frps 0.69.0 + 本地模拟 WARP SOCKS5 的 XTCP TCP/UDP 实际 P2P 测试。真实跨境性能、第三方 frps/WARP+ 真实网络打洞与 VPS 出口仍需实地验证。
+进程管理测试使用实际运行的 Go mock frpc 可执行文件，验证正/反向 `verify`、PID 生命周期、未经管理的其他进程不受影响、配置恢复和 `0600` 权限。设定 `REVERSE_SOCKS_TEST_REAL_FRPC_BIN` 可以在测试中额外验证你私有编译的真实 frpc 可执行文件。另在 nat_node 仓库设置 REVERSE_SOCKS_EXIT_BIN 指向刚编译的 Go Agent，执行 python3.13 -m unittest -v tests.test_end_to_end。真实跨境性能、第三方 frps/WARP+ 真实网络打洞与 VPS 出口仍需实地验证。

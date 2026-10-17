@@ -17,6 +17,8 @@ func NewReverseSocksController(g *gin.RouterGroup, agent *service.ReverseSocksSe
 	g.POST("/save", a.save)
 	g.POST("/start", a.start)
 	g.POST("/stop", a.stop)
+	g.POST("/verify-frpc", a.verifyFRPC)
+	g.POST("/restart", a.restart)
 	return a
 }
 
@@ -43,4 +45,13 @@ func (a *ReverseSocksController) start(c *gin.Context) {
 func (a *ReverseSocksController) stop(c *gin.Context) {
 	view, err := a.service.SetEnabled(false)
 	jsonMsgObj(c, "停止反向 SOCKS5", view, err)
+}
+
+func (a *ReverseSocksController) verifyFRPC(c *gin.Context) {
+	jsonMsg(c, "校验自定义 frpc", a.service.VerifyFRPC())
+}
+
+func (a *ReverseSocksController) restart(c *gin.Context) {
+	view, err := a.service.Restart()
+	jsonMsgObj(c, "重启自定义 frpc 和出口 Agent", view, err)
 }

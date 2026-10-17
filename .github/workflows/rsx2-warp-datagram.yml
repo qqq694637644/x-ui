@@ -21,7 +21,16 @@ jobs:
         with:
           python-version: '3.13'
       - name: Test RSX2 Go and Web configuration
-        run: go test -count=1 ./reverseexit ./web/service -run 'TestExitRequiresWARPAndLoopbackOnly|TestWARPHealthProbeChecksTCPAndUDPSeparately|TestManagerTracksXTCPAndWARPIndependently|TestReverseSocksWebConfigSecretsAndLifecycle'
+        run: go test -count=1 ./reverseexit ./web/service -run 'TestExitRequiresWARPAndLoopbackOnly|TestWARPHealthProbeChecksTCPAndUDPSeparately|TestManagerTracksXTCPAndWARPIndependently|TestReverseSocksWebConfigSecretsAndLifecycle|TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation|TestManagedFRPCWithoutDatabase|TestManagedFRPCRealForkPrivacyValidation|TestReverseSocksSavedSettingsPreserveManagedFRPCFields'
+      - name: Build private frpc fork and verify its fail-closed XTCP capabilities
+        run: |
+          git clone --depth 1 --branch gpt/xtcp-quic-datagram \
+            https://github.com/qqq694637644/frp.git "$RUNNER_TEMP/frp"
+          cd "$RUNNER_TEMP/frp"
+          CGO_ENABLED=0 go build -tags 'frpc,noweb' -o "$RUNNER_TEMP/frpc-private" ./cmd/frpc
+          cd "$GITHUB_WORKSPACE"
+          REVERSE_SOCKS_TEST_REAL_FRPC_BIN="$RUNNER_TEMP/frpc-private" \
+            go test -count=1 ./web/service -run '^TestManagedFRPCRealForkPrivacyValidation$'
       - name: Build full x-ui Linux panel and Go exit agent
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$RUNNER_TEMP/xui-panel" .

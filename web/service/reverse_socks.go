@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
-	"strings"
 	"sync"
 	"time"
 	"x-ui/reverseexit"
@@ -331,21 +329,5 @@ func (s *ReverseSocksService) RestartLogs() ReverseSocksLogs {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	output, enabled := s.frpc.Logs()
-	if !enabled {
-		return ReverseSocksLogs{}
-	}
-	config, err := s.load()
-	if err != nil {
-		return ReverseSocksLogs{Enabled: true, Output: "[unable to load log redaction settings]"}
-	}
-	// The custom frpc may echo its TOML secrets or SOCKS5 URL. Redact
-	// configured credentials before exposing output to the dashboard.
-	for _, secret := range []string{config.FRPSToken, config.XTCPSecretKey,
-		config.Token, config.WARPPassword, config.WARPUsername} {
-		if secret != "" {
-			output = strings.ReplaceAll(output, secret, "[REDACTED]")
-			output = strings.ReplaceAll(output, url.QueryEscape(secret), "[REDACTED]")
-		}
-	}
-	return ReverseSocksLogs{Enabled: true, Output: output}
+	return ReverseSocksLogs{Enabled: enabled, Output: output}
 }

@@ -19,6 +19,7 @@ import (
 func TestManagedFRPCOptionalRestartLogs(t *testing.T) {
 	bin := buildMockFRPC(t)
 	t.Setenv("MOCK_FRPC_EMIT_LOGS", "1")
+	t.Setenv("MOCK_FRPC_LOG_SECRET", "raw-secret-visible")
 	p := newManagedFRPC(nil)
 	defer p.Stop()
 	if err := p.Start(bin, "mock.toml"); err != nil {
@@ -35,7 +36,7 @@ func TestManagedFRPCOptionalRestartLogs(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		output, enabled := p.Logs()
-		if enabled && strings.Contains(output, "startup stdout") && strings.Contains(output, "startup stderr") {
+		if enabled && strings.Contains(output, "startup stdout") && strings.Contains(output, "startup stderr") && strings.Contains(output, "raw-secret-visible") {
 			break
 		}
 		if time.Now().After(deadline) {

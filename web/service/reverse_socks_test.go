@@ -240,6 +240,7 @@ func TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation(t *testing.T) {
 	// Explicit restart logging must capture both child streams and redact
 	// stored credentials before the authenticated Web API returns them.
 	t.Setenv("MOCK_FRPC_EMIT_LOGS", "1")
+	t.Setenv("MOCK_FRPC_LOG_SECRET", "raw-private-credential")
 	if view, err = s.RestartWithLogs(true); err != nil || view.FRPC.State != "running" {
 		t.Fatalf("restart with Web logging failed: %+v %v", view.FRPC, err)
 	}
@@ -247,7 +248,8 @@ func TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation(t *testing.T) {
 	for {
 		logs := s.RestartLogs()
 		if logs.Enabled && strings.Contains(logs.Output, "mock frpc startup stdout") &&
-			strings.Contains(logs.Output, "mock frpc startup stderr") {
+			strings.Contains(logs.Output, "mock frpc startup stderr") &&
+			strings.Contains(logs.Output, "raw-private-credential") {
 			break
 		}
 		if time.Now().After(deadline) {

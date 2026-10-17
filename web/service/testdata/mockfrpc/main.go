@@ -42,6 +42,9 @@ func main() {
 		if os.Getenv("MOCK_FRPC_EMIT_LOGS") == "1" {
 			fmt.Fprintln(os.Stdout, "mock frpc startup stdout")
 			fmt.Fprintln(os.Stderr, "mock frpc startup stderr")
+			if secret := os.Getenv("MOCK_FRPC_LOG_SECRET"); secret != "" {
+				fmt.Fprintln(os.Stderr, "private credential:", secret)
+			}
 		}
 		signalCh := make(chan os.Signal, 1)
 		signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)

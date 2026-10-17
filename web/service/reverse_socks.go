@@ -22,6 +22,7 @@ type reverseSocksSaved struct {
 // The single-user editor submits complete values; empty secrets clear them.
 type ReverseSocksForm struct {
 	Enabled         bool   `json:"enabled" form:"enabled"`
+	Protocol        string `json:"protocol" form:"protocol"`
 	VisitorAddr     string `json:"visitorAddr" form:"visitorAddr"`
 	UDPBindAddr     string `json:"udpBindAddr" form:"udpBindAddr"`
 	UDPPeerAddr     string `json:"udpPeerAddr" form:"udpPeerAddr"`
@@ -44,6 +45,7 @@ type ReverseSocksForm struct {
 
 type ReverseSocksView struct {
 	Enabled         bool                      `json:"enabled"`
+	Protocol        string                    `json:"protocol"`
 	VisitorAddr     string                    `json:"visitorAddr"`
 	UDPBindAddr     string                    `json:"udpBindAddr"`
 	UDPPeerAddr     string                    `json:"udpPeerAddr"`
@@ -138,6 +140,7 @@ func (s *ReverseSocksService) view(config reverseSocksSaved) ReverseSocksView {
 	}
 	return ReverseSocksView{
 		Enabled:         config.Enabled,
+		Protocol:        config.Protocol,
 		VisitorAddr:     config.VisitorAddr,
 		UDPBindAddr:     config.UDPBindAddr,
 		UDPPeerAddr:     config.UDPPeerAddr,
@@ -242,6 +245,9 @@ func (s *ReverseSocksService) Save(form ReverseSocksForm) (ReverseSocksView, err
 // ignored the current STUN field and checked an outdated SQLite value.
 func configFromReverseSocksForm(config reverseSocksSaved, form ReverseSocksForm) reverseSocksSaved {
 	config.Enabled = form.Enabled
+	if form.Protocol != "" {
+		config.Protocol = form.Protocol
+	}
 	config.VisitorAddr = form.VisitorAddr
 	config.UDPBindAddr = form.UDPBindAddr
 	config.UDPPeerAddr = form.UDPPeerAddr

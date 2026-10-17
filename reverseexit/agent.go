@@ -29,7 +29,7 @@ type agent struct {
 	udpConn *net.UDPConn
 	udpPeer *net.UDPAddr
 	cfg     Config
-	writeMu sync.Mutex
+	sender  *fairWriter
 	mu      sync.Mutex
 	streams map[uint32]stream
 }
@@ -51,7 +51,11 @@ func Run(ctx context.Context, cfg Config, onState func(string, string)) error {
 		c, err := dialer.DialContext(ctx, "tcp", cfg.VisitorAddr)
 		if err == nil {
 			log.Printf("reverse SOCKS: connected to XTCP visitor %s", cfg.VisitorAddr)
-			err = serve(ctx, c, cfg, status)
+			if cfg.Protocol == "rsx2" {
+				err = serve(ctx, c, cfg, status)
+			} else {
+				err = serveRSX3(ctx, c, cfg, status)
+			}
 		}
 		if ctx.Err() != nil {
 			break
@@ -80,6 +84,8 @@ func serve(ctx context.Context, c net.Conn, cfg Config, status func(string, stri
 	defer udpConn.Close()
 	a := &agent{conn: c, udpConn: udpConn, udpPeer: peer, cfg: cfg,
 		streams: make(map[uint32]stream)}
+	a.sender = newFairWriter(c)
+	defer a.sender.close()
 	go a.datagramLoop()
 	status("online", "")
 	probeCtx, cancelProbe := context.WithCancel(ctx)
@@ -217,16 +223,10 @@ func authenticate(c net.Conn, secret []byte) error {
 }
 
 func (a *agent) send(f frame) error {
-	a.writeMu.Lock()
-	defer a.writeMu.Unlock()
-	if err := a.conn.SetWriteDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		return err
+	if a.sender == nil {
+		return net.ErrClosed
 	}
-	err := writeFrame(a.conn, f)
-	if err != nil {
-		a.conn.Close()
-	}
-	return err
+	return a.sender.send(f)
 }
 
 func (a *agent) register(id uint32, s stream) bool {
@@ -321,7 +321,10 @@ func (s *tcpStream) deliver(f frame) {
 
 func (s *tcpStream) run(host string, port int) {
 	defer s.stop()
+	warpStarted := time.Now()
 	conn, err := warpTCP(context.Background(), s.agent.cfg, host, port)
+	log.Printf("RSX2 metric warp_connect sid=%d duration_ms=%d success=%t",
+		s.id, time.Since(warpStarted).Milliseconds(), err == nil)
 	if err != nil {
 		_ = s.agent.send(frame{tcpResult, s.id, []byte{5}})
 		return

@@ -13,6 +13,7 @@ import (
 )
 
 func main() {
+	protocol := flag.String("protocol", "rsx3", "RSX3 independent QUIC TCP streams (default) or explicit RSX2 legacy mux")
 	visitor := flag.String("visitor", "127.0.0.1:6000", "local frpc XTCP Visitor TCP port")
 	udpBind := flag.String("udp-bind", "127.0.0.1:6002", "UDP socket owned by Go (frpc datagram.peerAddr)")
 	udpPeer := flag.String("udp-frpc", "127.0.0.1:6001", "local frpc datagram.listenAddr")
@@ -24,6 +25,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	cfg := reverseexit.Config{
+		Protocol:    *protocol,
 		VisitorAddr: *visitor, UDPBindAddr: *udpBind, UDPPeerAddr: *udpPeer,
 		WARPAddr: *warp, WARPUsername: *warpUser,
 		WARPProbe:     *warpProbe,

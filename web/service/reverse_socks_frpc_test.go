@@ -185,6 +185,26 @@ func TestReverseSocksSavedSettingsPreserveManagedFRPCFields(t *testing.T) {
 		decoded.FRPSToken != "frps-secret" || decoded.XTCPSecretKey != "xtcp-secret" || !decoded.Enabled {
 		t.Fatalf("managed frpc settings did not survive JSON roundtrip: %+v", decoded.reverseFRPCConfig)
 	}
+	if decoded.Protocol != "rsx3" {
+		t.Fatalf("RSX3 protocol was not persisted: %q", decoded.Protocol)
+	}
+}
+
+func TestReverseSocksProtocolSelectionIsExplicit(t *testing.T) {
+	stored := reverseSocksSaved{Config: reverseexit.DefaultConfig()}
+	if got := configFromReverseSocksForm(stored, ReverseSocksForm{Protocol: "rsx2"}); got.Protocol != "rsx2" {
+		t.Fatalf("did not select RSX2 compatibility mode: %q", got.Protocol)
+	}
+	if got := configFromReverseSocksForm(stored, ReverseSocksForm{Protocol: "rsx3"}); got.Protocol != "rsx3" {
+		t.Fatalf("did not select independent QUIC stream mode: %q", got.Protocol)
+	}
+	bad := reverseexit.DefaultConfig()
+	bad.Protocol = "rsx1"
+	bad.WARPAddr = "127.0.0.1:40000"
+	bad.Token = "long-test-only-reverse-socks-token"
+	if err := bad.Validate(); err == nil {
+		t.Fatal("unsupported RSX protocol accepted")
+	}
 }
 
 func TestReverseSocksFormUsesCurrentSTUNAndClearsSecrets(t *testing.T) {

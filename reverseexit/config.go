@@ -9,6 +9,9 @@ import (
 )
 
 type Config struct {
+	// Protocol defaults to RSX3, which maps each TCP SOCKS session to its
+	// own authenticated XTCP QUIC stream. RSX2 is explicit legacy mode.
+	Protocol      string        `json:"protocol,omitempty"`
 	VisitorAddr   string        `json:"visitorAddr"`
 	UDPBindAddr   string        `json:"udpBindAddr"`
 	UDPPeerAddr   string        `json:"udpPeerAddr"`
@@ -22,6 +25,7 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
+		Protocol:      "rsx3",
 		VisitorAddr:   "127.0.0.1:6000",
 		UDPBindAddr:   "127.0.0.1:6002",
 		UDPPeerAddr:   "127.0.0.1:6001",
@@ -45,6 +49,9 @@ func localhostAddr(addr string) error {
 // Validate deliberately rejects all non-loopback egress proxy endpoints.
 // There is no direct egress path or fallback to the VPS public IP.
 func (c Config) Validate() error {
+	if c.Protocol != "" && c.Protocol != "rsx3" && c.Protocol != "rsx2" {
+		return errors.New("reverse SOCKS protocol must be rsx3 or rsx2")
+	}
 	for _, addr := range []string{c.VisitorAddr, c.UDPBindAddr, c.UDPPeerAddr, c.WARPAddr} {
 		if err := localhostAddr(addr); err != nil {
 			return err
@@ -62,7 +69,7 @@ func (c Config) Validate() error {
 		return errors.New("WARP TCP probe requires valid port")
 	}
 	if len(c.Token) < 16 {
-		return errors.New("RSX2 token must contain at least 16 characters")
+		return errors.New("RSX token must contain at least 16 characters")
 	}
 	if len(c.WARPUsername) > 255 || len(c.WARPPassword) > 255 ||
 		(c.WARPUsername == "") != (c.WARPPassword == "") {

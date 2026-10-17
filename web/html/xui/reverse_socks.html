@@ -17,7 +17,7 @@
 							frpc：[[ frpcLabel ]][[ frpc.pid ? '（PID ' + frpc.pid + '）' : '' ]]
 						</a-tag>
                         <a-tag :color="status.state === 'online' ? 'green' : (status.state === 'error' ? 'red' : 'blue')">
-                            XTCP/RSX2：[[ stateLabel ]]
+                            XTCP/[[ (form.protocol || 'rsx3').toUpperCase() ]]：[[ stateLabel ]]
                         </a-tag>
                         <a-tag :color="status.warpState === 'ready' ? 'green' : (status.warpState === 'unavailable' ? 'red' : 'default')">
                             WARP TCP/UDP：[[ warpLabel ]]
@@ -126,6 +126,14 @@
                     <a-form layout="vertical">
                         <a-row :gutter="18">
                             <a-col :xs="24" :md="12">
+                                <a-form-item label="出口协议（境内 Python 必须使用同一版本）">
+                                    <a-select v-model="form.protocol">
+                                        <a-select-option value="rsx3">RSX3 · 每条 TCP 连接独立 QUIC Stream（推荐）</a-select-option>
+                                        <a-select-option value="rsx2">RSX2 · 单 Stream 复用（兼容）</a-select-option>
+                                    </a-select>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
                                 <a-form-item label="XTCP Visitor TCP 地址（frpc bindAddr:bindPort）">
                                     <a-input v-model.trim="form.visitorAddr" placeholder="127.0.0.1:6000"></a-input>
                                 </a-form-item>
@@ -162,7 +170,7 @@
                                 </a-form-item>
                             </a-col>
                             <a-col :xs="24" :md="24">
-                                <a-form-item label="RSX2 共享密钥（境内 Python REVERSE_SOCKS_TOKEN）">
+                                <a-form-item label="RSX3 / RSX2 共享密钥（境内 Python REVERSE_SOCKS_TOKEN）">
                                     <a-input v-model="form.token" autocomplete="off"
                                         placeholder="至少 16 个字符"></a-input>
                                 </a-form-item>
@@ -209,6 +217,7 @@
             restartLogText: '',
             form: {
                 enabled: false,
+                protocol: 'rsx3',
                 visitorAddr: '127.0.0.1:6000',
                 udpBindAddr: '127.0.0.1:6002',
                 udpPeerAddr: '127.0.0.1:6001',
@@ -332,7 +341,7 @@
             },
             applyView(v) {
                 if (!v) return;
-                for (const key of ['enabled', 'visitorAddr', 'udpBindAddr',
+                for (const key of ['enabled', 'protocol', 'visitorAddr', 'udpBindAddr',
                     'udpPeerAddr', 'warpAddr', 'warpProbe', 'warpUsername',
                     'warpPassword', 'token', 'frpsToken', 'xtcpSecretKey',
                     'frpcBinaryPath', 'frpcConfigPath', 'frpsServerAddr', 'frpsServerPort',

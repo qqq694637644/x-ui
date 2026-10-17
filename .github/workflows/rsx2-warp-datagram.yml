@@ -40,7 +40,9 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$RUNNER_TEMP/reverse-socks-exit" ./cmd/reverse-socks-exit
       - name: Get Python 3.13 NAT node companion
         run: |
-          git clone --depth 1 --branch gpt/xtcp-reverse-socks5 \
+          # nat_node PR #1 merged into main; its deleted feature branch
+          # must not be used as a permanent CI dependency.
+          git clone --depth 1 --branch main \
             https://github.com/qqq694637644/nat_node.git "$RUNNER_TEMP/nat_node"
       - name: Run Python/Go actual agent against fake WARP SOCKS5
         working-directory: ${{ runner.temp }}/nat_node

@@ -119,7 +119,7 @@ udpProxyURL = "socks5://127.0.0.1:40000"
 
 **STUN 域名现在允许直接填写**，如 `stun.miwifi.com:3478`，但 frpc 在主机解析域名时可能使用 VPS 系统 DNS（这段 DNS 查询不一定经 WARP SOCKS5 代理）。更注重 DNS 不暴露时可改用经验证的数字 IPv4。SOCKS5 UDP 中继无法控制 IP TTL，也无法在复杂 NAT 下创建多个原生端口，这两种特殊打洞优化会降级或拒绝，绝不直连回退。真实 WARP+ 是否容许 P2P 入站仍需测试。
 
-境内 frpc、Python 端口和部署说明见 [nat_node README](https://github.com/qqq694637644/nat_node/blob/gpt/xtcp-reverse-socks5/README.md)。
+境内 frpc、Python 端口和部署说明见 [nat_node README](https://github.com/qqq694637644/nat_node/blob/main/README.md)。
 
 ## 测试
 

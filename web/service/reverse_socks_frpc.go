@@ -26,22 +26,25 @@ const (
 )
 
 type reverseFRPCConfig struct {
-	FRPCBinaryPath string `json:"frpcBinaryPath"`
-	FRPCConfigPath string `json:"frpcConfigPath"`
-	FRPSServerAddr string `json:"frpsServerAddr"`
-	FRPSServerPort int    `json:"frpsServerPort"`
-	FRPSToken      string `json:"frpsToken"`
-	XTCPServerName string `json:"xtcpServerName"`
-	XTCPSecretKey  string `json:"xtcpSecretKey"`
-	STUNServer     string `json:"stunServer"`
+	FRPCBinaryPath  string `json:"frpcBinaryPath"`
+	FRPCConfigPath  string `json:"frpcConfigPath"`
+	FRPSServerAddr  string `json:"frpsServerAddr"`
+	FRPSServerPort  int    `json:"frpsServerPort"`
+	FRPCUser        string `json:"frpcUser"`
+	FRPSToken       string `json:"frpsToken"`
+	XTCPVisitorName string `json:"xtcpVisitorName"`
+	XTCPServerName  string `json:"xtcpServerName"`
+	XTCPSecretKey   string `json:"xtcpSecretKey"`
+	STUNServer      string `json:"stunServer"`
 }
 
 func defaultReverseFRPCConfig() reverseFRPCConfig {
 	return reverseFRPCConfig{
-		FRPCBinaryPath: defaultFRPCBinary,
-		FRPCConfigPath: defaultFRPCConfig,
-		FRPSServerPort: 7000,
-		XTCPServerName: "rsx2_node",
+		FRPCBinaryPath:  defaultFRPCBinary,
+		FRPCConfigPath:  defaultFRPCConfig,
+		FRPSServerPort:  7000,
+		XTCPVisitorName: "rsx2_outside",
+		XTCPServerName:  "rsx2_node",
 	}
 }
 
@@ -86,6 +89,17 @@ func (c reverseFRPCConfig) validate() error {
 	}
 	if c.FRPSToken == "" || c.XTCPSecretKey == "" {
 		return fmt.Errorf("frps authentication token and XTCP secret key are required")
+	}
+	// frpc.user is optional on some frps deployments, but if present it
+	// must be a single valid namespace; it is unrelated to the SOCKS5 login.
+	if strings.ContainsAny(c.FRPCUser, " \r\n\t\x00") || len(c.FRPCUser) > 256 {
+		return fmt.Errorf("frpc user must not contain whitespace or control characters (max 256 bytes)")
+	}
+	// The Visitor has its own name, independent from serverName (the
+	// mainland Proxy). Do not silently overwrite a customer's chosen name.
+	if c.XTCPVisitorName == "" || strings.ContainsAny(c.XTCPVisitorName, " \r\n\t\x00") ||
+		len(c.XTCPVisitorName) > 256 {
+		return fmt.Errorf("XTCP visitor name is required and must not contain whitespace (max 256 bytes)")
 	}
 	if len(c.FRPSToken) > 4096 || len(c.XTCPSecretKey) > 4096 {
 		return fmt.Errorf("frps token or XTCP secret is too long")
@@ -184,6 +198,7 @@ func renderManagedFRPC(c reverseFRPCConfig, agent reverseexit.Config) (string, e
 		"# Private XTCP Visitor; requires the custom frpc with natTraversal.udpProxyURL",
 		"serverAddr = " + quoted(c.FRPSServerAddr),
 		"serverPort = " + strconv.Itoa(c.FRPSServerPort),
+		"user = " + quoted(c.FRPCUser),
 		"auth.method = \"token\"",
 		"auth.token = " + quoted(c.FRPSToken),
 		"transport.protocol = \"tcp\"",
@@ -192,7 +207,7 @@ func renderManagedFRPC(c reverseFRPCConfig, agent reverseexit.Config) (string, e
 		"natHoleSTUNServer = " + quoted(c.STUNServer),
 		"",
 		"[[visitors]]",
-		"name = \"rsx2_outside\"",
+		"name = " + quoted(c.XTCPVisitorName),
 		"type = \"xtcp\"",
 		"serverName = " + quoted(c.XTCPServerName),
 		"secretKey = " + quoted(c.XTCPSecretKey),

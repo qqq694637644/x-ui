@@ -24,7 +24,9 @@
 | 自定义 frpc 可执行文件 | `/opt/customfrp/frpc_linux_amd64`（用户已放置的私有 frpc） |
 | x-ui 专用 frpc.toml | `/etc/x-ui/reverse-socks/frpc.toml`（由 x-ui 自动生成和覆盖） |
 | frps IP/域名与 TCP 端口 | 按服务商实际信息填写；端口默认 `7000` |
+| frpc 用户标识（`user`） | 服务商提供的 frpc 用户标识；写在 TOML 顶层、`[[visitors]]` 之前，留空则使用空 user |
 | frps Auth Token | 服务商提供；单用户 Web 页面直接显示和编辑实际值 |
+| XTCP Visitor 名称（`[[visitors]].name`） | 境外 Visitor 自己的名字，例如 `overseas-xtcp-visitor`；**不是**境内 Proxy 名称，默认 `rsx2_outside` |
 | 境内 XTCP Proxy 名称与 secretKey | 默认 `rsx2_node`，密钥与境内 Proxy 完全相同 |
 | STUN 服务器 | **域名或 IPv4:端口**，例如 `stun.miwifi.com:3478` 或 `74.125.250.129:19302` |
 
@@ -40,6 +42,7 @@
 - 下方 **frpc.toml 完整配置预览** 实时显示当前表单填写的实际 Token、密钥及 WARP SOCKS5 密码，真实文件仍由后端生成。
 - 此为单用户 Web 管理页面：**不再隐藏已保存的密码和密钥，也不再使用“留空保持原值”**。重新加载页面会填入真实值，保存时空字符串即清空。仅已登录的 x-ui 会话可以访问此接口，请务必保护面板账户与 HTTPS。
 - **校验按钮读取当前表单，包括尚未保存的 STUN 地址**，只验证 frpc 和 TOML，不保存 SQLite、不替换线上文件，也不重启进程。原实现仅校验旧数据库值，会导致数字 IP 已填写但仍提示旧域名格式错误。
+- **frpc user 与 Visitor name 都是独立可编辑的输入框**：保存后持久化 SQLite，后端每次重建 TOML 和 x-ui 重启时都使用用户保存的值，不再硬编码 `name = "rsx2_outside"`。顶层 `user`、境外 `[[visitors]].name`、境内 `[[visitors]].serverName` 是三件不同的事；请按你已成功使用的 frpc 配置填写，不需要再手工修改受管 TOML。
 
 ### 管理进程与严格校验
 
@@ -85,6 +88,7 @@ export REVERSE_SOCKS_TOKEN='same-strong-rsx2-token-as-nat-node'
 ```toml
 serverAddr = "REPLACE_WITH_FRPS_IP"
 serverPort = 7000
+user = "REPLACE_WITH_FRPC_USER"
 auth.method = "token"
 auth.token = "REPLACE_WITH_FRPS_TOKEN"
 transport.protocol = "tcp"
@@ -93,7 +97,7 @@ transport.proxyURL = "socks5://127.0.0.1:40000"
 natHoleSTUNServer = "REPLACE_WITH_VERIFIED_STUN_IP:3478"
 
 [[visitors]]
-name = "rsx2_outside"
+name = "REPLACE_WITH_XTCP_VISITOR_NAME"
 type = "xtcp"
 serverName = "rsx2_node"
 secretKey = "same-xtcp-secret-as-mainland"

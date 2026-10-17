@@ -27,28 +27,31 @@ func TestReverseSocksWebConfigSecretsAndLifecycle(t *testing.T) {
 	}
 	defer service.Stop()
 	form := ReverseSocksForm{
-		Enabled:        false,
-		VisitorAddr:    "127.0.0.1:6000",
-		UDPBindAddr:    "127.0.0.1:6002",
-		UDPPeerAddr:    "127.0.0.1:6001",
-		WARPAddr:       "127.0.0.1:40000",
-		WARPUsername:   "myuser",
-		WARPPassword:   "super-secret-warp-password",
-		Token:          "super-secret-rsx2-token-123",
-		FRPCBinaryPath: frpc,
-		FRPCConfigPath: configPath,
-		FRPSServerAddr: "127.0.0.1",
-		FRPSServerPort: 7000,
-		FRPSToken:      "private-frps-token",
-		XTCPServerName: "rsx2_node",
-		XTCPSecretKey:  "private-xtcp-key",
-		STUNServer:     "1.1.1.1:3478",
+		Enabled:         false,
+		VisitorAddr:     "127.0.0.1:6000",
+		UDPBindAddr:     "127.0.0.1:6002",
+		UDPPeerAddr:     "127.0.0.1:6001",
+		WARPAddr:        "127.0.0.1:40000",
+		WARPUsername:    "myuser",
+		WARPPassword:    "super-secret-warp-password",
+		Token:           "super-secret-rsx2-token-123",
+		FRPCBinaryPath:  frpc,
+		FRPCConfigPath:  configPath,
+		FRPSServerAddr:  "127.0.0.1",
+		FRPSServerPort:  7000,
+		FRPCUser:        "0123456789abcdef",
+		FRPSToken:       "private-frps-token",
+		XTCPVisitorName: "overseas-xtcp-visitor",
+		XTCPServerName:  "rsx2_node",
+		XTCPSecretKey:   "private-xtcp-key",
+		STUNServer:      "1.1.1.1:3478",
 	}
 	view, err := service.Save(form)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.Token != form.Token || view.WARPPassword != form.WARPPassword ||
+	if view.FRPCUser != form.FRPCUser || view.XTCPVisitorName != form.XTCPVisitorName ||
+		view.Token != form.Token || view.WARPPassword != form.WARPPassword ||
 		view.FRPSToken != form.FRPSToken || view.XTCPSecretKey != form.XTCPSecretKey || view.Enabled {
 		t.Fatalf("unexpected saved view: %+v", view)
 	}
@@ -70,7 +73,8 @@ func TestReverseSocksWebConfigSecretsAndLifecycle(t *testing.T) {
 	}
 	if saved.Token != "super-secret-rsx2-token-123" ||
 		saved.WARPPassword != "super-secret-warp-password" ||
-		saved.FRPSToken != "private-frps-token" || saved.XTCPSecretKey != "private-xtcp-key" || !saved.Enabled {
+		saved.FRPSToken != "private-frps-token" || saved.XTCPSecretKey != "private-xtcp-key" ||
+		saved.FRPCUser != form.FRPCUser || saved.XTCPVisitorName != form.XTCPVisitorName || !saved.Enabled {
 		t.Fatal("Web editor changed secrets or did not enable service")
 	}
 	view, err = service.SetEnabled(false)
@@ -96,7 +100,8 @@ func TestReverseSocksWebConfigSecretsAndLifecycle(t *testing.T) {
 	}
 	defer other.Stop()
 	view, err = other.Get()
-	if err != nil || view.WARPAddr != "127.0.0.1:40000" || view.Token != form.Token {
+	if err != nil || view.WARPAddr != "127.0.0.1:40000" || view.Token != form.Token ||
+		view.FRPCUser != form.FRPCUser || view.XTCPVisitorName != form.XTCPVisitorName {
 		t.Fatalf("restart did not restore saved config: %+v, err=%v", view, err)
 	}
 	// Unlike the old masked 'leave blank to keep' UI, clearing a field
@@ -109,6 +114,7 @@ func TestReverseSocksWebConfigSecretsAndLifecycle(t *testing.T) {
 	}
 	view, err = other.Get()
 	if err != nil || view.Token != "" || view.WARPPassword != "" ||
+		view.FRPCUser != form.FRPCUser || view.XTCPVisitorName != form.XTCPVisitorName ||
 		view.FRPSToken != "" || view.XTCPSecretKey != "" {
 		t.Fatalf("explicitly cleared credentials were retained: %+v, err=%v", view, err)
 	}
@@ -144,20 +150,22 @@ func TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation(t *testing.T) {
 	}
 	defer s.Stop()
 	form := ReverseSocksForm{
-		Enabled:        true,
-		VisitorAddr:    "127.0.0.1:6000",
-		UDPBindAddr:    "127.0.0.1:6002",
-		UDPPeerAddr:    "127.0.0.1:6001",
-		WARPAddr:       "127.0.0.1:40000",
-		Token:          "long-private-rsx2-shared-token",
-		FRPCBinaryPath: bin,
-		FRPCConfigPath: configFile,
-		FRPSServerAddr: "127.0.0.1",
-		FRPSServerPort: 7000,
-		FRPSToken:      "private-frps-token",
-		XTCPServerName: "rsx2_node",
-		XTCPSecretKey:  "private-xtcp-key",
-		STUNServer:     "1.1.1.1:3478",
+		Enabled:         true,
+		VisitorAddr:     "127.0.0.1:6000",
+		UDPBindAddr:     "127.0.0.1:6002",
+		UDPPeerAddr:     "127.0.0.1:6001",
+		WARPAddr:        "127.0.0.1:40000",
+		Token:           "long-private-rsx2-shared-token",
+		FRPCBinaryPath:  bin,
+		FRPCConfigPath:  configFile,
+		FRPSServerAddr:  "127.0.0.1",
+		FRPSServerPort:  7000,
+		FRPCUser:        "0123456789abcdef",
+		FRPSToken:       "private-frps-token",
+		XTCPVisitorName: "overseas-xtcp-visitor",
+		XTCPServerName:  "rsx2_node",
+		XTCPSecretKey:   "private-xtcp-key",
+		STUNServer:      "1.1.1.1:3478",
 	}
 	view, err := s.Save(form)
 	if err != nil {
@@ -172,6 +180,9 @@ func TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, field := range []string{
+		"user = \"0123456789abcdef\"",
+		"name = \"overseas-xtcp-visitor\"",
+		"serverName = \"rsx2_node\"",
 		"transport.wireProtocol = \"v1\"",
 		"auth.token = \"private-frps-token\"",
 		"transport.proxyURL = \"socks5://127.0.0.1:40000\"",
@@ -190,6 +201,17 @@ func TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation(t *testing.T) {
 	if err := s.VerifyFRPC(form); err != nil {
 		t.Fatalf("verify current form: %v", err)
 	}
+	// Unsaved identity edits must be validated from the current browser
+	// form without replacing the stored identity or restarting frpc.
+	form.FRPCUser, form.XTCPVisitorName = "unsaved-user", "unsaved-visitor"
+	if err := s.VerifyFRPC(form); err != nil {
+		t.Fatalf("verify edited user and Visitor name: %v", err)
+	}
+	if saved, err := s.load(); err != nil || saved.FRPCUser != "0123456789abcdef" ||
+		saved.XTCPVisitorName != "overseas-xtcp-visitor" {
+		t.Fatalf("verify unexpectedly replaced stored frpc identity: %+v, err=%v", saved.reverseFRPCConfig, err)
+	}
+	form.FRPCUser, form.XTCPVisitorName = "0123456789abcdef", "overseas-xtcp-visitor"
 	// Screenshot regression: the stored STUN is still 1.1.1.1:3478,
 	// while the browser shows an unsaved DNS name or numeric Google IP.
 	// Verify must test the browser form, not the outdated database value.
@@ -211,6 +233,25 @@ func TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation(t *testing.T) {
 	if view, err = s.Restart(); err != nil || view.FRPC.State != "running" || view.FRPC.PID == firstPID {
 		t.Fatalf("managed frpc did not restart: %+v %v", view.FRPC, err)
 	}
+	// Re-saving with changed identity must write it to the real managed
+	// frpc.toml; a later Restart and panel restart must retain it.
+	form.FRPCUser = "new-frps-user"
+	form.XTCPVisitorName = "new-custom-visitor"
+	view, err = s.Save(form)
+	if err != nil || view.FRPCUser != form.FRPCUser ||
+		view.XTCPVisitorName != form.XTCPVisitorName || view.FRPC.State != "running" {
+		t.Fatalf("Save did not apply the newly selected frpc identity: %+v, err=%v", view, err)
+	}
+	contents, err = os.ReadFile(configFile)
+	if err != nil || !strings.Contains(string(contents), "user = \"new-frps-user\"") ||
+		!strings.Contains(string(contents), "name = \"new-custom-visitor\"") {
+		t.Fatalf("Save overwrote the custom user or Visitor name: %s, err=%v", contents, err)
+	}
+	view, err = s.Restart()
+	if err != nil || view.FRPCUser != form.FRPCUser ||
+		view.XTCPVisitorName != form.XTCPVisitorName || view.FRPC.State != "running" {
+		t.Fatalf("Restart lost the frpc identity: %+v, err=%v", view, err)
+	}
 	secondPID := view.FRPC.PID
 	t.Setenv("MOCK_FRPC_LAX_VERIFY", "1")
 	if _, err := s.Save(ReverseSocksForm{
@@ -219,6 +260,7 @@ func TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation(t *testing.T) {
 		WARPAddr: form.WARPAddr, Token: form.Token,
 		FRPCBinaryPath: bin, FRPCConfigPath: configFile,
 		FRPSServerAddr: form.FRPSServerAddr, FRPSServerPort: form.FRPSServerPort,
+		FRPCUser: form.FRPCUser, XTCPVisitorName: form.XTCPVisitorName,
 		XTCPServerName: form.XTCPServerName, STUNServer: form.STUNServer,
 		FRPSToken: form.FRPSToken, XTCPSecretKey: form.XTCPSecretKey,
 	}); err == nil || !strings.Contains(err.Error(), "unsafe") {
@@ -268,7 +310,8 @@ func TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restarted.Stop()
-	if view, err := restarted.Get(); err != nil || view.FRPC.State != "running" {
+	if view, err := restarted.Get(); err != nil || view.FRPC.State != "running" ||
+		view.FRPCUser != "new-frps-user" || view.XTCPVisitorName != "new-custom-visitor" {
 		t.Fatalf("x-ui restart did not restore the private frpc: %+v, err=%v", view.FRPC, err)
 	}
 }

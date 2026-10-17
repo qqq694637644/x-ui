@@ -64,9 +64,21 @@
                             </a-form-item>
                         </a-col>
                         <a-col :xs="24" :md="12">
+                            <a-form-item label="frpc 用户标识（TOML 顶层 user）">
+                                <a-input v-model.trim="form.frpcUser" autocomplete="off"
+                                    placeholder="按服务商提供的 user 填写，无需时留空"></a-input>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
                             <a-form-item label="frps Auth Token">
                                 <a-input v-model="form.frpsToken" autocomplete="off"
                                     placeholder="frps 认证 Token"></a-input>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="XTCP Visitor 名称（[[visitors]] 的 name）">
+                                <a-input v-model.trim="form.xtcpVisitorName" autocomplete="off"
+                                    placeholder="例如 overseas-xtcp-visitor"></a-input>
                             </a-form-item>
                         </a-col>
                         <a-col :xs="24" :md="12">
@@ -86,6 +98,9 @@
                             </a-form-item>
                         </a-col>
                     </a-row>
+                    <a-alert type="info" show-icon style="margin-bottom: 15px;"
+                        message="frpc user 和 Visitor name 均可自定义，保存后自动写入 frpc.toml"
+                        description="user 是整个 frpc 的顶层配置，Visitor name 是 [[visitors]] 中的本地名称；serverName 则是境内 Proxy 的名称，三者不能混淆。填写一次「保存并应用」，以后 x-ui 重启和重新保存都使用这些值，不必再手工改 TOML。"></a-alert>
                     <a-alert type="warning" show-icon style="margin-bottom: 15px;"
                         message="受管配置文件会被 x-ui 覆写"
                         description="请为 frpc 指定专用配置文件，不能使用其他实例正在使用的配置；写入权限为 0600。本单用户页面直接显示已保存的 Token、密钥及密码，请保护面板登录和 HTTPS 访问。STUN 可填域名，但域名解析可能使用 VPS 的系统 DNS；想避免本机 DNS 查询请填数字 IPv4。"></a-alert>
@@ -191,7 +206,9 @@
                 frpcConfigPath: '/etc/x-ui/reverse-socks/frpc.toml',
                 frpsServerAddr: '',
                 frpsServerPort: 7000,
+                frpcUser: '',
                 frpsToken: '',
+                xtcpVisitorName: 'rsx2_outside',
                 xtcpServerName: 'rsx2_node',
                 xtcpSecretKey: '',
                 stunServer: ''
@@ -234,6 +251,7 @@
                     '# 当前表单的完整配置。x-ui 保存时自动生成实际 frpc.toml',
                     'serverAddr = ' + quoted(this.form.frpsServerAddr),
                     'serverPort = ' + Number(this.form.frpsServerPort || 7000),
+                    'user = ' + quoted(this.form.frpcUser),
                     'auth.method = "token"',
                     'auth.token = ' + quoted(this.form.frpsToken),
                     'transport.protocol = "tcp"',
@@ -242,7 +260,7 @@
                     'natHoleSTUNServer = ' + quoted(this.form.stunServer),
                     '',
                     '[[visitors]]',
-                    'name = "rsx2_outside"',
+                    'name = ' + quoted(this.form.xtcpVisitorName),
                     'type = "xtcp"',
                     'serverName = ' + quoted(this.form.xtcpServerName),
                     'secretKey = ' + quoted(this.form.xtcpSecretKey),
@@ -291,7 +309,7 @@
                     'udpPeerAddr', 'warpAddr', 'warpProbe', 'warpUsername',
                     'warpPassword', 'token', 'frpsToken', 'xtcpSecretKey',
                     'frpcBinaryPath', 'frpcConfigPath', 'frpsServerAddr', 'frpsServerPort',
-                    'xtcpServerName', 'stunServer']) {
+                    'frpcUser', 'xtcpVisitorName', 'xtcpServerName', 'stunServer']) {
                     this.form[key] = v[key];
                 }
                 this.status = v.status || {state: 'stopped', error: ''};

@@ -47,6 +47,34 @@ func TestReverseSocksSavedSettingsPreserveManagedFRPCFields(t *testing.T) {
 	}
 }
 
+func TestReverseSocksFormUsesCurrentSTUNAndClearsSecrets(t *testing.T) {
+	stored := reverseSocksSaved{
+		Config: reverseexit.DefaultConfig(),
+		reverseFRPCConfig: reverseFRPCConfig{
+			STUNServer:    "stun.miwifi.com:3478",
+			FRPSToken:     "old-frps-token",
+			XTCPSecretKey: "old-xtcp-key",
+		},
+	}
+	stored.Token = "old-rsx2-token"
+	stored.WARPPassword = "old-warp-password"
+	updated := configFromReverseSocksForm(stored, ReverseSocksForm{
+		STUNServer: "74.125.250.129:19302",
+	})
+	if updated.STUNServer != "74.125.250.129:19302" {
+		t.Fatalf("current form STUN ignored: %q", updated.STUNServer)
+	}
+	if updated.WARPProbe != "1.1.1.1:443" {
+		t.Fatalf("empty optional WARP probe removed its default: %q", updated.WARPProbe)
+	}
+	if updated.Token != "" || updated.FRPSToken != "" || updated.XTCPSecretKey != "" || updated.WARPPassword != "" {
+		t.Fatal("the single-user editor must clear secrets explicitly set to empty")
+	}
+	if stored.STUNServer != "stun.miwifi.com:3478" {
+		t.Fatal("applying a form unexpectedly mutated the stored values")
+	}
+}
+
 func TestManagedFRPCRealForkPrivacyValidation(t *testing.T) {
 	binary := os.Getenv("REVERSE_SOCKS_TEST_REAL_FRPC_BIN")
 	if binary == "" {

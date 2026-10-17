@@ -239,7 +239,11 @@ func configFromReverseSocksForm(config reverseSocksSaved, form ReverseSocksForm)
 	config.UDPBindAddr = form.UDPBindAddr
 	config.UDPPeerAddr = form.UDPPeerAddr
 	config.WARPAddr = form.WARPAddr
-	config.WARPProbe = form.WARPProbe
+	// WARPProbe is an optional setting with a safe default. Unlike secret
+	// fields, an omitted probe retains the default/saved probe address.
+	if form.WARPProbe != "" {
+		config.WARPProbe = form.WARPProbe
+	}
 	config.WARPUsername = form.WARPUsername
 	config.WARPPassword = form.WARPPassword
 	config.Token = form.Token

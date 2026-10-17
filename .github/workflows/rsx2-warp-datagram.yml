@@ -21,7 +21,7 @@ jobs:
         with:
           python-version: '3.13'
       - name: Test RSX2 Go and Web configuration
-        run: go test -count=1 ./reverseexit ./web/service -run 'TestExitRequiresWARPAndLoopbackOnly|TestWARPHealthProbeChecksTCPAndUDPSeparately|TestManagerTracksXTCPAndWARPIndependently|TestReverseSocksWebConfigSecretsAndLifecycle|TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation|TestManagedFRPCUserAndVisitorNameRender|TestManagedFRPCWithoutDatabase|TestManagedFRPCRealForkPrivacyValidation|TestReverseSocksSavedSettingsPreserveManagedFRPCFields|TestReverseSocksFormUsesCurrentSTUNAndClearsSecrets'
+        run: go test -count=1 ./reverseexit ./web/service -run 'TestExitRequiresWARPAndLoopbackOnly|TestWARPHealthProbeChecksTCPAndUDPSeparately|TestManagerTracksXTCPAndWARPIndependently|TestReverseSocksWebConfigSecretsAndLifecycle|TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation|TestManagedFRPCOptionalRestartLogs|TestFRPCLogBufferBounded|TestManagedFRPCUserAndVisitorNameRender|TestManagedFRPCWithoutDatabase|TestManagedFRPCRealForkPrivacyValidation|TestReverseSocksSavedSettingsPreserveManagedFRPCFields|TestReverseSocksFormUsesCurrentSTUNAndClearsSecrets'
       - name: Check Web frpc user and Visitor name form bindings
         run: node web/html/xui/test_reverse_socks_frpc_fields.cjs
       - name: Build private frpc fork and verify its fail-closed XTCP capabilities

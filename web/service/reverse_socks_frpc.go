@@ -389,6 +389,32 @@ type managedFRPC struct {
 	stopping bool
 	status   frpcRuntime
 	onExit   func()
+	logs     *frpcLogBuffer
+}
+
+// The optional Web console is memory-only, bounded and reset on every
+// restart. No file is written and ordinary starts discard child output.
+const maxFRPCLogBytes = 64 * 1024
+
+type frpcLogBuffer struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func (b *frpcLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.data = append(b.data, p...)
+	if len(b.data) > maxFRPCLogBytes {
+		b.data = append([]byte(nil), b.data[len(b.data)-maxFRPCLogBytes:]...)
+	}
+	return len(p), nil
+}
+
+func (b *frpcLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.data)
 }
 
 func newManagedFRPC(onExit func()) *managedFRPC {
@@ -402,6 +428,10 @@ func (p *managedFRPC) Status() frpcRuntime {
 }
 
 func (p *managedFRPC) Start(binary, configPath string) error {
+	return p.StartWithLogs(binary, configPath, false)
+}
+
+func (p *managedFRPC) StartWithLogs(binary, configPath string, capture bool) error {
 	p.control.Lock()
 	defer p.control.Unlock()
 	p.mu.Lock()
@@ -416,8 +446,15 @@ func (p *managedFRPC) Start(binary, configPath string) error {
 	cmd := exec.Command(binary, "-c", configPath)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
+	var logs *frpcLogBuffer
+	if capture {
+		logs = &frpcLogBuffer{}
+		cmd.Stdout = logs
+		cmd.Stderr = logs
+	}
 	if err := cmd.Start(); err != nil {
 		p.mu.Lock()
+		p.logs = logs
 		p.status = frpcRuntime{State: "error", Error: fmt.Sprintf("cannot start managed frpc: %v", err)}
 		p.mu.Unlock()
 		return err
@@ -425,6 +462,7 @@ func (p *managedFRPC) Start(binary, configPath string) error {
 	done := make(chan struct{})
 	p.mu.Lock()
 	p.cmd, p.done, p.stopping = cmd, done, false
+	p.logs = logs
 	p.status = frpcRuntime{State: "running", PID: cmd.Process.Pid}
 	p.mu.Unlock()
 	go func() {
@@ -450,6 +488,16 @@ func (p *managedFRPC) Start(binary, configPath string) error {
 		}
 	}()
 	return nil
+}
+
+func (p *managedFRPC) Logs() (string, bool) {
+	p.mu.Lock()
+	logs := p.logs
+	p.mu.Unlock()
+	if logs == nil {
+		return "", false
+	}
+	return logs.String(), true
 }
 
 func (p *managedFRPC) Stop() {

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 	"x-ui/reverseexit"
@@ -67,12 +69,13 @@ type ReverseSocksView struct {
 }
 
 type ReverseSocksService struct {
-	mu           sync.Mutex
-	settings     SettingService
-	manager      *reverseexit.Manager
-	frpc         *managedFRPC
-	parent       context.Context
-	startupError string
+	mu             sync.Mutex
+	settings       SettingService
+	manager        *reverseexit.Manager
+	frpc           *managedFRPC
+	parent         context.Context
+	startupError   string
+	restartCapture bool
 }
 
 func NewReverseSocksService() *ReverseSocksService {
@@ -214,7 +217,7 @@ func (s *ReverseSocksService) applyLocked(config reverseSocksSaved, persist bool
 			s.startupError = err.Error()
 			return ReverseSocksView{}, err
 		}
-		if err := s.frpc.Start(config.FRPCBinaryPath, config.FRPCConfigPath); err != nil {
+		if err := s.frpc.StartWithLogs(config.FRPCBinaryPath, config.FRPCConfigPath, s.restartCapture); err != nil {
 			s.startupError = err.Error()
 			return ReverseSocksView{}, err
 		}
@@ -299,6 +302,12 @@ func (s *ReverseSocksService) VerifyFRPC(form ReverseSocksForm) error {
 }
 
 func (s *ReverseSocksService) Restart() (ReverseSocksView, error) {
+	return s.RestartWithLogs(false)
+}
+
+// RestartWithLogs captures the new frpc child's stdout/stderr only when
+// explicitly requested by the dashboard. This option is not persisted.
+func (s *ReverseSocksService) RestartWithLogs(printLogs bool) (ReverseSocksView, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	config, err := s.load()
@@ -308,5 +317,35 @@ func (s *ReverseSocksService) Restart() (ReverseSocksView, error) {
 	if !config.Enabled {
 		return ReverseSocksView{}, fmt.Errorf("enable reverse SOCKS5 before restart")
 	}
+	s.restartCapture = printLogs
+	defer func() { s.restartCapture = false }()
 	return s.applyLocked(config, false)
+}
+
+type ReverseSocksLogs struct {
+	Enabled bool   `json:"enabled"`
+	Output  string `json:"output"`
+}
+
+func (s *ReverseSocksService) RestartLogs() ReverseSocksLogs {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	output, enabled := s.frpc.Logs()
+	if !enabled {
+		return ReverseSocksLogs{}
+	}
+	config, err := s.load()
+	if err != nil {
+		return ReverseSocksLogs{Enabled: true, Output: "[unable to load log redaction settings]"}
+	}
+	// The custom frpc may echo its TOML secrets or SOCKS5 URL. Redact
+	// configured credentials before exposing output to the dashboard.
+	for _, secret := range []string{config.FRPSToken, config.XTCPSecretKey,
+		config.Token, config.WARPPassword, config.WARPUsername} {
+		if secret != "" {
+			output = strings.ReplaceAll(output, secret, "[REDACTED]")
+			output = strings.ReplaceAll(output, url.QueryEscape(secret), "[REDACTED]")
+		}
+	}
+	return ReverseSocksLogs{Enabled: true, Output: output}
 }

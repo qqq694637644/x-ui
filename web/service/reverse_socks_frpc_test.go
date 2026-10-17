@@ -9,11 +9,61 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
 	"x-ui/reverseexit"
 )
+
+func TestManagedFRPCOptionalRestartLogs(t *testing.T) {
+	bin := buildMockFRPC(t)
+	t.Setenv("MOCK_FRPC_EMIT_LOGS", "1")
+	p := newManagedFRPC(nil)
+	defer p.Stop()
+	if err := p.Start(bin, "mock.toml"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if output, enabled := p.Logs(); enabled || output != "" {
+		t.Fatalf("ordinary launch must discard output: enabled=%v, %q", enabled, output)
+	}
+	p.Stop()
+	if err := p.StartWithLogs(bin, "mock.toml", true); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		output, enabled := p.Logs()
+		if enabled && strings.Contains(output, "startup stdout") && strings.Contains(output, "startup stderr") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("missing captured stdout/stderr: enabled=%v output=%q", enabled, output)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	p.Stop()
+	if output, enabled := p.Logs(); !enabled || !strings.Contains(output, "startup stdout") {
+		t.Fatalf("stop should preserve last restart logs: %v %q", enabled, output)
+	}
+	if err := p.Start(bin, "mock.toml"); err != nil {
+		t.Fatal(err)
+	}
+	if _, enabled := p.Logs(); enabled {
+		t.Fatal("subsequent ordinary start must clear prior logs")
+	}
+}
+
+func TestFRPCLogBufferBounded(t *testing.T) {
+	b := &frpcLogBuffer{}
+	if _, err := b.Write([]byte(strings.Repeat("x", maxFRPCLogBytes*2))); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.String(); len(got) != maxFRPCLogBytes {
+		t.Fatalf("log buffer length %d", len(got))
+	}
+}
 
 func TestManagedFRPCUserAndVisitorNameRender(t *testing.T) {
 	cfg := defaultReverseFRPCConfig()

@@ -39,6 +39,10 @@ func main() {
 		return
 	}
 	if len(args) == 2 && args[0] == "-c" {
+		if os.Getenv("MOCK_FRPC_EMIT_LOGS") == "1" {
+			fmt.Fprintln(os.Stdout, "mock frpc startup stdout")
+			fmt.Fprintln(os.Stderr, "mock frpc startup stderr")
+		}
 		signalCh := make(chan os.Signal, 1)
 		signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
 		<-signalCh

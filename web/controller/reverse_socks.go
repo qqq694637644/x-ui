@@ -19,6 +19,7 @@ func NewReverseSocksController(g *gin.RouterGroup, agent *service.ReverseSocksSe
 	g.POST("/stop", a.stop)
 	g.POST("/verify-frpc", a.verifyFRPC)
 	g.POST("/restart", a.restart)
+	g.POST("/restart-logs", a.restartLogs)
 	return a
 }
 
@@ -57,6 +58,17 @@ func (a *ReverseSocksController) verifyFRPC(c *gin.Context) {
 }
 
 func (a *ReverseSocksController) restart(c *gin.Context) {
-	view, err := a.service.Restart()
+	var form struct {
+		PrintLogs bool `json:"printLogs" form:"printLogs"`
+	}
+	if err := c.ShouldBind(&form); err != nil {
+		jsonMsg(c, "读取重启日志选项", err)
+		return
+	}
+	view, err := a.service.RestartWithLogs(form.PrintLogs)
 	jsonMsgObj(c, "重启自定义 frpc 和出口 Agent", view, err)
+}
+
+func (a *ReverseSocksController) restartLogs(c *gin.Context) {
+	jsonObj(c, a.service.RestartLogs(), nil)
 }

@@ -107,7 +107,19 @@
                     <a-space>
                         <a-button @click="verifyFrpc">校验当前填写的配置（不保存）</a-button>
                         <a-button @click="restart">重启 frpc + Agent</a-button>
+                        <a-checkbox v-model="printRestartLogs">重启时打印 frpc 日志到 Web</a-checkbox>
                     </a-space>
+                    <a-card v-if="showRestartLogs" size="small" title="本次重启 frpc 日志（仅内存，最多 64 KiB）"
+                        style="margin-top: 16px;">
+                        <a-space style="margin-bottom: 10px;">
+                            <a-button size="small" @click="fetchRestartLogs">刷新日志</a-button>
+                            <a-button size="small" @click="showRestartLogs = false">隐藏日志</a-button>
+                        </a-space>
+                        <pre style="max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #111; color: #ddd; padding: 12px;">[[ restartLogText || '等待 frpc 输出...' ]]</pre>
+                        <a-alert type="warning" show-icon
+                            message="日志可能包含服务器地址、连接信息等敏感数据；已尝试遮盖已保存的密钥，请勿直接公开日志。"
+                            style="margin-top: 10px;"></a-alert>
+                    </a-card>
                 </a-card>
 
                 <a-card title="TCP / UDP 数据通道和 WARP 强制出口">
@@ -192,6 +204,9 @@
         data: {
             siderDrawer,
             loading: false,
+            printRestartLogs: false,
+            showRestartLogs: false,
+            restartLogText: '',
             form: {
                 enabled: false,
                 visitorAddr: '127.0.0.1:6000',
@@ -297,10 +312,22 @@
             async restart() {
                 this.loading = true;
                 try {
-                    const res = await HttpUtil.post('/xui/reverse-socks/restart');
-                    if (res.success) this.applyView(res.obj);
+                    const capture = this.printRestartLogs;
+                    const res = await HttpUtil.post('/xui/reverse-socks/restart', {printLogs: capture});
+                    if (res.success) {
+                        this.applyView(res.obj);
+                        this.showRestartLogs = capture;
+                        this.restartLogText = '';
+                        if (capture) await this.fetchRestartLogs();
+                    }
                 } finally {
                     this.loading = false;
+                }
+            },
+            async fetchRestartLogs() {
+                const res = await HttpUtil.post('/xui/reverse-socks/restart-logs');
+                if (res.success && res.obj && res.obj.enabled) {
+                    this.restartLogText = res.obj.output || '';
                 }
             },
             applyView(v) {
@@ -359,9 +386,13 @@
                     }
                 });
             }, 4000);
+            this.restartLogTimer = setInterval(() => {
+                if (this.showRestartLogs && !this.loading) this.fetchRestartLogs();
+            }, 1500);
         },
         beforeDestroy() {
             clearInterval(this.refreshTimer);
+            clearInterval(this.restartLogTimer);
         }
     });
 </script>

@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"x-ui/database"
 )
@@ -233,6 +234,27 @@ func TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation(t *testing.T) {
 	if view, err = s.Restart(); err != nil || view.FRPC.State != "running" || view.FRPC.PID == firstPID {
 		t.Fatalf("managed frpc did not restart: %+v %v", view.FRPC, err)
 	}
+	if logs := s.RestartLogs(); logs.Enabled {
+		t.Fatalf("ordinary restart unexpectedly enabled frpc Web logging: %+v", logs)
+	}
+	// Explicit restart logging must capture both child streams and redact
+	// stored credentials before the authenticated Web API returns them.
+	t.Setenv("MOCK_FRPC_EMIT_LOGS", "1")
+	if view, err = s.RestartWithLogs(true); err != nil || view.FRPC.State != "running" {
+		t.Fatalf("restart with Web logging failed: %+v %v", view.FRPC, err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		logs := s.RestartLogs()
+		if logs.Enabled && strings.Contains(logs.Output, "mock frpc startup stdout") &&
+			strings.Contains(logs.Output, "mock frpc startup stderr") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Web restart logs did not capture both streams: %+v", logs)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	// Re-saving with changed identity must write it to the real managed
 	// frpc.toml; a later Restart and panel restart must retain it.
 	form.FRPCUser = "new-frps-user"
@@ -251,6 +273,9 @@ func TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation(t *testing.T) {
 	if err != nil || view.FRPCUser != form.FRPCUser ||
 		view.XTCPVisitorName != form.XTCPVisitorName || view.FRPC.State != "running" {
 		t.Fatalf("Restart lost the frpc identity: %+v, err=%v", view, err)
+	}
+	if logs := s.RestartLogs(); logs.Enabled {
+		t.Fatal("restart without log checkbox retained previous captured output")
 	}
 	secondPID := view.FRPC.PID
 	t.Setenv("MOCK_FRPC_LAX_VERIFY", "1")

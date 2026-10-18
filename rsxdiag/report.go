@@ -307,8 +307,26 @@ func PruneReports(root string, days int, budget int64) error {
 		return err
 	}
 	var total int64
+	sizes := make(map[string]int64, len(reports))
+	dir, err := reportDir(root)
+	if err != nil {
+		return err
+	}
 	for _, r := range reports {
-		total += r.Bytes
+		for _, ext := range []string{".zip", ".json", ".html"} {
+			info, err := os.Lstat(filepath.Join(dir, r.ID+ext))
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return err
+			}
+			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+				return errors.New("unsafe report retention entry")
+			}
+			sizes[r.ID] += info.Size()
+		}
+		total += sizes[r.ID]
 	}
 	cut := time.Now().AddDate(0, 0, -days)
 	for i := len(reports) - 1; i >= 0; i-- {
@@ -317,7 +335,7 @@ func PruneReports(root string, days int, budget int64) error {
 			if err := DeleteReport(root, r.ID); err != nil {
 				return err
 			}
-			total -= r.Bytes
+			total -= sizes[r.ID]
 		}
 	}
 	return nil

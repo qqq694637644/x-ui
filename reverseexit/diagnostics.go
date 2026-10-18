@@ -17,6 +17,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"x-ui/rsxdiag"
@@ -25,6 +26,33 @@ import (
 const diagCapabilityRequest = "RD-CAP/1 "
 const diagCapabilityReply = "RD-OK/1 "
 const diagPreface = "R3G1"
+
+// Bind blocking socket I/O to a context without requiring a newer context
+// package than the panel's supported Go toolchain. A completed handshake
+// disarms the callback so later cancellation does not close an active stream.
+func onContextCancelled(ctx context.Context, callback func()) func() bool {
+	if ctx.Done() == nil {
+		return func() bool { return true }
+	}
+	var state atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			if state.CompareAndSwap(0, 1) {
+				callback()
+			}
+		case <-done:
+		}
+	}()
+	return func() bool {
+		if state.CompareAndSwap(0, 2) {
+			close(done)
+			return true
+		}
+		return false
+	}
+}
 
 type diagnosticResponse struct {
 	ID     string          `json:"id"`
@@ -186,7 +214,7 @@ func connectDiagnosticPeer(ctx context.Context, c *rsx3Control) (*DiagnosticPeer
 		}
 	}()
 	_ = conn.SetDeadline(time.Now().Add(8 * time.Second))
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	stop := onContextCancelled(ctx, func() { _ = conn.Close() })
 	defer stop()
 	if err := writeAll(conn, append([]byte(diagPreface), c.epoch[:]...)); err != nil {
 		return nil, err

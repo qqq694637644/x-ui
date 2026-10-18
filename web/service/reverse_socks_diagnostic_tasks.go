@@ -351,7 +351,7 @@ func parseEchoIP(raw []byte) (string, error) {
 		value = strings.TrimSpace(v.IP)
 	}
 	ip := net.ParseIP(value)
-	if ip == nil || ip.IsUnspecified() || ip.IsLoopback() {
+	if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {
 		return "", errors.New("IP echo did not return a usable public address")
 	}
 	return ip.String(), nil

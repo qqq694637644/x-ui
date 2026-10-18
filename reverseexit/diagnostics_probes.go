@@ -19,7 +19,7 @@ func DiagnosticDNS(ctx context.Context, cfg Config, useWARP bool) (map[string]in
 	}
 	defer control.Close()
 	defer sock.Close()
-	stop := context.AfterFunc(ctx, func() { _ = sock.Close(); _ = control.Close() })
+	stop := onContextCancelled(ctx, func() { _ = sock.Close(); _ = control.Close() })
 	defer stop()
 	deadline := time.Now().Add(5 * time.Second)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {

@@ -31,12 +31,22 @@ for (const field of ["frpcUser", "xtcpVisitorName"]) {
     assert.ok(options.methods.applyView.toString().includes(`'${field}'`),
         `missing GET/save response hydration of ${field}`);
 }
+for (const field of ["targetSocksAddr", "targetSocksUsername", "targetSocksPassword"]) {
+    assert.ok(Object.hasOwn(options.data.form, field), `missing Go Agent ${field} default`);
+    assert.ok(page.includes(`form.${field}`), `missing Go Agent ${field} editor`);
+    assert.ok(options.methods.applyView.toString().includes(`'${field}'`),
+        `missing loaded Go Agent ${field} value`);
+}
 
 const form = {
     ...options.data.form,
     frpcUser: "0123456789abcdef",
     xtcpVisitorName: "overseas-xtcp-visitor",
-    xtcpServerName: "mainland-proxy"
+    xtcpServerName: "mainland-proxy",
+    warpAddr: "127.0.0.1:40000",
+    targetSocksAddr: "127.0.0.1:40001",
+    targetSocksUsername: "xray-user",
+    targetSocksPassword: "xray-password"
 };
 const preview = options.computed.frpcTemplate.call({ form });
 assert.ok(preview.includes('user = "0123456789abcdef"'));
@@ -48,6 +58,12 @@ assert.ok(preview.indexOf('name = "overseas-xtcp-visitor"') >
     preview.indexOf("[[visitors]]"), "Visitor name must belong to [[visitors]]");
 assert.ok(!preview.includes('name = "rsx2_outside"'),
     "preview must not replace configured Visitor name with a constant");
+assert.ok(preview.includes('transport.proxyURL = "socks5://127.0.0.1:40000"'),
+    "frpc must continue using WARP SOCKS5");
+assert.ok(preview.includes('udpProxyURL = "socks5://127.0.0.1:40000"'),
+    "frpc/STUN/XTCP must continue using WARP SOCKS5 UDP");
+assert.ok(!preview.includes('40001') && !preview.includes("xray-user"),
+    "Go Agent target SOCKS5 must never be used for frpc/STUN/XTCP");
 
 const loaded = {
     form: { ...options.data.form },
@@ -63,5 +79,8 @@ options.methods.applyView.call(loaded, {
 assert.equal(loaded.form.frpcUser, form.frpcUser);
 assert.equal(loaded.form.xtcpVisitorName, form.xtcpVisitorName);
 assert.equal(loaded.form.xtcpServerName, form.xtcpServerName);
+assert.equal(loaded.form.targetSocksAddr, form.targetSocksAddr);
+assert.equal(loaded.form.targetSocksUsername, form.targetSocksUsername);
+assert.equal(loaded.form.targetSocksPassword, form.targetSocksPassword);
 
 console.log("x-ui reverse SOCKS5 frpc user and Visitor name Web wiring PASS");

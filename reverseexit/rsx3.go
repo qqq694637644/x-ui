@@ -3,7 +3,8 @@ package reverseexit
 // RSX3 uses one authenticated control stream for session lifecycle/UDP and
 // a separate authenticated XTCP QUIC stream for each SOCKS5 TCP connection.
 // Each new TCP data stream is a loopback dial of the SAME frpc Visitor port,
-// not a new direct/public UDP dial. All Internet egress remains WARP SOCKS5.
+// not a new direct/public UDP dial. Final target egress optionally goes via
+// a distinct loopback Xray SOCKS5 inbound for per-domain routing.
 import (
 	"context"
 	"crypto/hmac"
@@ -225,23 +226,23 @@ func serveRSX3(ctx context.Context, c net.Conn, cfg Config, status func(string, 
 
 func (control *rsx3Control) handleTCP(ctx context.Context, sid uint32, host string, port int) {
 	started := time.Now()
-	beginWARP := time.Now()
-	warp, err := warpTCP(ctx, control.agent.cfg, host, port)
-	warpMS := time.Since(beginWARP).Milliseconds()
+	beginTarget := time.Now()
+	target, err := targetTCP(ctx, control.agent.cfg, host, port)
+	targetMS := time.Since(beginTarget).Milliseconds()
 	if err != nil {
-		log.Printf("RSX3 metric tcp_error sid=%d step=warp_connect warp_ms=%d type=%T", sid, warpMS, err)
+		log.Printf("RSX3 metric tcp_error sid=%d step=target_socks_connect target_ms=%d type=%T", sid, targetMS, err)
 		_ = control.agent.send(frame{tcpResult, sid, []byte{5}})
 		return
 	}
-	defer warp.Close()
+	defer target.Close()
 
 	beginDial := time.Now()
 	dialer := net.Dialer{Timeout: 8 * time.Second}
 	visitor, err := dialer.DialContext(ctx, "tcp", control.agent.cfg.VisitorAddr)
 	dialMS := time.Since(beginDial).Milliseconds()
 	if err != nil {
-		log.Printf("RSX3 metric tcp_error sid=%d step=visitor_stream warp_ms=%d visitor_ms=%d type=%T",
-			sid, warpMS, dialMS, err)
+		log.Printf("RSX3 metric tcp_error sid=%d step=visitor_stream target_ms=%d visitor_ms=%d type=%T",
+			sid, targetMS, dialMS, err)
 		_ = control.agent.send(frame{tcpResult, sid, []byte{5}})
 		return
 	}
@@ -249,21 +250,21 @@ func (control *rsx3Control) handleTCP(ctx context.Context, sid uint32, host stri
 	authStart := time.Now()
 	err = rsx3AuthenticateData(visitor, []byte(control.agent.cfg.Token), control.epoch, sid)
 	authMS := time.Since(authStart).Milliseconds()
-	log.Printf("RSX3 metric open_tcp sid=%d warp_ms=%d visitor_ms=%d data_auth_ms=%d ready=%t",
-		sid, warpMS, dialMS, authMS, err == nil)
+	log.Printf("RSX3 metric open_tcp sid=%d target_ms=%d visitor_ms=%d data_auth_ms=%d ready=%t",
+		sid, targetMS, dialMS, authMS, err == nil)
 	if err != nil {
 		_ = control.agent.send(frame{tcpResult, sid, []byte{5}})
 		return
 	}
 
-	// A control-side cancel aborts both directions, including idle WARP TCP.
+	// A control-side cancel aborts both directions, including idle target TCP.
 	finished := make(chan struct{})
 	defer close(finished)
 	go func() {
 		select {
 		case <-ctx.Done():
 			_ = visitor.Close()
-			_ = warp.Close()
+			_ = target.Close()
 		case <-finished:
 		}
 	}()
@@ -281,13 +282,13 @@ func (control *rsx3Control) handleTCP(ctx context.Context, sid uint32, host stri
 		}
 		out <- outcome{copyErr}
 	}
-	go pump(visitor, warp, &upstream)
-	go pump(warp, visitor, &downstream)
+	go pump(visitor, target, &upstream)
+	go pump(target, visitor, &downstream)
 	first := <-out
 	if first.err != nil {
 		// Avoid waiting forever on a peer after a hard I/O failure.
 		_ = visitor.Close()
-		_ = warp.Close()
+		_ = target.Close()
 	}
 	<-out
 	log.Printf("RSX3 metric tcp_summary sid=%d upload_bytes=%d download_bytes=%d duration_ms=%d",

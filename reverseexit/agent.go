@@ -1,6 +1,7 @@
 package reverseexit
 
-// RSX2 overseas Agent: only WARP SOCKS5 can open Internet connections.
+// RSX2/RSX3 overseas Agent: target connections only use a configured
+// loopback SOCKS5 proxy (WARP by default, or Xray for domain routing).
 
 import (
 	"context"
@@ -34,8 +35,9 @@ type agent struct {
 	streams map[uint32]stream
 }
 
-// Run retries exclusively through the existing local XTCP Visitor. Every
-// destination is reached through WARP SOCKS5, with no direct fallback.
+// Run retries exclusively through the existing local XTCP Visitor. Destinations
+// are reached through the explicitly selected local SOCKS5 server, never
+// through a direct-connect fallback in the Go Agent.
 func Run(ctx context.Context, cfg Config, onState func(string, string)) error {
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -321,10 +323,10 @@ func (s *tcpStream) deliver(f frame) {
 
 func (s *tcpStream) run(host string, port int) {
 	defer s.stop()
-	warpStarted := time.Now()
-	conn, err := warpTCP(context.Background(), s.agent.cfg, host, port)
-	log.Printf("RSX2 metric warp_connect sid=%d duration_ms=%d success=%t",
-		s.id, time.Since(warpStarted).Milliseconds(), err == nil)
+	targetStarted := time.Now()
+	conn, err := targetTCP(context.Background(), s.agent.cfg, host, port)
+	log.Printf("RSX2 metric target_socks_connect sid=%d duration_ms=%d success=%t",
+		s.id, time.Since(targetStarted).Milliseconds(), err == nil)
 	if err != nil {
 		_ = s.agent.send(frame{tcpResult, s.id, []byte{5}})
 		return
@@ -465,7 +467,7 @@ func (s *udpStream) deliverDatagram(data []byte) {
 
 func (s *udpStream) run() {
 	defer s.stop()
-	control, socket, relay, err := warpUDP(context.Background(), s.agent.cfg)
+	control, socket, relay, err := targetUDP(context.Background(), s.agent.cfg)
 	if err != nil {
 		_ = s.agent.send(frame{udpResult, s.id, []byte{5}})
 		return
@@ -485,7 +487,7 @@ func (s *udpStream) run() {
 		return
 	}
 	go func() {
-		// UDP ASSOCIATE lifetime ends when WARP closes this TCP channel.
+		// UDP ASSOCIATE lifetime ends when the target SOCKS server closes TCP.
 		_, _ = io.Copy(io.Discard, control)
 		s.stop()
 		_ = s.agent.send(frame{udpClose, s.id, nil})
@@ -520,7 +522,7 @@ func (s *udpStream) run() {
 			if _, _, _, err := decodeUDP(data); err != nil {
 				continue
 			}
-			// Pass the original SOCKS5 UDP header to WARP unchanged.
+			// Xray/WARP receives the original SOCKS5 UDP target header.
 			_, _ = socket.WriteToUDP(data, relay)
 		}
 	}

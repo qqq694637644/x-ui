@@ -77,6 +77,9 @@ func TestManagedFRPCBrutalRendersAtRootAndVerifiesCapability(t *testing.T) {
 	cfg.STUNServer = "stun.miwifi.com:3478"
 	agent := reverseexit.DefaultConfig()
 	agent.WARPAddr = "127.0.0.1:40000"
+	agent.TargetSOCKSAddr = "127.0.0.1:40001"
+	agent.TargetSOCKSUsername = "xray-user"
+	agent.TargetSOCKSPassword = "xray-password"
 	agent.Token = "test-token-more-than-16-characters"
 	cfg.CongestionMode, cfg.TargetMbps, cfg.MaxMbps = "brutal", 16, 24
 
@@ -94,6 +97,10 @@ func TestManagedFRPCBrutalRendersAtRootAndVerifiesCapability(t *testing.T) {
 		if !strings.Contains(content, expected) {
 			t.Fatalf("missing managed Brutal/WARP config %q", expected)
 		}
+	}
+	if strings.Contains(content, "40001") || strings.Contains(content, "xray-user") ||
+		strings.Contains(content, "xray-password") {
+		t.Fatal("new final-target Xray SOCKS5 was incorrectly applied to frpc/STUN/XTCP")
 	}
 	if strings.Index(content, "transport.quic.congestionMode") > strings.Index(content, "[[visitors]]") {
 		t.Fatal("XTCP Brutal option was not placed at TOML root")

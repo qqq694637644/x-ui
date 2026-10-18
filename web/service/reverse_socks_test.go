@@ -28,24 +28,27 @@ func TestReverseSocksWebConfigSecretsAndLifecycle(t *testing.T) {
 	}
 	defer service.Stop()
 	form := ReverseSocksForm{
-		Enabled:         false,
-		VisitorAddr:     "127.0.0.1:6000",
-		UDPBindAddr:     "127.0.0.1:6002",
-		UDPPeerAddr:     "127.0.0.1:6001",
-		WARPAddr:        "127.0.0.1:40000",
-		WARPUsername:    "myuser",
-		WARPPassword:    "super-secret-warp-password",
-		Token:           "super-secret-rsx2-token-123",
-		FRPCBinaryPath:  frpc,
-		FRPCConfigPath:  configPath,
-		FRPSServerAddr:  "127.0.0.1",
-		FRPSServerPort:  7000,
-		FRPCUser:        "0123456789abcdef",
-		FRPSToken:       "private-frps-token",
-		XTCPVisitorName: "overseas-xtcp-visitor",
-		XTCPServerName:  "rsx2_node",
-		XTCPSecretKey:   "private-xtcp-key",
-		STUNServer:      "1.1.1.1:3478",
+		Enabled:             false,
+		VisitorAddr:         "127.0.0.1:6000",
+		UDPBindAddr:         "127.0.0.1:6002",
+		UDPPeerAddr:         "127.0.0.1:6001",
+		WARPAddr:            "127.0.0.1:40000",
+		TargetSOCKSAddr:     "127.0.0.1:40001",
+		TargetSOCKSUsername: "target-user",
+		TargetSOCKSPassword: "target-socks-password",
+		WARPUsername:        "myuser",
+		WARPPassword:        "super-secret-warp-password",
+		Token:               "super-secret-rsx2-token-123",
+		FRPCBinaryPath:      frpc,
+		FRPCConfigPath:      configPath,
+		FRPSServerAddr:      "127.0.0.1",
+		FRPSServerPort:      7000,
+		FRPCUser:            "0123456789abcdef",
+		FRPSToken:           "private-frps-token",
+		XTCPVisitorName:     "overseas-xtcp-visitor",
+		XTCPServerName:      "rsx2_node",
+		XTCPSecretKey:       "private-xtcp-key",
+		STUNServer:          "1.1.1.1:3478",
 	}
 	view, err := service.Save(form)
 	if err != nil {
@@ -53,6 +56,9 @@ func TestReverseSocksWebConfigSecretsAndLifecycle(t *testing.T) {
 	}
 	if view.FRPCUser != form.FRPCUser || view.XTCPVisitorName != form.XTCPVisitorName ||
 		view.Token != form.Token || view.WARPPassword != form.WARPPassword ||
+		view.TargetSOCKSAddr != form.TargetSOCKSAddr ||
+		view.TargetSOCKSUsername != form.TargetSOCKSUsername ||
+		view.TargetSOCKSPassword != form.TargetSOCKSPassword ||
 		view.FRPSToken != form.FRPSToken || view.XTCPSecretKey != form.XTCPSecretKey || view.Enabled {
 		t.Fatalf("unexpected saved view: %+v", view)
 	}
@@ -61,6 +67,8 @@ func TestReverseSocksWebConfigSecretsAndLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(encoded), form.Token) || !strings.Contains(string(encoded), form.WARPPassword) ||
+		!strings.Contains(string(encoded), form.TargetSOCKSAddr) ||
+		!strings.Contains(string(encoded), form.TargetSOCKSPassword) ||
 		!strings.Contains(string(encoded), form.FRPSToken) || !strings.Contains(string(encoded), form.XTCPSecretKey) {
 		t.Fatal("single-user Web response did not contain configured secrets")
 	}
@@ -75,7 +83,10 @@ func TestReverseSocksWebConfigSecretsAndLifecycle(t *testing.T) {
 	if saved.Token != "super-secret-rsx2-token-123" ||
 		saved.WARPPassword != "super-secret-warp-password" ||
 		saved.FRPSToken != "private-frps-token" || saved.XTCPSecretKey != "private-xtcp-key" ||
-		saved.FRPCUser != form.FRPCUser || saved.XTCPVisitorName != form.XTCPVisitorName || !saved.Enabled {
+		saved.FRPCUser != form.FRPCUser || saved.XTCPVisitorName != form.XTCPVisitorName ||
+		saved.TargetSOCKSAddr != form.TargetSOCKSAddr ||
+		saved.TargetSOCKSUsername != form.TargetSOCKSUsername ||
+		saved.TargetSOCKSPassword != form.TargetSOCKSPassword || !saved.Enabled {
 		t.Fatal("Web editor changed secrets or did not enable service")
 	}
 	view, err = service.SetEnabled(false)
@@ -102,6 +113,9 @@ func TestReverseSocksWebConfigSecretsAndLifecycle(t *testing.T) {
 	defer other.Stop()
 	view, err = other.Get()
 	if err != nil || view.WARPAddr != "127.0.0.1:40000" || view.Token != form.Token ||
+		view.TargetSOCKSAddr != "127.0.0.1:40001" ||
+		view.TargetSOCKSUsername != "target-user" ||
+		view.TargetSOCKSPassword != "target-socks-password" ||
 		view.FRPCUser != form.FRPCUser || view.XTCPVisitorName != form.XTCPVisitorName {
 		t.Fatalf("restart did not restore saved config: %+v, err=%v", view, err)
 	}
@@ -110,11 +124,14 @@ func TestReverseSocksWebConfigSecretsAndLifecycle(t *testing.T) {
 	form.Enabled = false
 	form.WARPAddr = "127.0.0.1:40000"
 	form.Token, form.WARPPassword, form.FRPSToken, form.XTCPSecretKey = "", "", "", ""
+	form.TargetSOCKSAddr, form.TargetSOCKSUsername, form.TargetSOCKSPassword = "", "", ""
 	if _, err := other.Save(form); err != nil {
 		t.Fatal(err)
 	}
 	view, err = other.Get()
 	if err != nil || view.Token != "" || view.WARPPassword != "" ||
+		view.TargetSOCKSAddr != "" || view.TargetSOCKSUsername != "" ||
+		view.TargetSOCKSPassword != "" ||
 		view.FRPCUser != form.FRPCUser || view.XTCPVisitorName != form.XTCPVisitorName ||
 		view.FRPSToken != "" || view.XTCPSecretKey != "" {
 		t.Fatalf("explicitly cleared credentials were retained: %+v, err=%v", view, err)

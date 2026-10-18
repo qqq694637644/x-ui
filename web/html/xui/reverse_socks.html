@@ -10,7 +10,7 @@
                 <a-card title="XTCP 反向 SOCKS5 / WARP 出口" style="margin-bottom: 18px;">
                     <a-alert type="info" show-icon
                         message="境外 frpc Visitor 主动连接境内 Proxy"
-                        description="TCP 经 XTCP Stream；UDP 经 XTCP QUIC DATAGRAM。出口所有目标连接必须通过本地 WARP SOCKS5，代理失败时禁止 VPS 直连。服务端 frps 无需修改。"
+                        description="TCP 经 XTCP Stream，UDP 经 XTCP QUIC DATAGRAM。frpc 的 frps/STUN/XTCP 始终强制走 WARP；最终网站可通过单独的 Xray 本机 SOCKS5 入站按域名走 WARP 或 VPS freedom。Go Agent 不做直连回退。服务端 frps 无需修改。"
                         style="margin-bottom: 20px;"></a-alert>
                     <a-space>
 						<a-tag :color="frpc.state === 'running' ? 'green' : (frpc.state === 'error' ? 'red' : 'default')">
@@ -167,9 +167,20 @@
                                 </a-form-item>
                             </a-col>
                             <a-col :xs="24" :md="12">
-                                <a-form-item label="WARP SOCKS5 地址（必须本机）">
+                                <a-form-item label="frpc 专用 WARP SOCKS5（必须本机）">
                                     <a-input v-model.trim="form.warpAddr" placeholder="127.0.0.1:40000"></a-input>
                                 </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="Go Agent 最终目标 SOCKS5（留空继续全走 WARP）">
+                                    <a-input v-model.trim="form.targetSocksAddr" placeholder="127.0.0.1:40001"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :span="24">
+                                <a-alert type="info" show-icon
+                                    message="目标网站出站与 frpc 隧道出站相互独立"
+                                    description="填 127.0.0.1:40001 时，RSX3 / RSX2 目标 TCP 和 UDP 会经 Xray SOCKS5 入站，再按 Xray routing.rules 匹配：命中域名走 warp，其他目标可以走 freedom。frpc 控制、STUN、打洞、XTCP QUIC 仍仅使用上方的 WARP 40000。Xray SOCKS5 不可用时目标流量失败，不会绕过 Xray 回退。请先在入站列表建立监听 127.0.0.1:40001 的 SOCKS5（含 UDP）入站。"
+                                    style="margin-bottom: 12px;"></a-alert>
                             </a-col>
                             <a-col :xs="24" :md="12">
                                 <a-form-item label="WARP TCP CONNECT 健康检查目标">
@@ -197,6 +208,19 @@
                                         placeholder="无认证留空"></a-input>
                                 </a-form-item>
                             </a-col>
+                            <template v-if="form.targetSocksAddr">
+                                <a-col :xs="24" :md="12">
+                                    <a-form-item label="目标 SOCKS5 用户名（Xray 无认证留空）">
+                                        <a-input v-model="form.targetSocksUsername" autocomplete="off"></a-input>
+                                    </a-form-item>
+                                </a-col>
+                                <a-col :xs="24" :md="12">
+                                    <a-form-item label="目标 SOCKS5 密码">
+                                        <a-input v-model="form.targetSocksPassword" autocomplete="off"
+                                            placeholder="Xray 无认证留空"></a-input>
+                                    </a-form-item>
+                                </a-col>
+                            </template>
                             <a-col :xs="24" :md="24">
                                 <a-form-item label="RSX3 / RSX2 共享密钥（境内 Python REVERSE_SOCKS_TOKEN）">
                                     <a-input v-model="form.token" autocomplete="off"
@@ -206,7 +230,7 @@
                         </a-row>
                         <a-alert type="warning" show-icon
                             message="不兼容旧 RSX1"
-                            description="保存启用后必须同时部署新版 Python nat_node 和定制的两端 frpc。UDP 数据通过原生 QUIC DATAGRAM，单包上限 1100 字节（含会话 ID），超限丢弃，不通过 TCP 重传。WARP SOCKS5 必须支持 UDP ASSOCIATE。"
+                            description="保存启用后必须同时部署新版 Python nat_node 和定制的两端 frpc。UDP 数据通过原生 QUIC DATAGRAM，单包上限 1100 字节（含会话 ID），超限丢弃，不通过 TCP 重传。目标走 Xray SOCKS5 时需启用该入站的 UDP ASSOCIATE；frpc 专用 WARP SOCKS5 同样必须支持 UDP。"
                             style="margin: 8px 0 18px;"></a-alert>
                         <a-space :size="10">
                             <a-switch v-model="form.enabled" checked-children="启用" un-checked-children="停用"></a-switch>
@@ -253,6 +277,9 @@
                 udpBindAddr: '127.0.0.1:6002',
                 udpPeerAddr: '127.0.0.1:6001',
                 warpAddr: '',
+                targetSocksAddr: '',
+                targetSocksUsername: '',
+                targetSocksPassword: '',
                 warpProbe: '1.1.1.1:443',
                 warpUsername: '',
                 warpPassword: '',
@@ -379,7 +406,8 @@
                 if (!v) return;
                 for (const key of ['enabled', 'protocol', 'congestionMode', 'targetMbps', 'maxMbps',
                     'visitorAddr', 'udpBindAddr',
-                    'udpPeerAddr', 'warpAddr', 'warpProbe', 'warpUsername',
+                    'udpPeerAddr', 'warpAddr', 'targetSocksAddr', 'targetSocksUsername',
+                    'targetSocksPassword', 'warpProbe', 'warpUsername',
                     'warpPassword', 'token', 'frpsToken', 'xtcpSecretKey',
                     'frpcBinaryPath', 'frpcConfigPath', 'frpsServerAddr', 'frpsServerPort',
                     'frpcUser', 'xtcpVisitorName', 'xtcpServerName', 'stunServer']) {

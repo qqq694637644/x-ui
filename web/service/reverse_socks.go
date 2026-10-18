@@ -21,57 +21,63 @@ type reverseSocksSaved struct {
 // ReverseSocksForm is used only inside the authenticated x-ui dashboard.
 // The single-user editor submits complete values; empty secrets clear them.
 type ReverseSocksForm struct {
-	Enabled         bool   `json:"enabled" form:"enabled"`
-	Protocol        string `json:"protocol" form:"protocol"`
-	CongestionMode  string `json:"congestionMode" form:"congestionMode"`
-	TargetMbps      int    `json:"targetMbps" form:"targetMbps"`
-	MaxMbps         int    `json:"maxMbps" form:"maxMbps"`
-	VisitorAddr     string `json:"visitorAddr" form:"visitorAddr"`
-	UDPBindAddr     string `json:"udpBindAddr" form:"udpBindAddr"`
-	UDPPeerAddr     string `json:"udpPeerAddr" form:"udpPeerAddr"`
-	WARPAddr        string `json:"warpAddr" form:"warpAddr"`
-	WARPProbe       string `json:"warpProbe" form:"warpProbe"`
-	WARPUsername    string `json:"warpUsername" form:"warpUsername"`
-	WARPPassword    string `json:"warpPassword" form:"warpPassword"`
-	Token           string `json:"token" form:"token"`
-	FRPCBinaryPath  string `json:"frpcBinaryPath" form:"frpcBinaryPath"`
-	FRPCConfigPath  string `json:"frpcConfigPath" form:"frpcConfigPath"`
-	FRPSServerAddr  string `json:"frpsServerAddr" form:"frpsServerAddr"`
-	FRPSServerPort  int    `json:"frpsServerPort" form:"frpsServerPort"`
-	FRPCUser        string `json:"frpcUser" form:"frpcUser"`
-	FRPSToken       string `json:"frpsToken" form:"frpsToken"`
-	XTCPVisitorName string `json:"xtcpVisitorName" form:"xtcpVisitorName"`
-	XTCPServerName  string `json:"xtcpServerName" form:"xtcpServerName"`
-	XTCPSecretKey   string `json:"xtcpSecretKey" form:"xtcpSecretKey"`
-	STUNServer      string `json:"stunServer" form:"stunServer"`
+	Enabled             bool   `json:"enabled" form:"enabled"`
+	Protocol            string `json:"protocol" form:"protocol"`
+	CongestionMode      string `json:"congestionMode" form:"congestionMode"`
+	TargetMbps          int    `json:"targetMbps" form:"targetMbps"`
+	MaxMbps             int    `json:"maxMbps" form:"maxMbps"`
+	VisitorAddr         string `json:"visitorAddr" form:"visitorAddr"`
+	UDPBindAddr         string `json:"udpBindAddr" form:"udpBindAddr"`
+	UDPPeerAddr         string `json:"udpPeerAddr" form:"udpPeerAddr"`
+	WARPAddr            string `json:"warpAddr" form:"warpAddr"`
+	TargetSOCKSAddr     string `json:"targetSocksAddr" form:"targetSocksAddr"`
+	TargetSOCKSUsername string `json:"targetSocksUsername" form:"targetSocksUsername"`
+	TargetSOCKSPassword string `json:"targetSocksPassword" form:"targetSocksPassword"`
+	WARPProbe           string `json:"warpProbe" form:"warpProbe"`
+	WARPUsername        string `json:"warpUsername" form:"warpUsername"`
+	WARPPassword        string `json:"warpPassword" form:"warpPassword"`
+	Token               string `json:"token" form:"token"`
+	FRPCBinaryPath      string `json:"frpcBinaryPath" form:"frpcBinaryPath"`
+	FRPCConfigPath      string `json:"frpcConfigPath" form:"frpcConfigPath"`
+	FRPSServerAddr      string `json:"frpsServerAddr" form:"frpsServerAddr"`
+	FRPSServerPort      int    `json:"frpsServerPort" form:"frpsServerPort"`
+	FRPCUser            string `json:"frpcUser" form:"frpcUser"`
+	FRPSToken           string `json:"frpsToken" form:"frpsToken"`
+	XTCPVisitorName     string `json:"xtcpVisitorName" form:"xtcpVisitorName"`
+	XTCPServerName      string `json:"xtcpServerName" form:"xtcpServerName"`
+	XTCPSecretKey       string `json:"xtcpSecretKey" form:"xtcpSecretKey"`
+	STUNServer          string `json:"stunServer" form:"stunServer"`
 }
 
 type ReverseSocksView struct {
-	Enabled         bool                      `json:"enabled"`
-	Protocol        string                    `json:"protocol"`
-	CongestionMode  string                    `json:"congestionMode"`
-	TargetMbps      int                       `json:"targetMbps"`
-	MaxMbps         int                       `json:"maxMbps"`
-	VisitorAddr     string                    `json:"visitorAddr"`
-	UDPBindAddr     string                    `json:"udpBindAddr"`
-	UDPPeerAddr     string                    `json:"udpPeerAddr"`
-	WARPAddr        string                    `json:"warpAddr"`
-	WARPProbe       string                    `json:"warpProbe"`
-	WARPUsername    string                    `json:"warpUsername"`
-	WARPPassword    string                    `json:"warpPassword"`
-	Token           string                    `json:"token"`
-	FRPCBinaryPath  string                    `json:"frpcBinaryPath"`
-	FRPCConfigPath  string                    `json:"frpcConfigPath"`
-	FRPSServerAddr  string                    `json:"frpsServerAddr"`
-	FRPSServerPort  int                       `json:"frpsServerPort"`
-	FRPCUser        string                    `json:"frpcUser"`
-	FRPSToken       string                    `json:"frpsToken"`
-	XTCPVisitorName string                    `json:"xtcpVisitorName"`
-	XTCPServerName  string                    `json:"xtcpServerName"`
-	XTCPSecretKey   string                    `json:"xtcpSecretKey"`
-	STUNServer      string                    `json:"stunServer"`
-	FRPC            frpcRuntime               `json:"frpc"`
-	Status          reverseexit.RuntimeStatus `json:"status"`
+	Enabled             bool                      `json:"enabled"`
+	Protocol            string                    `json:"protocol"`
+	CongestionMode      string                    `json:"congestionMode"`
+	TargetMbps          int                       `json:"targetMbps"`
+	MaxMbps             int                       `json:"maxMbps"`
+	VisitorAddr         string                    `json:"visitorAddr"`
+	UDPBindAddr         string                    `json:"udpBindAddr"`
+	UDPPeerAddr         string                    `json:"udpPeerAddr"`
+	WARPAddr            string                    `json:"warpAddr"`
+	TargetSOCKSAddr     string                    `json:"targetSocksAddr"`
+	TargetSOCKSUsername string                    `json:"targetSocksUsername"`
+	TargetSOCKSPassword string                    `json:"targetSocksPassword"`
+	WARPProbe           string                    `json:"warpProbe"`
+	WARPUsername        string                    `json:"warpUsername"`
+	WARPPassword        string                    `json:"warpPassword"`
+	Token               string                    `json:"token"`
+	FRPCBinaryPath      string                    `json:"frpcBinaryPath"`
+	FRPCConfigPath      string                    `json:"frpcConfigPath"`
+	FRPSServerAddr      string                    `json:"frpsServerAddr"`
+	FRPSServerPort      int                       `json:"frpsServerPort"`
+	FRPCUser            string                    `json:"frpcUser"`
+	FRPSToken           string                    `json:"frpsToken"`
+	XTCPVisitorName     string                    `json:"xtcpVisitorName"`
+	XTCPServerName      string                    `json:"xtcpServerName"`
+	XTCPSecretKey       string                    `json:"xtcpSecretKey"`
+	STUNServer          string                    `json:"stunServer"`
+	FRPC                frpcRuntime               `json:"frpc"`
+	Status              reverseexit.RuntimeStatus `json:"status"`
 }
 
 type ReverseSocksService struct {
@@ -145,31 +151,34 @@ func (s *ReverseSocksService) view(config reverseSocksSaved) ReverseSocksView {
 		status = reverseexit.RuntimeStatus{Enabled: config.Enabled, State: "error", Error: s.startupError}
 	}
 	return ReverseSocksView{
-		Enabled:         config.Enabled,
-		Protocol:        config.Protocol,
-		CongestionMode:  config.CongestionMode,
-		TargetMbps:      config.TargetMbps,
-		MaxMbps:         config.MaxMbps,
-		VisitorAddr:     config.VisitorAddr,
-		UDPBindAddr:     config.UDPBindAddr,
-		UDPPeerAddr:     config.UDPPeerAddr,
-		WARPAddr:        config.WARPAddr,
-		WARPProbe:       config.WARPProbe,
-		WARPUsername:    config.WARPUsername,
-		WARPPassword:    config.WARPPassword,
-		Token:           config.Token,
-		FRPCBinaryPath:  config.FRPCBinaryPath,
-		FRPCConfigPath:  config.FRPCConfigPath,
-		FRPSServerAddr:  config.FRPSServerAddr,
-		FRPSServerPort:  config.FRPSServerPort,
-		FRPCUser:        config.FRPCUser,
-		FRPSToken:       config.FRPSToken,
-		XTCPVisitorName: config.XTCPVisitorName,
-		XTCPServerName:  config.XTCPServerName,
-		XTCPSecretKey:   config.XTCPSecretKey,
-		STUNServer:      config.STUNServer,
-		FRPC:            s.frpc.Status(),
-		Status:          status,
+		Enabled:             config.Enabled,
+		Protocol:            config.Protocol,
+		CongestionMode:      config.CongestionMode,
+		TargetMbps:          config.TargetMbps,
+		MaxMbps:             config.MaxMbps,
+		VisitorAddr:         config.VisitorAddr,
+		UDPBindAddr:         config.UDPBindAddr,
+		UDPPeerAddr:         config.UDPPeerAddr,
+		WARPAddr:            config.WARPAddr,
+		TargetSOCKSAddr:     config.TargetSOCKSAddr,
+		TargetSOCKSUsername: config.TargetSOCKSUsername,
+		TargetSOCKSPassword: config.TargetSOCKSPassword,
+		WARPProbe:           config.WARPProbe,
+		WARPUsername:        config.WARPUsername,
+		WARPPassword:        config.WARPPassword,
+		Token:               config.Token,
+		FRPCBinaryPath:      config.FRPCBinaryPath,
+		FRPCConfigPath:      config.FRPCConfigPath,
+		FRPSServerAddr:      config.FRPSServerAddr,
+		FRPSServerPort:      config.FRPSServerPort,
+		FRPCUser:            config.FRPCUser,
+		FRPSToken:           config.FRPSToken,
+		XTCPVisitorName:     config.XTCPVisitorName,
+		XTCPServerName:      config.XTCPServerName,
+		XTCPSecretKey:       config.XTCPSecretKey,
+		STUNServer:          config.STUNServer,
+		FRPC:                s.frpc.Status(),
+		Status:              status,
 	}
 }
 
@@ -264,6 +273,9 @@ func configFromReverseSocksForm(config reverseSocksSaved, form ReverseSocksForm)
 	config.UDPBindAddr = form.UDPBindAddr
 	config.UDPPeerAddr = form.UDPPeerAddr
 	config.WARPAddr = form.WARPAddr
+	config.TargetSOCKSAddr = form.TargetSOCKSAddr
+	config.TargetSOCKSUsername = form.TargetSOCKSUsername
+	config.TargetSOCKSPassword = form.TargetSOCKSPassword
 	// WARPProbe is an optional setting with a safe default. Unlike secret
 	// fields, an omitted probe retains the default/saved probe address.
 	if form.WARPProbe != "" {

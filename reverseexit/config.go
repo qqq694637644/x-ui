@@ -11,16 +11,23 @@ import (
 type Config struct {
 	// Protocol defaults to RSX3, which maps each TCP SOCKS session to its
 	// own authenticated XTCP QUIC stream. RSX2 is explicit legacy mode.
-	Protocol      string        `json:"protocol,omitempty"`
-	VisitorAddr   string        `json:"visitorAddr"`
-	UDPBindAddr   string        `json:"udpBindAddr"`
-	UDPPeerAddr   string        `json:"udpPeerAddr"`
-	WARPAddr      string        `json:"warpAddr"`
-	WARPProbe     string        `json:"warpProbe"`
-	WARPUsername  string        `json:"warpUsername"`
-	WARPPassword  string        `json:"warpPassword"`
-	Token         string        `json:"token"`
-	RetryInterval time.Duration `json:"-"`
+	Protocol    string `json:"protocol,omitempty"`
+	VisitorAddr string `json:"visitorAddr"`
+	UDPBindAddr string `json:"udpBindAddr"`
+	UDPPeerAddr string `json:"udpPeerAddr"`
+	WARPAddr    string `json:"warpAddr"`
+	// TargetSOCKSAddr is the final application TCP/UDP egress proxy. Empty
+	// preserves the original all-WARP behavior. When specified, it can be
+	// an Xray loopback SOCKS5 inbound that applies the user's routing rules.
+	// It NEVER changes frpc/STUN/XTCP's mandatory WARP transport.
+	TargetSOCKSAddr     string        `json:"targetSocksAddr,omitempty"`
+	TargetSOCKSUsername string        `json:"targetSocksUsername,omitempty"`
+	TargetSOCKSPassword string        `json:"targetSocksPassword,omitempty"`
+	WARPProbe           string        `json:"warpProbe"`
+	WARPUsername        string        `json:"warpUsername"`
+	WARPPassword        string        `json:"warpPassword"`
+	Token               string        `json:"token"`
+	RetryInterval       time.Duration `json:"-"`
 }
 
 func DefaultConfig() Config {
@@ -57,6 +64,13 @@ func (c Config) Validate() error {
 			return err
 		}
 	}
+	if c.TargetSOCKSAddr != "" {
+		if err := localhostAddr(c.TargetSOCKSAddr); err != nil {
+			return fmt.Errorf("target SOCKS5 endpoint must be local Xray or WARP: %w", err)
+		}
+	} else if c.TargetSOCKSUsername != "" || c.TargetSOCKSPassword != "" {
+		return errors.New("target SOCKS5 credentials require an explicit targetSocksAddr")
+	}
 	if c.UDPBindAddr == c.UDPPeerAddr {
 		return errors.New("UDP bind and frpc peer ports must differ")
 	}
@@ -74,6 +88,10 @@ func (c Config) Validate() error {
 	if len(c.WARPUsername) > 255 || len(c.WARPPassword) > 255 ||
 		(c.WARPUsername == "") != (c.WARPPassword == "") {
 		return errors.New("WARP SOCKS5 username/password must be both set or both empty (max 255 bytes)")
+	}
+	if len(c.TargetSOCKSUsername) > 255 || len(c.TargetSOCKSPassword) > 255 ||
+		(c.TargetSOCKSUsername == "") != (c.TargetSOCKSPassword == "") {
+		return errors.New("target SOCKS5 username/password must be both set or both empty (max 255 bytes)")
 	}
 	if c.RetryInterval <= 0 {
 		return errors.New("invalid retry interval")

@@ -80,10 +80,7 @@ func mytrnTestRecord(t *testing.T) *model.MyTRN {
 		Id: 1, Enable: true, Remark: "MyTRN", UUID: mytrnTestUUID,
 		ControlToken: mytrnTestToken, ControlListen: "127.0.0.1", ControlPort: 18080,
 		WarpHost: "127.0.0.1", WarpPort: 40000, EndpointIP: "119.98.144.218", EndpointPort: 57197,
-		KcpMtu: mytrnDefaultKcpMtu, KcpTti: mytrnDefaultKcpTti,
-		KcpUplinkCapacity: mytrnDefaultKcpUplinkCapacity,
-		KcpDownlinkCapacity: mytrnDefaultKcpDownlinkCapacity,
-		KcpReadBufferSize: mytrnDefaultKcpBufferSize, KcpWriteBufferSize: mytrnDefaultKcpBufferSize,
+		Hy2UpMbps: 64, Hy2DownMbps: 64,
 		CertificatePEM: cert, CertificateFingerprint: fingerprint,
 	}
 }
@@ -113,13 +110,31 @@ func testMyTRNOutboundsAndRules(t *testing.T, config *xray.Config, item *model.M
 		t.Fatal("reverse-in is not the MyTRN data channel")
 	}
 	stream := dial["streamSettings"].(map[string]interface{})
-	if stream["network"] != "kcp" || stream["security"] != "tls" ||
+	if stream["network"] != "hysteria" || stream["security"] != "tls" ||
 		stream["sockopt"].(map[string]interface{})["dialerProxy"] != mytrnWarpTag {
-		t.Fatalf("wrong mKCP / WARP dialer: %#v", stream)
+		t.Fatalf("wrong Hysteria2 / WARP dialer: %#v", stream)
+	}
+	if stream["hysteriaSettings"].(map[string]interface{})["auth"] != mytrnHy2Auth(item.ControlToken) {
+		t.Fatal("Hysteria authentication is not derived from the shared control token")
+	}
+	if int(stream["hysteriaSettings"].(map[string]interface{})["version"].(float64)) != 2 {
+		t.Fatal("not Hysteria2")
+	}
+	quic := stream["finalmask"].(map[string]interface{})["quicParams"].(map[string]interface{})
+	if quic["congestion"] != "brutal" || quic["brutalUp"] != "64mbps" || quic["brutalDown"] != "64mbps" ||
+		quic["disablePathMTUDiscovery"] != true || quic["maxIdleTimeout"] != float64(15) ||
+		quic["keepAlivePeriod"] != float64(5) {
+		t.Fatalf("wrong Brutal2 QUIC configuration: %#v", quic)
+	}
+	if _, hasKCP := stream["kcpSettings"]; hasKCP {
+		t.Fatal("obsolete mKCP transport still present")
 	}
 	tls := stream["tlsSettings"].(map[string]interface{})
 	if tls["allowInsecure"] != false || tls["disableSystemRoot"] != true {
 		t.Fatalf("TLS verification weakened: %#v", tls)
+	}
+	if tls["alpn"].([]interface{})[0] != "h3" {
+		t.Fatal("HTTP3 ALPN is mandatory for Hysteria2")
 	}
 	warp := outbounds[3]["settings"].(map[string]interface{})["servers"].([]interface{})[0].(map[string]interface{})
 	if warp["address"] != "127.0.0.1" || int(warp["port"].(float64)) != 40000 {
@@ -163,49 +178,48 @@ func TestMyTRNMergeKeepsExistingXrayAndNoSecondFreedom(t *testing.T) {
 	testMyTRNOutboundsAndRules(t, config, item)
 }
 
-func TestMyTRNKCPDefaultsPreserveWorkingConfiguration(t *testing.T) {
+func TestMyTRNHy2DefaultsAndDomainSeparatedAuth(t *testing.T) {
 	item := mytrnTestRecord(t)
-	kcp := mytrnKCPSettings(item)
-	if len(kcp) != 1 || kcp["mtu"] != 1200 {
-		t.Fatalf("unchanged settings must keep the original mtu-only mKCP config: %#v", kcp)
+	// Exact Python mytrn.config.hysteria_auth known vector. Mismatched
+	// derivation would pass both unit suites but fail the real A/B handshake.
+	const pythonAuth = "ce851c7793923487b4a4de884a8a29744cd9fa369807898a264f918e048002d7"
+	if mytrnHy2Auth(mytrnTestToken) != pythonAuth {
+		t.Fatal("Go / Python Hysteria2 credentials disagree")
 	}
-	// Newly migrated SQLite columns are zero for an existing installation.
-	// Loading its settings must show the effective Xray defaults, not zeros.
+	if mytrnHy2Auth(item.ControlToken) == item.ControlToken || len(mytrnHy2Auth(item.ControlToken)) != 64 {
+		t.Fatal("Hy2 auth must be an independent, full-strength keyed digest")
+	}
+	if mytrnHy2Auth(item.ControlToken) == mytrnHy2Auth(item.ControlToken+"changed") {
+		t.Fatal("Hy2 credentials did not change after token rotation")
+	}
 	oldRecord := &model.MyTRN{}
-	normalizeMyTRNKCP(oldRecord)
-	if oldRecord.KcpMtu != 1200 || oldRecord.KcpTti != 50 ||
-		oldRecord.KcpUplinkCapacity != 5 || oldRecord.KcpDownlinkCapacity != 20 ||
-		oldRecord.KcpCongestion || oldRecord.KcpReadBufferSize != 2 || oldRecord.KcpWriteBufferSize != 2 {
-		t.Fatalf("old installations do not inherit their previous Xray settings: %#v", oldRecord)
+	normalizeMyTRNHy2(oldRecord)
+	if oldRecord.Hy2UpMbps != 64 || oldRecord.Hy2DownMbps != 64 {
+		t.Fatalf("new Hy2 columns did not get defaults: %#v", oldRecord)
 	}
 	config := mytrnTestConfig(t)
 	if err := mergeMyTRNConfig(config, item, "a-cert.pem"); err != nil {
 		t.Fatal(err)
 	}
 	if !mytrnMatchesRunningConfig(item, config) {
-		t.Fatal("original running MyTRN must match the new default settings")
+		t.Fatal("generated running MyTRN must match the new Hy2 defaults")
 	}
 }
 
-func TestMyTRNKCPTuningChangesOnlyBOutboundAndApplicationState(t *testing.T) {
+func TestMyTRNHy2TuningChangesOnlyBOutboundAndApplicationState(t *testing.T) {
 	item := mytrnTestRecord(t)
 	config := mytrnTestConfig(t)
 	if err := mergeMyTRNConfig(config, item, "a-cert.pem"); err != nil {
 		t.Fatal(err)
 	}
 	tuned := *item
-	tuned.KcpMtu = 1100
-	tuned.KcpTti = 30
-	tuned.KcpUplinkCapacity = 10
-	tuned.KcpDownlinkCapacity = 40
-	tuned.KcpCongestion = true
-	tuned.KcpReadBufferSize = 4
-	tuned.KcpWriteBufferSize = 8
+	tuned.Hy2UpMbps = 128
+	tuned.Hy2DownMbps = 192
 	if mytrnMatchesRunningConfig(&tuned, config) {
-		t.Fatal("mKCP parameter changes must not show as already applied")
+		t.Fatal("Hy2 parameter changes must not show as already applied")
 	}
 	if status, _ := mytrnStatus(&tuned, config, ""); status != "pending_apply" {
-		t.Fatalf("changed mKCP settings displayed as %q instead of pending_apply", status)
+		t.Fatalf("changed Hy2 settings displayed as %q instead of pending_apply", status)
 	}
 	updated := mytrnTestConfig(t)
 	if err := mergeMyTRNConfig(updated, &tuned, "a-cert.pem"); err != nil {
@@ -213,60 +227,52 @@ func TestMyTRNKCPTuningChangesOnlyBOutboundAndApplicationState(t *testing.T) {
 	}
 	testMyTRNOutboundsAndRules(t, updated, &tuned)
 	if !mytrnMatchesRunningConfig(&tuned, updated) {
-		t.Fatal("new mKCP parameters were not recognized as applied")
+		t.Fatal("new Hy2 parameters were not recognized as applied")
 	}
 	var outbounds []map[string]interface{}
 	if err := json.Unmarshal(updated.OutboundConfigs, &outbounds); err != nil {
 		t.Fatal(err)
 	}
-	actual := outbounds[2]["streamSettings"].(map[string]interface{})["kcpSettings"].(map[string]interface{})
+	actual := outbounds[2]["streamSettings"].(map[string]interface{})["finalmask"].(map[string]interface{})["quicParams"].(map[string]interface{})
 	for key, want := range map[string]interface{}{
-		"mtu": 1100, "tti": 30, "uplinkCapacity": 10, "downlinkCapacity": 40,
-		"congestion": true, "readBufferSize": 4, "writeBufferSize": 8,
+		"congestion": "brutal", "brutalUp": "128mbps", "brutalDown": "192mbps",
+		"disablePathMTUDiscovery": true, "maxIdleTimeout": float64(15), "keepAlivePeriod": float64(5),
 	} {
-		// JSON decoding represents numbers as float64.
-		if number, ok := want.(int); ok {
-			want = float64(number)
-		}
 		if actual[key] != want {
-			t.Fatalf("mKCP %s: got %#v, want %#v", key, actual[key], want)
+			t.Fatalf("Hy2 %s: got %#v, want %#v", key, actual[key], want)
 		}
 	}
-	if len(actual) != 7 {
-		t.Fatalf("unexpected removed or unsupported mKCP options emitted: %#v", actual)
+	if len(actual) != 6 {
+		t.Fatalf("unexpected Hy2 QUIC options emitted: %#v", actual)
 	}
 	if len(config.InboundConfigs) != len(updated.InboundConfigs) {
-		t.Fatal("mKCP adjustment unexpectedly changed B's existing Xray inbounds")
+		t.Fatal("Hy2 adjustment unexpectedly changed B's existing Xray inbounds")
 	}
 }
 
-func TestMyTRNKCPInputValidation(t *testing.T) {
+func TestMyTRNHy2InputValidation(t *testing.T) {
 	checks := []struct {
 		name string
 		edit func(*model.MyTRN)
 	}{
-		{"MTU too small", func(c *model.MyTRN) { c.KcpMtu = 575 }},
-		{"MTU too large", func(c *model.MyTRN) { c.KcpMtu = 1461 }},
-		{"TTI too small", func(c *model.MyTRN) { c.KcpTti = 9 }},
-		{"TTI zero division risk", func(c *model.MyTRN) { c.KcpTti = 1001 }},
-		{"uplink zero", func(c *model.MyTRN) { c.KcpUplinkCapacity = 0 }},
-		{"downlink overflow", func(c *model.MyTRN) { c.KcpDownlinkCapacity = 1001 }},
-		{"read buffer zero", func(c *model.MyTRN) { c.KcpReadBufferSize = 0 }},
-		{"write buffer too large", func(c *model.MyTRN) { c.KcpWriteBufferSize = 257 }},
+		{"uplink zero", func(c *model.MyTRN) { c.Hy2UpMbps = 0 }},
+		{"uplink overflow", func(c *model.MyTRN) { c.Hy2UpMbps = 10001 }},
+		{"downlink zero", func(c *model.MyTRN) { c.Hy2DownMbps = 0 }},
+		{"downlink overflow", func(c *model.MyTRN) { c.Hy2DownMbps = 10001 }},
 	}
 	for _, tc := range checks {
 		t.Run(tc.name, func(t *testing.T) {
 			item := mytrnTestRecord(t)
 			tc.edit(item)
 			if err := validateMyTRNSettings(item); err == nil {
-				t.Fatal("invalid mKCP parameter was accepted")
+				t.Fatal("invalid Hy2 parameter was accepted")
 			}
 		})
 	}
 }
 
-func TestMyTRNKCPSettingsPersistAndRequireRestartOnlyWhenChanged(t *testing.T) {
-	if err := database.InitDB(filepath.Join(t.TempDir(), "mytrn-kcp.db")); err != nil {
+func TestMyTRNHy2SettingsPersistAndRequireRestartOnlyWhenChanged(t *testing.T) {
+	if err := database.InitDB(filepath.Join(t.TempDir(), "mytrn-hy2.db")); err != nil {
 		t.Fatal(err)
 	}
 	defer StopMyTRNControl()
@@ -280,30 +286,33 @@ func TestMyTRNKCPSettingsPersistAndRequireRestartOnlyWhenChanged(t *testing.T) {
 		Enable: true, Remark: stored.Remark, UUID: stored.UUID,
 		ControlListen: stored.ControlListen, ControlPort: stored.ControlPort,
 		WarpHost: stored.WarpHost, WarpPort: stored.WarpPort,
-		KcpMtu: 1200, KcpTti: 20, KcpUplinkCapacity: 8, KcpDownlinkCapacity: 32,
-		KcpCongestion: true, KcpReadBufferSize: 4, KcpWriteBufferSize: 8,
+		Hy2UpMbps: 128, Hy2DownMbps: 192,
 	}
 	changed, err := service.UpdateSettings(settings)
 	if err != nil || !changed {
-		t.Fatalf("mKCP tuning must schedule B's Xray restart: changed=%t err=%v", changed, err)
+		t.Fatalf("Hy2 tuning must schedule B's Xray restart: changed=%t err=%v", changed, err)
 	}
 	reloaded, err := service.Get()
-	if err != nil || reloaded.KcpTti != 20 || reloaded.KcpUplinkCapacity != 8 ||
-		reloaded.KcpDownlinkCapacity != 32 || !reloaded.KcpCongestion ||
-		reloaded.KcpReadBufferSize != 4 || reloaded.KcpWriteBufferSize != 8 {
-		t.Fatalf("mKCP settings were not persisted: record=%#v err=%v", reloaded, err)
+	if err != nil || reloaded.Hy2UpMbps != 128 || reloaded.Hy2DownMbps != 192 {
+		t.Fatalf("Hy2 settings were not persisted: record=%#v err=%v", reloaded, err)
 	}
 	changed, err = service.UpdateSettings(settings)
 	if err != nil || changed {
-		t.Fatalf("saving the exact same mKCP parameters must not restart Xray: changed=%t err=%v", changed, err)
+		t.Fatalf("saving the exact same Hy2 parameters must not restart Xray: changed=%t err=%v", changed, err)
 	}
-	settings.KcpTti = 0
+	settings.ControlToken = "mytrn-rotated-token-for-hysteria-9876543210"
+	changed, err = service.UpdateSettings(settings)
+	if err != nil || !changed {
+		t.Fatalf("Hy2 credential rotation must restart Xray: changed=%t err=%v", changed, err)
+	}
+	settings.ControlToken = ""
+	settings.Hy2UpMbps = 0
 	if _, err := service.UpdateSettings(settings); err == nil {
-		t.Fatal("invalid mKCP TTI must be rejected before updating the database")
+		t.Fatal("invalid Hy2 Mbps must be rejected before updating the database")
 	}
 	reloaded, err = service.Get()
-	if err != nil || reloaded.KcpTti != 20 {
-		t.Fatalf("invalid settings modified the saved KCP TTI: %v %v", reloaded, err)
+	if err != nil || reloaded.Hy2UpMbps != 128 {
+		t.Fatalf("invalid settings modified the saved Hy2 Mbps: %v %v", reloaded, err)
 	}
 }
 
@@ -426,10 +435,7 @@ func TestMyTRNGoControlMatchesExistingPythonA(t *testing.T) {
 		Enable: true, Remark: "MyTRN", UUID: mytrnTestUUID,
 		ControlToken: mytrnTestToken, ControlListen: "127.0.0.1", ControlPort: port,
 		WarpHost: "127.0.0.1", WarpPort: 40000,
-		KcpMtu: mytrnDefaultKcpMtu, KcpTti: mytrnDefaultKcpTti,
-		KcpUplinkCapacity: mytrnDefaultKcpUplinkCapacity,
-		KcpDownlinkCapacity: mytrnDefaultKcpDownlinkCapacity,
-		KcpReadBufferSize: mytrnDefaultKcpBufferSize, KcpWriteBufferSize: mytrnDefaultKcpBufferSize,
+		Hy2UpMbps: 64, Hy2DownMbps: 64,
 	}
 	changed, err := service.UpdateSettings(settings)
 	if err != nil || !changed {
@@ -683,10 +689,7 @@ func TestMyTRNControlBindAddressSamePortNeedsOnlyPanelRestart(t *testing.T) {
 		Enable: true, Remark: "MyTRN", UUID: mytrnTestUUID,
 		ControlToken: mytrnTestToken, ControlListen: "127.0.0.1", ControlPort: port,
 		WarpHost: "127.0.0.1", WarpPort: 40000,
-		KcpMtu: mytrnDefaultKcpMtu, KcpTti: mytrnDefaultKcpTti,
-		KcpUplinkCapacity: mytrnDefaultKcpUplinkCapacity,
-		KcpDownlinkCapacity: mytrnDefaultKcpDownlinkCapacity,
-		KcpReadBufferSize: mytrnDefaultKcpBufferSize, KcpWriteBufferSize: mytrnDefaultKcpBufferSize,
+		Hy2UpMbps: 64, Hy2DownMbps: 64,
 	}
 	if _, err := service.UpdateSettings(settings); err != nil {
 		t.Fatal(err)

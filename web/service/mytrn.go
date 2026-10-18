@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/x509"
@@ -29,19 +30,14 @@ import (
 )
 
 const (
-	mytrnID         = 1
-	mytrnDialTag    = "mytrn-dial"
-	mytrnWarpTag    = "mytrn-warp"
-	mytrnInboundTag = "mytrn-data-in"
-	mytrnFreedomTag = "mytrn-freedom"
-	mytrnServerName = "mytrn-a.test"
-	// Defaults preserve the currently working A Python configuration:
-	// A sets MTU=1200 and leaves the other mKCP settings to Xray 26.3.27.
-	mytrnDefaultKcpMtu              = 1200
-	mytrnDefaultKcpTti              = 50
-	mytrnDefaultKcpUplinkCapacity   = 5
-	mytrnDefaultKcpDownlinkCapacity = 20
-	mytrnDefaultKcpBufferSize       = 2
+	mytrnID             = 1
+	mytrnDialTag        = "mytrn-dial"
+	mytrnWarpTag        = "mytrn-warp"
+	mytrnInboundTag     = "mytrn-data-in"
+	mytrnFreedomTag     = "mytrn-freedom"
+	mytrnServerName     = "mytrn-a.test"
+	mytrnDefaultHy2Mbps = 64
+	mytrnHy2AuthContext = "mytrn-hysteria2-auth-v1"
 )
 
 var uuidPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -72,109 +68,81 @@ type MyTRNService struct{}
 // retains the existing secret. The remote IP/port are exclusively owned by
 // the control API.
 type MyTRNSettings struct {
-	Enable              bool   `json:"enable"`
-	Remark              string `json:"remark"`
-	UUID                string `json:"uuid"`
-	ControlToken        string `json:"controlToken"`
-	ControlListen       string `json:"controlListen"`
-	ControlPort         int    `json:"controlPort"`
-	WarpHost            string `json:"warpHost"`
-	WarpPort            int    `json:"warpPort"`
-	KcpMtu              int  `json:"kcpMtu"`
-	KcpTti              int  `json:"kcpTti"`
-	KcpUplinkCapacity   int  `json:"kcpUplinkCapacity"`
-	KcpDownlinkCapacity int  `json:"kcpDownlinkCapacity"`
-	KcpCongestion       bool `json:"kcpCongestion"`
-	KcpReadBufferSize   int  `json:"kcpReadBufferSize"`
-	KcpWriteBufferSize  int  `json:"kcpWriteBufferSize"`
-	ResetTrust          bool   `json:"resetTrust"`
+	Enable        bool   `json:"enable"`
+	Remark        string `json:"remark"`
+	UUID          string `json:"uuid"`
+	ControlToken  string `json:"controlToken"`
+	ControlListen string `json:"controlListen"`
+	ControlPort   int    `json:"controlPort"`
+	WarpHost      string `json:"warpHost"`
+	WarpPort      int    `json:"warpPort"`
+	Hy2UpMbps     int    `json:"hy2UpMbps"`
+	Hy2DownMbps   int    `json:"hy2DownMbps"`
+	ResetTrust    bool   `json:"resetTrust"`
 }
 
 type MyTRNView struct {
-	Enable                 bool   `json:"enable"`
-	Remark                 string `json:"remark"`
-	UUID                   string `json:"uuid"`
-	ControlToken           string `json:"controlToken"`
-	ControlTokenConfigured bool   `json:"controlTokenConfigured"`
-	ControlListen          string `json:"controlListen"`
-	ControlPort            int    `json:"controlPort"`
-	WarpHost               string `json:"warpHost"`
-	WarpPort               int    `json:"warpPort"`
-	KcpMtu                 int    `json:"kcpMtu"`
-	KcpTti                 int    `json:"kcpTti"`
-	KcpUplinkCapacity      int    `json:"kcpUplinkCapacity"`
-	KcpDownlinkCapacity    int    `json:"kcpDownlinkCapacity"`
-	KcpCongestion          bool   `json:"kcpCongestion"`
-	KcpReadBufferSize      int    `json:"kcpReadBufferSize"`
-	KcpWriteBufferSize     int    `json:"kcpWriteBufferSize"`
-	CertificateFingerprint string `json:"certificateFingerprint"`
-	EndpointIP             string `json:"endpointIP"`
-	EndpointPort           int    `json:"endpointPort"`
-	LastRegistration       int64  `json:"lastRegistration"`
-	Status                 string `json:"status"`
-	StatusMessage          string `json:"statusMessage"`
-	ControlListenerRestartRequired bool `json:"controlListenerRestartRequired"`
-	ControlListenerMessage string `json:"controlListenerMessage"`
+	Enable                         bool   `json:"enable"`
+	Remark                         string `json:"remark"`
+	UUID                           string `json:"uuid"`
+	ControlToken                   string `json:"controlToken"`
+	ControlTokenConfigured         bool   `json:"controlTokenConfigured"`
+	ControlListen                  string `json:"controlListen"`
+	ControlPort                    int    `json:"controlPort"`
+	WarpHost                       string `json:"warpHost"`
+	WarpPort                       int    `json:"warpPort"`
+	Hy2UpMbps                      int    `json:"hy2UpMbps"`
+	Hy2DownMbps                    int    `json:"hy2DownMbps"`
+	CertificateFingerprint         string `json:"certificateFingerprint"`
+	EndpointIP                     string `json:"endpointIP"`
+	EndpointPort                   int    `json:"endpointPort"`
+	LastRegistration               int64  `json:"lastRegistration"`
+	Status                         string `json:"status"`
+	StatusMessage                  string `json:"statusMessage"`
+	ControlListenerRestartRequired bool   `json:"controlListenerRestartRequired"`
+	ControlListenerMessage         string `json:"controlListenerMessage"`
 }
 
 func defaultMyTRN() *model.MyTRN {
 	return &model.MyTRN{
 		Id: mytrnID, Remark: "MyTRN 反向上网", ControlListen: "127.0.0.1",
 		ControlPort: 18080, WarpHost: "127.0.0.1", WarpPort: 40000,
-		KcpMtu: mytrnDefaultKcpMtu, KcpTti: mytrnDefaultKcpTti,
-		KcpUplinkCapacity: mytrnDefaultKcpUplinkCapacity,
-		KcpDownlinkCapacity: mytrnDefaultKcpDownlinkCapacity,
-		KcpReadBufferSize: mytrnDefaultKcpBufferSize,
-		KcpWriteBufferSize: mytrnDefaultKcpBufferSize,
+		Hy2UpMbps: mytrnDefaultHy2Mbps, Hy2DownMbps: mytrnDefaultHy2Mbps,
 	}
 }
 
-// Existing installations predate the mKCP columns. GORM gives new integer
-// columns zero values; restore the exact effective Xray defaults in memory.
-func normalizeMyTRNKCP(item *model.MyTRN) {
-	if item.KcpMtu == 0 {
-		item.KcpMtu = mytrnDefaultKcpMtu
+// The obsolete KCP columns are ignored. A one-time DB schema change loads
+// Hysteria2 defaults; there is no KCP runtime fallback or dual transport.
+func normalizeMyTRNHy2(item *model.MyTRN) {
+	if item.Hy2UpMbps == 0 {
+		item.Hy2UpMbps = mytrnDefaultHy2Mbps
 	}
-	if item.KcpTti == 0 {
-		item.KcpTti = mytrnDefaultKcpTti
-	}
-	if item.KcpUplinkCapacity == 0 {
-		item.KcpUplinkCapacity = mytrnDefaultKcpUplinkCapacity
-	}
-	if item.KcpDownlinkCapacity == 0 {
-		item.KcpDownlinkCapacity = mytrnDefaultKcpDownlinkCapacity
-	}
-	if item.KcpReadBufferSize == 0 {
-		item.KcpReadBufferSize = mytrnDefaultKcpBufferSize
-	}
-	if item.KcpWriteBufferSize == 0 {
-		item.KcpWriteBufferSize = mytrnDefaultKcpBufferSize
+	if item.Hy2DownMbps == 0 {
+		item.Hy2DownMbps = mytrnDefaultHy2Mbps
 	}
 }
 
-// Emit unchanged defaults as the original {"mtu":1200} JSON so upgrading
-// the panel alone does not unnecessarily restart the working data path.
-func mytrnKCPSettings(item *model.MyTRN) map[string]interface{} {
-	kcp := map[string]interface{}{"mtu": item.KcpMtu}
-	if item.KcpTti != mytrnDefaultKcpTti {
-		kcp["tti"] = item.KcpTti
+func mytrnHy2Auth(token string) string {
+	mac := hmac.New(sha256.New, []byte(token))
+	_, _ = mac.Write([]byte(mytrnHy2AuthContext))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func mytrnHysteriaSettings(item *model.MyTRN) map[string]interface{} {
+	return map[string]interface{}{
+		"version": 2, "auth": mytrnHy2Auth(item.ControlToken),
 	}
-	if item.KcpUplinkCapacity != mytrnDefaultKcpUplinkCapacity {
-		kcp["uplinkCapacity"] = item.KcpUplinkCapacity
+}
+
+func mytrnQuicParams(item *model.MyTRN) map[string]interface{} {
+	return map[string]interface{}{
+		"congestion":              "brutal",
+		"brutalUp":                fmt.Sprintf("%dmbps", item.Hy2UpMbps),
+		"brutalDown":              fmt.Sprintf("%dmbps", item.Hy2DownMbps),
+		"disablePathMTUDiscovery": true,
+		"maxIdleTimeout":          15,
+		"keepAlivePeriod":         5,
 	}
-	if item.KcpDownlinkCapacity != mytrnDefaultKcpDownlinkCapacity {
-		kcp["downlinkCapacity"] = item.KcpDownlinkCapacity
-	}
-	if item.KcpCongestion {
-		kcp["congestion"] = true
-	}
-	if item.KcpReadBufferSize != mytrnDefaultKcpBufferSize {
-		kcp["readBufferSize"] = item.KcpReadBufferSize
-	}
-	if item.KcpWriteBufferSize != mytrnDefaultKcpBufferSize {
-		kcp["writeBufferSize"] = item.KcpWriteBufferSize
-	}
-	return kcp
 }
 
 func (s *MyTRNService) Get() (*model.MyTRN, error) {
@@ -184,7 +152,7 @@ func (s *MyTRNService) Get() (*model.MyTRN, error) {
 		return defaultMyTRN(), nil
 	}
 	if err == nil {
-		normalizeMyTRNKCP(item)
+		normalizeMyTRNHy2(item)
 	}
 	return item, err
 }
@@ -203,18 +171,15 @@ func (s *MyTRNService) View() (*MyTRNView, error) {
 	listenerMessage := mytrnControlListenerMessage(item)
 	return &MyTRNView{
 		Enable: item.Enable, Remark: item.Remark, UUID: item.UUID,
-		ControlToken: item.ControlToken,
+		ControlToken:           item.ControlToken,
 		ControlTokenConfigured: item.ControlToken != "", ControlListen: item.ControlListen,
 		ControlPort: item.ControlPort, WarpHost: item.WarpHost, WarpPort: item.WarpPort,
-		KcpMtu: item.KcpMtu, KcpTti: item.KcpTti,
-		KcpUplinkCapacity: item.KcpUplinkCapacity, KcpDownlinkCapacity: item.KcpDownlinkCapacity,
-		KcpCongestion: item.KcpCongestion, KcpReadBufferSize: item.KcpReadBufferSize,
-		KcpWriteBufferSize: item.KcpWriteBufferSize,
+		Hy2UpMbps: item.Hy2UpMbps, Hy2DownMbps: item.Hy2DownMbps,
 		CertificateFingerprint: item.CertificateFingerprint, EndpointIP: item.EndpointIP,
 		EndpointPort: item.EndpointPort, LastRegistration: item.LastRegistration,
 		Status: status, StatusMessage: statusMessage,
 		ControlListenerRestartRequired: isMyTRNControlListenerRestartRequired(item),
-		ControlListenerMessage: listenerMessage,
+		ControlListenerMessage:         listenerMessage,
 	}, nil
 }
 
@@ -261,9 +226,15 @@ func mytrnMatchesRunningConfig(item *model.MyTRN, active *xray.Config) bool {
 			} `json:"servers"`
 		} `json:"settings"`
 		StreamSettings struct {
-			Network     string                     `json:"network"`
-			Security    string                     `json:"security"`
-			KcpSettings map[string]json.RawMessage `json:"kcpSettings"`
+			Network          string                     `json:"network"`
+			Security         string                     `json:"security"`
+			HysteriaSettings map[string]json.RawMessage `json:"hysteriaSettings"`
+			Finalmask        struct {
+				QuicParams map[string]json.RawMessage `json:"quicParams"`
+			} `json:"finalmask"`
+			TLSSettings struct {
+				ALPN []string `json:"alpn"`
+			} `json:"tlsSettings"`
 			Sockopt struct {
 				DialerProxy string `json:"dialerProxy"`
 			} `json:"sockopt"`
@@ -279,8 +250,11 @@ func mytrnMatchesRunningConfig(item *model.MyTRN, active *xray.Config) bool {
 			dialOK = outbound.Protocol == "vless" && outbound.Settings.Address == item.EndpointIP &&
 				outbound.Settings.Port == item.EndpointPort && outbound.Settings.ID == item.UUID &&
 				outbound.Settings.Reverse.Tag == mytrnInboundTag &&
-				outbound.StreamSettings.Network == "kcp" && outbound.StreamSettings.Security == "tls" &&
-				mytrnKCPMatches(item, outbound.StreamSettings.KcpSettings) &&
+				outbound.StreamSettings.Network == "hysteria" && outbound.StreamSettings.Security == "tls" &&
+				mytrnJSONMatches(outbound.StreamSettings.HysteriaSettings, mytrnHysteriaSettings(item)) &&
+				mytrnJSONMatches(outbound.StreamSettings.Finalmask.QuicParams, mytrnQuicParams(item)) &&
+				len(outbound.StreamSettings.TLSSettings.ALPN) == 1 &&
+				outbound.StreamSettings.TLSSettings.ALPN[0] == "h3" &&
 				outbound.StreamSettings.Sockopt.DialerProxy == mytrnWarpTag
 		case mytrnWarpTag:
 			warpOK = outbound.Protocol == "socks" && len(outbound.Settings.Servers) == 1 &&
@@ -291,12 +265,12 @@ func mytrnMatchesRunningConfig(item *model.MyTRN, active *xray.Config) bool {
 	return dialOK && warpOK
 }
 
-func mytrnKCPMatches(item *model.MyTRN, active map[string]json.RawMessage) bool {
+func mytrnJSONMatches(active map[string]json.RawMessage, expected map[string]interface{}) bool {
 	actualJSON, err := json.Marshal(active)
 	if err != nil {
 		return false
 	}
-	wantedJSON, err := json.Marshal(mytrnKCPSettings(item))
+	wantedJSON, err := json.Marshal(expected)
 	return err == nil && bytes.Equal(actualJSON, wantedJSON)
 }
 
@@ -319,21 +293,9 @@ func validateMyTRNSettings(item *model.MyTRN) error {
 	if net.ParseIP(item.WarpHost) == nil || net.ParseIP(item.WarpHost).To4() == nil {
 		return errors.New("MyTRN WARP SOCKS5 地址必须是 IPv4")
 	}
-	if item.KcpMtu < 576 || item.KcpMtu > 1460 {
-		return errors.New("MyTRN mKCP MTU 必须在 576-1460 字节；A Python 当前使用 1200")
-	}
-	// Xray 26.3.27 divides by (1000/TTI) when computing its window size.
-	// Values above 1000 may pass Xray's parser but can divide by zero at runtime.
-	if item.KcpTti < 10 || item.KcpTti > 1000 {
-		return errors.New("MyTRN mKCP TTI 必须在 10-1000 毫秒")
-	}
-	if item.KcpUplinkCapacity < 1 || item.KcpUplinkCapacity > 1000 ||
-		item.KcpDownlinkCapacity < 1 || item.KcpDownlinkCapacity > 1000 {
-		return errors.New("MyTRN mKCP 上下行容量必须在 1-1000 MB/s")
-	}
-	if item.KcpReadBufferSize < 1 || item.KcpReadBufferSize > 256 ||
-		item.KcpWriteBufferSize < 1 || item.KcpWriteBufferSize > 256 {
-		return errors.New("MyTRN mKCP 缓冲区必须在 1-256 MB")
+	if item.Hy2UpMbps < 1 || item.Hy2UpMbps > 10000 ||
+		item.Hy2DownMbps < 1 || item.Hy2DownMbps > 10000 {
+		return errors.New("MyTRN Hysteria Brutal 上下行目标必须在 1-10000 Mbps")
 	}
 	if item.Enable {
 		if !uuidPattern.MatchString(item.UUID) {
@@ -357,10 +319,7 @@ func (s *MyTRNService) UpdateSettings(edit MyTRNSettings) (bool, error) {
 	next.Enable, next.Remark, next.UUID = edit.Enable, edit.Remark, strings.TrimSpace(edit.UUID)
 	next.ControlListen, next.ControlPort = strings.TrimSpace(edit.ControlListen), edit.ControlPort
 	next.WarpHost, next.WarpPort = strings.TrimSpace(edit.WarpHost), edit.WarpPort
-	next.KcpMtu, next.KcpTti = edit.KcpMtu, edit.KcpTti
-	next.KcpUplinkCapacity, next.KcpDownlinkCapacity = edit.KcpUplinkCapacity, edit.KcpDownlinkCapacity
-	next.KcpCongestion = edit.KcpCongestion
-	next.KcpReadBufferSize, next.KcpWriteBufferSize = edit.KcpReadBufferSize, edit.KcpWriteBufferSize
+	next.Hy2UpMbps, next.Hy2DownMbps = edit.Hy2UpMbps, edit.Hy2DownMbps
 	if edit.ControlToken != "" {
 		next.ControlToken = edit.ControlToken
 	}
@@ -381,13 +340,12 @@ func (s *MyTRNService) UpdateSettings(edit MyTRNSettings) (bool, error) {
 		return false, err
 	}
 	applyMyTRNControlListener(&next)
-	// Do not restart Xray for a change to the control HTTP listener/token.
+	// HTTP listener changes do not restart Xray. Changing the control token
+	// also changes the domain-separated Hy2 auth and MUST restart Xray.
 	changesData := old.Enable != next.Enable || old.UUID != next.UUID ||
 		old.WarpHost != next.WarpHost || old.WarpPort != next.WarpPort ||
-		old.KcpMtu != next.KcpMtu || old.KcpTti != next.KcpTti ||
-		old.KcpUplinkCapacity != next.KcpUplinkCapacity || old.KcpDownlinkCapacity != next.KcpDownlinkCapacity ||
-		old.KcpCongestion != next.KcpCongestion ||
-		old.KcpReadBufferSize != next.KcpReadBufferSize || old.KcpWriteBufferSize != next.KcpWriteBufferSize ||
+		old.Hy2UpMbps != next.Hy2UpMbps || old.Hy2DownMbps != next.Hy2DownMbps ||
+		old.ControlToken != next.ControlToken ||
 		old.CertificateFingerprint != next.CertificateFingerprint
 	return changesData, nil
 }
@@ -575,10 +533,13 @@ func mergeMyTRNConfig(conf *xray.Config, item *model.MyTRN, certFile string) err
 			"reverse": map[string]interface{}{"tag": mytrnInboundTag},
 		},
 		"streamSettings": map[string]interface{}{
-			"network": "kcp", "security": "tls", "kcpSettings": mytrnKCPSettings(item),
+			"network": "hysteria", "security": "tls",
+			"hysteriaSettings": mytrnHysteriaSettings(item),
+			"finalmask":        map[string]interface{}{"quicParams": mytrnQuicParams(item)},
 			"tlsSettings": map[string]interface{}{
 				"serverName": mytrnServerName, "allowInsecure": false,
 				"disableSystemRoot": true,
+				"alpn":              []string{"h3"},
 				"certificates":      []interface{}{map[string]interface{}{"certificateFile": certFile, "usage": "verify"}},
 			},
 			"sockopt": map[string]interface{}{"dialerProxy": mytrnWarpTag},
@@ -674,7 +635,7 @@ func rejectShadowedMyTRNRouting(rules []json.RawMessage) error {
 						if r == "0.0.0.0/0" || r == "::/0" {
 							wildcard = true
 						}
-						}
+					}
 					if wildcard {
 						continue
 					}

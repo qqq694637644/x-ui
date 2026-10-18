@@ -97,4 +97,4 @@ Review fixes: target HTTPS benchmarks only pass if the **full requested byte cou
 
 The full integration fixture uses unmodified upstream frps 0.69.0, two custom frpc processes, Python3.13 and the Go Agent with a local fake WARP. No CI test claims production cross-border bandwidth or a completed seven-day soak. After deployment, use the dashboard's coverage and stability history for that real-world acceptance step.
 
-The diagnostics workflow pins companion commits, rather than depending on PR branches that can be deleted after merge. The tested pair is frp `3b7aeb62777bbd898ffd0720a1a672ca3a7e1293` and nat_node `04245af4c41810efe19eddb7805b2b4cc2c67c53`. Each build's `diagnostics-versions.txt` records the actual three repository revisions alongside the binary checksums.
+The diagnostics workflow pins companion commits, rather than depending on PR branches that can be deleted after merge. The tested pair is frp `3b7aeb62777bbd898ffd0720a1a672ca3a7e1293` and nat_node `e1c059ada7b9a7f7747b4482ae8e6715a9054272`. Each build's `diagnostics-versions.txt` records the actual three repository revisions alongside the binary checksums.

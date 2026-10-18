@@ -13,7 +13,7 @@ jobs:
     timeout-minutes: 20
     env:
       FRP_DIAGNOSTICS_SHA: 3b7aeb62777bbd898ffd0720a1a672ca3a7e1293
-      NAT_NODE_DIAGNOSTICS_SHA: 04245af4c41810efe19eddb7805b2b4cc2c67c53
+      NAT_NODE_DIAGNOSTICS_SHA: e1c059ada7b9a7f7747b4482ae8e6715a9054272
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

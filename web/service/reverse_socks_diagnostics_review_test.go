@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"io"
+	"math"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -31,15 +32,15 @@ func TestDiagnosticsBothSideFailureRatesStayIndependent(t *testing.T) {
 		t.Fatal("Go Agent healthy rate incorrectly reported")
 	}
 	nodeWindow, rate = failureWindow(nodeWindow, now, 20, 11)
-	if rate == nil || *rate != 55 {
+	if rate == nil || math.Abs(*rate-55) > 1e-6 {
 		t.Fatal("Windows Python failures omitted")
 	}
 	goWindow, rate = failureWindow(goWindow, now.Add(6*time.Minute), 20, 1)
-	if rate == nil || *rate != 5 || len(goWindow) != 1 {
+	if rate == nil || math.Abs(*rate-5) > 1e-6 || len(goWindow) != 1 {
 		t.Fatal("Go rate did not drop stale samples")
 	}
 	nodeWindow, rate = failureWindow(nodeWindow, now.Add(6*time.Minute), 20, 4)
-	if rate == nil || *rate != 20 || len(nodeWindow) != 1 {
+	if rate == nil || math.Abs(*rate-20) > 1e-6 || len(nodeWindow) != 1 {
 		t.Fatal("Python rate did not drop stale samples")
 	}
 }

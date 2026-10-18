@@ -184,7 +184,9 @@ func TestDiagnosticsReportTaskStoresPrivateUnredactedBundle(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	tasks := d.runner.Snapshot()
-	if tasks[0].State != "completed" {
+	// A report with missing sources is successfully saved, but its diagnostic
+	// verification must fail explicitly rather than being labelled passed.
+	if tasks[0].State != "completed_failed" || tasks[0].Error == "" {
 		t.Fatalf("report task: %+v", tasks[0])
 	}
 	path, err := rsxdiag.ReportPath(d.root, task.ID, "zip")

@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+{{template "head" .}}
+<body>
+<a-layout id="app" v-cloak>
+    {{template "commonSider" .}}
+    <a-layout id="content-layout">
+        <a-layout-content style="margin: 24px 16px;">
+            <a-spin :spinning="loading">
+                <a-card title="XTCP 反向 SOCKS5 / WARP 出口" style="margin-bottom: 18px;">
+                    <a-alert type="info" show-icon
+                        message="境外 frpc Visitor 主动连接境内 Proxy"
+                        description="TCP 经 XTCP Stream，UDP 经 XTCP QUIC DATAGRAM。frpc 的 frps/STUN/XTCP 始终强制走 WARP；最终网站可通过单独的 Xray 本机 SOCKS5 入站按域名走 WARP 或 VPS freedom。Go Agent 不做直连回退。服务端 frps 无需修改。"
+                        style="margin-bottom: 20px;"></a-alert>
+                    <a-space>
+						<a-tag :color="frpc.state === 'running' ? 'green' : (frpc.state === 'error' ? 'red' : 'default')">
+							frpc：[[ frpcLabel ]][[ frpc.pid ? '（PID ' + frpc.pid + '）' : '' ]]
+						</a-tag>
+                        <a-tag :color="status.state === 'online' ? 'green' : (status.state === 'error' ? 'red' : 'blue')">
+                            XTCP/[[ (form.protocol || 'rsx3').toUpperCase() ]]：[[ stateLabel ]]
+                        </a-tag>
+                        <a-tag :color="status.warpState === 'ready' ? 'green' : (status.warpState === 'unavailable' ? 'red' : 'default')">
+                            WARP TCP/UDP：[[ warpLabel ]]
+                        </a-tag>
+                        <a-tag :color="form.enabled ? 'green' : 'default'">
+                            [[ form.enabled ? '已启用' : '已停用' ]]
+                        </a-tag>
+                    </a-space>
+                    <a-alert v-if="status.error" type="error" show-icon :message="status.error"
+                        style="margin-top: 15px;"></a-alert>
+                    <a-alert v-if="status.warpError" type="error" show-icon :message="status.warpError"
+                        style="margin-top: 15px;"></a-alert>
+                    <a-alert v-if="frpc.error" type="error" show-icon :message="frpc.error"
+                        style="margin-top: 15px;"></a-alert>
+                    <a-alert type="warning" show-icon message="健康探测只验证 WARP SOCKS5 的 CONNECT / UDP ASSOCIATE 成功"
+                        description="它不能证明最终公网 IP 或 XTCP STUN 打洞候选地址已被隐藏，需要另行抓包验收。"
+                        style="margin-top: 15px;"></a-alert>
+                </a-card>
+                <a-card title="自定义 frpc 进程与服务端配置" style="margin-bottom: 18px;">
+                    <a-alert type="info" show-icon
+                        message="x-ui 独占管理指定的定制 frpc 子进程"
+                        description="启用后会验证二进制和生成的 TOML，校验通过才写入配置文件并启动 frpc，然后启动 Go Exit Agent；停用、面板退出和重启仅会停止由本面板创建的 frpc，不影响其他实例。修改后点击「保存并应用」重新校验与启动。"
+                        style="margin-bottom: 15px;"></a-alert>
+                    <a-row :gutter="18">
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="自定义 frpc 可执行文件的绝对路径">
+                                <a-input v-model.trim="form.frpcBinaryPath" placeholder="/opt/customfrp/frpc_linux_amd64"></a-input>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="x-ui 专用 frpc.toml 文件路径（自动写入）">
+                                <a-input v-model.trim="form.frpcConfigPath" placeholder="/etc/x-ui/reverse-socks/frpc.toml"></a-input>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="第三方 frps 地址（IP 或域名）">
+                                <a-input v-model.trim="form.frpsServerAddr" placeholder="frps.example.com"></a-input>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="第三方 frps TCP 端口">
+                                <a-input-number v-model="form.frpsServerPort" :min="1" :max="65535"
+                                    style="width: 100%;"></a-input-number>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="frpc 用户标识（TOML 顶层 user）">
+                                <a-input v-model.trim="form.frpcUser" autocomplete="off"
+                                    placeholder="按服务商提供的 user 填写，无需时留空"></a-input>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="frps Auth Token">
+                                <a-input v-model="form.frpsToken" autocomplete="off"
+                                    placeholder="frps 认证 Token"></a-input>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="XTCP Visitor 名称（[[visitors]] 的 name）">
+                                <a-input v-model.trim="form.xtcpVisitorName" autocomplete="off"
+                                    placeholder="例如 overseas-xtcp-visitor"></a-input>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="境内 Proxy 的 serverName">
+                                <a-input v-model.trim="form.xtcpServerName" placeholder="rsx2_node"></a-input>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="两端 XTCP secretKey">
+                                <a-input v-model="form.xtcpSecretKey" autocomplete="off"
+                                    placeholder="两端共享的 XTCP 密钥"></a-input>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="STUN 服务器（域名或 IPv4:端口）">
+                                <a-input v-model.trim="form.stunServer" placeholder="stun.miwifi.com:3478"></a-input>
+                            </a-form-item>
+                        </a-col>
+                    </a-row>
+                    <a-alert type="info" show-icon style="margin-bottom: 15px;"
+                        message="frpc user 和 Visitor name 均可自定义，保存后自动写入 frpc.toml"
+                        description="user 是整个 frpc 的顶层配置，Visitor name 是 [[visitors]] 中的本地名称；serverName 则是境内 Proxy 的名称，三者不能混淆。填写一次「保存并应用」，以后 x-ui 重启和重新保存都使用这些值，不必再手工改 TOML。"></a-alert>
+                    <a-alert type="warning" show-icon style="margin-bottom: 15px;"
+                        message="受管配置文件会被 x-ui 覆写"
+                        description="请为 frpc 指定专用配置文件，不能使用其他实例正在使用的配置；写入权限为 0600。本单用户页面直接显示已保存的 Token、密钥及密码，请保护面板登录和 HTTPS 访问。STUN 可填域名，但域名解析可能使用 VPS 的系统 DNS；想避免本机 DNS 查询请填数字 IPv4。"></a-alert>
+                    <a-space>
+                        <a-button @click="verifyFrpc">校验当前填写的配置（不保存）</a-button>
+                        <a-button @click="restart">重启 frpc + Agent</a-button>
+                        <a-checkbox v-model="printRestartLogs">重启时打印 frpc 日志到 Web</a-checkbox>
+                    </a-space>
+                    <a-card v-if="showRestartLogs" size="small" title="本次重启 frpc 日志（仅内存，最多 64 KiB）"
+                        style="margin-top: 16px;">
+                        <a-space style="margin-bottom: 10px;">
+                            <a-button size="small" @click="fetchRestartLogs">刷新日志</a-button>
+                            <a-button size="small" @click="showRestartLogs = false">隐藏日志</a-button>
+                        </a-space>
+                        <pre style="max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #111; color: #ddd; padding: 12px;">[[ restartLogText || '等待 frpc 输出...' ]]</pre>
+                        <a-alert type="warning" show-icon
+                            message="按个人使用要求，日志原样显示、不做脱敏；可能包含 Token、密码、服务器地址等敏感信息，请勿公开分享。"
+                            style="margin-top: 10px;"></a-alert>
+                    </a-card>
+                </a-card>
+
+                <a-card title="TCP / UDP 数据通道和 WARP 强制出口">
+                    <a-form layout="vertical">
+                        <a-row :gutter="18">
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="出口协议（境内 Python 必须使用同一版本）">
+                                    <a-select v-model="form.protocol">
+                                        <a-select-option value="rsx3">RSX3 · 每条 TCP 连接独立 QUIC Stream（推荐）</a-select-option>
+                                        <a-select-option value="rsx2">RSX2 · 单 Stream 复用（兼容）</a-select-option>
+                                    </a-select>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="XTCP QUIC 双端发送拥塞模式（仅境外此处配置）">
+                                    <a-select v-model="form.congestionMode">
+                                        <a-select-option value="cubic">CUBIC / 默认（保持原行为）</a-select-option>
+                                        <a-select-option value="brutal">Brutal 风格 · 有界发送速率（实验）</a-select-option>
+                                    </a-select>
+                                </a-form-item>
+                            </a-col>
+                            <template v-if="form.congestionMode === 'brutal'">
+                                <a-col :xs="24" :md="12">
+                                    <a-form-item label="境外发送目标带宽 (Mbps，不再限制为 64)">
+                                        <a-input-number v-model.number="form.targetMbps" :min="1"
+                                            :precision="0" style="width:100%"></a-input-number>
+                                    </a-form-item>
+                                </a-col>
+                                <a-col :xs="24" :md="12">
+                                    <a-form-item label="境外总发送上限 (Mbps, 不低于目标)">
+                                        <a-input-number v-model.number="form.maxMbps" :min="1"
+                                            :precision="0" style="width:100%"></a-input-number>
+                                    </a-form-item>
+                                </a-col>
+                            </template>
+                            <a-col :span="24">
+                                <a-alert type="warning" show-icon
+                                    message="Brutal 必须境内 Proxy / 境外 Visitor 两端分别启用"
+                                    description="本页面仅管理境外 frpc。境内 Windows frpc.toml 可独立设置 transport.quic.congestionMode、targetMbps 和 maxMbps，保留 UDP 39999。已取消 64 Mbps 人为上限，但仍有数值安全校验、发送窗口和背压保护。Brutal 仍需 WARP SOCKS5 UDP；设置过高可能加剧拥塞。"
+                                    style="margin-bottom: 12px;"></a-alert>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="XTCP Visitor TCP 地址（frpc bindAddr:bindPort）">
+                                    <a-input v-model.trim="form.visitorAddr" placeholder="127.0.0.1:6000"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="frpc 专用 WARP SOCKS5（必须本机）">
+                                    <a-input v-model.trim="form.warpAddr" placeholder="127.0.0.1:40000"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="Go Agent 最终目标 SOCKS5（留空继续全走 WARP）">
+                                    <a-input v-model.trim="form.targetSocksAddr" placeholder="127.0.0.1:40001"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :span="24">
+                                <a-alert type="info" show-icon
+                                    message="目标网站出站与 frpc 隧道出站相互独立"
+                                    description="填 127.0.0.1:40001 时，RSX3 / RSX2 目标 TCP 和 UDP 会经 Xray SOCKS5 入站，再按 Xray routing.rules 匹配：命中域名走 warp，其他目标可以走 freedom。frpc 控制、STUN、打洞、XTCP QUIC 仍仅使用上方的 WARP 40000。Xray SOCKS5 不可用时目标流量失败，不会绕过 Xray 回退。请先在入站列表建立监听 127.0.0.1:40001 的 SOCKS5（含 UDP）入站。"
+                                    style="margin-bottom: 12px;"></a-alert>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="WARP TCP CONNECT 健康检查目标">
+                                    <a-input v-model.trim="form.warpProbe" placeholder="1.1.1.1:443"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="Go UDP 本地绑定（visitors.datagram.peerAddr）">
+                                    <a-input v-model.trim="form.udpBindAddr" placeholder="127.0.0.1:6002"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="frpc UDP 本地接收（visitors.datagram.listenAddr）">
+                                    <a-input v-model.trim="form.udpPeerAddr" placeholder="127.0.0.1:6001"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="WARP SOCKS5 用户名（无认证留空）">
+                                    <a-input v-model="form.warpUsername" autocomplete="off"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="WARP SOCKS5 密码">
+                                    <a-input v-model="form.warpPassword" autocomplete="off"
+                                        placeholder="无认证留空"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <template v-if="form.targetSocksAddr">
+                                <a-col :xs="24" :md="12">
+                                    <a-form-item label="目标 SOCKS5 用户名（Xray 无认证留空）">
+                                        <a-input v-model="form.targetSocksUsername" autocomplete="off"></a-input>
+                                    </a-form-item>
+                                </a-col>
+                                <a-col :xs="24" :md="12">
+                                    <a-form-item label="目标 SOCKS5 密码">
+                                        <a-input v-model="form.targetSocksPassword" autocomplete="off"
+                                            placeholder="Xray 无认证留空"></a-input>
+                                    </a-form-item>
+                                </a-col>
+                            </template>
+                            <a-col :xs="24" :md="24">
+                                <a-form-item label="RSX3 / RSX2 共享密钥（境内 Python REVERSE_SOCKS_TOKEN）">
+                                    <a-input v-model="form.token" autocomplete="off"
+                                        placeholder="至少 16 个字符"></a-input>
+                                </a-form-item>
+                            </a-col>
+                        </a-row>
+                        <a-alert type="warning" show-icon
+                            message="不兼容旧 RSX1"
+                            description="保存启用后必须同时部署新版 Python nat_node 和定制的两端 frpc。UDP 数据通过原生 QUIC DATAGRAM，单包上限 1100 字节（含会话 ID），超限丢弃，不通过 TCP 重传。目标走 Xray SOCKS5 时需启用该入站的 UDP ASSOCIATE；frpc 专用 WARP SOCKS5 同样必须支持 UDP。"
+                            style="margin: 8px 0 18px;"></a-alert>
+                        <a-space :size="10">
+                            <a-switch v-model="form.enabled" checked-children="启用" un-checked-children="停用"></a-switch>
+                            <a-button type="primary" @click="save">保存并应用</a-button>
+                            <a-button @click="start">启动当前保存配置</a-button>
+                            <a-button type="danger" @click="stop">停止</a-button>
+                            <a-button @click="refresh">刷新状态</a-button>
+                        </a-space>
+                    </a-form>
+                </a-card>
+                <a-card title="frpc.toml 配置预览（完整内容）" style="margin-top: 18px;">
+                    <a-alert type="warning" show-icon
+                        message="必须使用本项目定制的 frpc；SOCKS5 控制连接与 UDP 打洞都走 WARP"
+                        description="transport.proxyURL 只代理 TCP 控制连接；额外的 natTraversal.udpProxyURL 才会强制 STUN、打洞和 QUIC 通过 SOCKS5 UDP ASSOCIATE。任何一条通道失败均不得回退直连。真实 WARP P2P 入站能力需上线验证。"
+                        style="margin-bottom: 16px;"></a-alert>
+                    <a-alert type="info" show-icon style="margin-bottom: 12px;"
+                        message="当前表单的完整 TOML 预览"
+                        description="直接显示当前填写的 Token、密钥与 SOCKS5 密码；保存并应用后由 x-ui 后端生成实际文件。wireProtocol=v1 兼容 frps 0.69；禁用辅助候选地址及直连兜底。"></a-alert>
+                    <a-textarea ref="frpcTextarea" :value="frpcTemplate" :rows="25" readonly
+                        style="font-family: monospace; font-size: 12px;"></a-textarea>
+                </a-card>
+            </a-spin>
+        </a-layout-content>
+    </a-layout>
+</a-layout>
+{{template "js" .}}
+<script>
+    const app = new Vue({
+        delimiters: ['[[', ']]'],
+        el: '#app',
+        data: {
+            siderDrawer,
+            loading: false,
+            printRestartLogs: false,
+            showRestartLogs: false,
+            restartLogText: '',
+            form: {
+                enabled: false,
+                protocol: 'rsx3',
+                congestionMode: 'cubic',
+                targetMbps: 16,
+                maxMbps: 24,
+                visitorAddr: '127.0.0.1:6000',
+                udpBindAddr: '127.0.0.1:6002',
+                udpPeerAddr: '127.0.0.1:6001',
+                warpAddr: '',
+                targetSocksAddr: '',
+                targetSocksUsername: '',
+                targetSocksPassword: '',
+                warpProbe: '1.1.1.1:443',
+                warpUsername: '',
+                warpPassword: '',
+                token: '',
+                frpcBinaryPath: '/opt/customfrp/frpc_linux_amd64',
+                frpcConfigPath: '/etc/x-ui/reverse-socks/frpc.toml',
+                frpsServerAddr: '',
+                frpsServerPort: 7000,
+                frpcUser: '',
+                frpsToken: '',
+                xtcpVisitorName: 'rsx2_outside',
+                xtcpServerName: 'rsx2_node',
+                xtcpSecretKey: '',
+                stunServer: ''
+            },
+            status: {state: 'stopped', error: '', warpState: 'unknown'},
+            frpc: {state: 'stopped', pid: 0, error: ''}
+        },
+        computed: {
+            stateLabel() {
+                return ({
+                    online: '已连接',
+                    connecting: '连接中',
+                    error: '连接异常',
+                    stopped: '已停止'
+                })[this.status.state] || this.status.state;
+            },
+            warpLabel() {
+                return ({
+                    ready: '握手成功',
+                    checking: '检查中',
+                    unavailable: '连接失败',
+                    unknown: '尚未检测'
+                })[this.status.warpState] || '尚未检测';
+            },
+            frpcLabel() {
+                return ({running: '正在运行', stopped: '已停止', error: '异常'})[this.frpc.state] || this.frpc.state;
+            },
+            frpcTemplate() {
+                const port = (this.form.visitorAddr || '127.0.0.1:6000').split(':').pop();
+                const peer = this.form.udpBindAddr || '127.0.0.1:6002';
+                const udpPort = this.form.udpPeerAddr || '127.0.0.1:6001';
+                const proxy = this.form.warpAddr || '127.0.0.1:REPLACE_WARP_SOCKS_PORT';
+                const credentials = this.form.warpUsername
+                    ? encodeURIComponent(this.form.warpUsername) + ':' +
+                        encodeURIComponent(this.form.warpPassword) + '@'
+                    : '';
+                const socks = 'socks5://' + credentials + proxy;
+                const quoted = (v) => JSON.stringify(String(v));
+                return [
+                    '# 当前表单的完整配置。x-ui 保存时自动生成实际 frpc.toml',
+                    'serverAddr = ' + quoted(this.form.frpsServerAddr),
+                    'serverPort = ' + Number(this.form.frpsServerPort || 7000),
+                    'user = ' + quoted(this.form.frpcUser),
+                    'auth.method = "token"',
+                    'auth.token = ' + quoted(this.form.frpsToken),
+                    'transport.protocol = "tcp"',
+                    'transport.wireProtocol = "v1"',
+                    'transport.proxyURL = ' + quoted(socks),
+                    ...(this.form.congestionMode === 'brutal' ? [
+                        'transport.quic.congestionMode = "brutal"',
+                        'transport.quic.targetMbps = ' + Number(this.form.targetMbps),
+                        'transport.quic.maxMbps = ' + Number(this.form.maxMbps)
+                    ] : []),
+                    'natHoleSTUNServer = ' + quoted(this.form.stunServer),
+                    '',
+                    '[[visitors]]',
+                    'name = ' + quoted(this.form.xtcpVisitorName),
+                    'type = "xtcp"',
+                    'serverName = ' + quoted(this.form.xtcpServerName),
+                    'secretKey = ' + quoted(this.form.xtcpSecretKey),
+                    'protocol = "quic"',
+                    'keepTunnelOpen = true',
+                    'minRetryInterval = 10',
+                    'maxRetriesAnHour = 120',
+                    'bindAddr = "127.0.0.1"',
+                    'bindPort = ' + Number(port),
+                    '',
+                    '[visitors.datagram]',
+                    'listenAddr = ' + quoted(udpPort),
+                    'peerAddr = ' + quoted(peer),
+                    '',
+                    '[visitors.natTraversal]',
+                    'disableAssistedAddrs = true',
+                    'udpProxyURL = ' + quoted(socks),
+                    '',
+                    '# frps TCP / STUN UDP / XTCP P2P UDP 必须经过上述同一个 WARP SOCKS5',
+                    '# 若 WARP SOCKS5 不支持 P2P 入站，此配置会失败；不会直连回退'
+                ].join('\n');
+            }
+        },
+        methods: {
+            async verifyFrpc() {
+                this.loading = true;
+                try {
+                    const res = await HttpUtil.post('/xui/reverse-socks/verify-frpc', this.form);
+                    if (res.success) this.$message.success('当前表单校验通过（未保存、未重启）');
+                } finally {
+                    this.loading = false;
+                }
+            },
+            async restart() {
+                this.loading = true;
+                try {
+                    const capture = this.printRestartLogs;
+                    const res = await HttpUtil.post('/xui/reverse-socks/restart', {printLogs: capture});
+                    if (res.success) {
+                        this.applyView(res.obj);
+                        this.showRestartLogs = capture;
+                        this.restartLogText = '';
+                        if (capture) await this.fetchRestartLogs();
+                    }
+                } finally {
+                    this.loading = false;
+                }
+            },
+            async fetchRestartLogs() {
+                const res = await HttpUtil.post('/xui/reverse-socks/restart-logs');
+                if (res.success && res.obj && res.obj.enabled) {
+                    this.restartLogText = res.obj.output || '';
+                }
+            },
+            applyView(v) {
+                if (!v) return;
+                for (const key of ['enabled', 'protocol', 'congestionMode', 'targetMbps', 'maxMbps',
+                    'visitorAddr', 'udpBindAddr',
+                    'udpPeerAddr', 'warpAddr', 'targetSocksAddr', 'targetSocksUsername',
+                    'targetSocksPassword', 'warpProbe', 'warpUsername',
+                    'warpPassword', 'token', 'frpsToken', 'xtcpSecretKey',
+                    'frpcBinaryPath', 'frpcConfigPath', 'frpsServerAddr', 'frpsServerPort',
+                    'frpcUser', 'xtcpVisitorName', 'xtcpServerName', 'stunServer']) {
+                    this.form[key] = v[key];
+                }
+                this.status = v.status || {state: 'stopped', error: ''};
+				this.frpc = v.frpc || {state: 'stopped', pid: 0, error: ''};
+            },
+            async refresh() {
+                const res = await HttpUtil.post('/xui/reverse-socks/config');
+                if (res.success) this.applyView(res.obj);
+            },
+            async save() {
+                this.loading = true;
+                try {
+                    const res = await HttpUtil.post('/xui/reverse-socks/save', this.form);
+                    if (res.success) this.applyView(res.obj);
+                } finally {
+                    this.loading = false;
+                }
+            },
+            async start() {
+                this.loading = true;
+                try {
+                    const res = await HttpUtil.post('/xui/reverse-socks/start');
+                    if (res.success) this.applyView(res.obj);
+                } finally {
+                    this.loading = false;
+                }
+            },
+            async stop() {
+                this.loading = true;
+                try {
+                    const res = await HttpUtil.post('/xui/reverse-socks/stop');
+                    if (res.success) this.applyView(res.obj);
+                } finally {
+                    this.loading = false;
+                }
+            }
+        },
+        async mounted() {
+            await this.refresh();
+            this.refreshTimer = setInterval(() => {
+                if (this.loading) return;
+                // Refresh only runtime status. Do not overwrite unsaved edits.
+                HttpUtil.post('/xui/reverse-socks/config').then(res => {
+                    if (res.success && res.obj) {
+                        this.status = res.obj.status || this.status;
+                        this.frpc = res.obj.frpc || this.frpc;
+                    }
+                });
+            }, 4000);
+            this.restartLogTimer = setInterval(() => {
+                if (this.showRestartLogs && !this.loading) this.fetchRestartLogs();
+            }, 1500);
+        },
+        beforeDestroy() {
+            clearInterval(this.refreshTimer);
+            clearInterval(this.restartLogTimer);
+        }
+    });
+</script>
+</body>
+</html>

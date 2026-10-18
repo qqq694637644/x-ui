@@ -89,6 +89,7 @@ type Server struct {
 	xrayService    service.XrayService
 	settingService service.SettingService
 	inboundService service.InboundService
+	reverseSocks   *service.ReverseSocksService
 
 	cron *cron.Cron
 
@@ -229,7 +230,7 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	s.index = controller.NewIndexController(g)
 	s.server = controller.NewServerController(g)
 	s.subscription = controller.NewSubscriptionController(g)
-	s.xui = controller.NewXUIController(g)
+	s.xui = controller.NewXUIController(g, s.reverseSocks)
 
 	return engine, nil
 }
@@ -353,6 +354,10 @@ func (s *Server) Start() (err error) {
 	}
 	s.cron = cron.New(cron.WithLocation(loc), cron.WithSeconds())
 	s.cron.Start()
+	s.reverseSocks = service.NewReverseSocksService()
+	if err := s.reverseSocks.Start(s.ctx); err != nil {
+		logger.Warning("reverse SOCKS5 is disabled until its Web configuration is corrected:", err)
+	}
 
 	engine, err := s.initRouter()
 	if err != nil {
@@ -422,6 +427,9 @@ func (s *Server) Start() (err error) {
 func (s *Server) Stop() error {
 	s.cancel()
 	service.StopMyTRNControl()
+	if s.reverseSocks != nil {
+		s.reverseSocks.Stop()
+	}
 	s.xrayService.StopXray()
 	if s.cron != nil {
 		s.cron.Stop()

@@ -46,6 +46,7 @@ var defaultValueMap = map[string]string{
 	"endpointDrainSeconds": "1800",
 	"caddyTlsCertFile":     "",
 	"caddyTlsKeyFile":      "",
+	"reverseSocksConfig":   "",
 }
 
 type SettingService struct {

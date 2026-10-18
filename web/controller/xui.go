@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"time"
 	"x-ui/logger"
+	"x-ui/web/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -11,16 +12,18 @@ import (
 type XUIController struct {
 	BaseController
 
-	inboundController  *InboundController
-	tunnelController   *TunnelController
-	caddyController    *CaddyController
-	settingController  *SettingController
-	endpointController *EndpointController
-	mytrnController    *MyTRNController
+	inboundController      *InboundController
+	tunnelController       *TunnelController
+	caddyController        *CaddyController
+	settingController      *SettingController
+	endpointController     *EndpointController
+	reverseSocksController *ReverseSocksController
+	reverseSocksService    *service.ReverseSocksService
+	mytrnController        *MyTRNController
 }
 
-func NewXUIController(g *gin.RouterGroup) *XUIController {
-	a := &XUIController{}
+func NewXUIController(g *gin.RouterGroup, agent *service.ReverseSocksService) *XUIController {
+	a := &XUIController{reverseSocksService: agent}
 	a.initRouter(g)
 	return a
 }
@@ -35,6 +38,7 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	g.GET("/caddy", a.caddy)
 	g.GET("/subscription", a.subscription)
 	g.GET("/setting", a.setting)
+	g.GET("/reverse-socks", a.reverseSocks)
 
 	a.inboundController = NewInboundController(g)
 	a.tunnelController = NewTunnelController(g)
@@ -42,6 +46,7 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	a.settingController = NewSettingController(g)
 	a.endpointController = NewEndpointController(g)
 	a.mytrnController = NewMyTRNController(g)
+	a.reverseSocksController = NewReverseSocksController(g, a.reverseSocksService)
 }
 
 func (a *XUIController) index(c *gin.Context) {
@@ -72,4 +77,8 @@ func (a *XUIController) subscription(c *gin.Context) {
 
 func (a *XUIController) setting(c *gin.Context) {
 	html(c, "setting.html", "设置", nil)
+}
+
+func (a *XUIController) reverseSocks(c *gin.Context) {
+	html(c, "reverse_socks.html", "XTCP 反向 SOCKS5 / WARP", nil)
 }

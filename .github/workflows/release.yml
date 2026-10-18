@@ -43,10 +43,19 @@ jobs:
           path: .build/xray-core-v26.3.27
 
       - name: Set up Go
+        id: setup-go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.x'
+          go-version: '1.26.8'
           cache: true
+          # Include BOTH modules: x-ui and the fixed Xray fork. This uses
+          # the same cache key as the CI portal smoke job on Go 1.26.
+          cache-dependency-path: |
+            go.sum
+            .build/xray-core-v26.3.27/go.sum
+
+      - name: Report Go cache reuse
+        run: echo "Go 1.26 build/module cache hit=${{ steps.setup-go.outputs.cache-hit }}"
 
       - name: Build Linux amd64 package
         run: |
@@ -54,6 +63,13 @@ jobs:
 
           rm -rf dist "$ASSET_NAME"
           mkdir -p dist/x-ui/bin
+
+          # Download unchanged release rules concurrently with compilation.
+          # Check BOTH exit codes before publishing; neither file is optional.
+          curl -fL --retry 3 -o dist/x-ui/bin/geoip.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat &
+          geoip_pid=$!
+          curl -fL --retry 3 -o dist/x-ui/bin/geosite.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat &
+          geosite_pid=$!
 
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/x-ui/x-ui main.go
 
@@ -65,11 +81,11 @@ jobs:
           cp x-ui.service dist/x-ui/x-ui.service
           cp x-ui.sh dist/x-ui/x-ui.sh
 
-          curl -fL -o dist/x-ui/bin/geoip.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
-          curl -fL -o dist/x-ui/bin/geosite.dat https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
+          wait "$geoip_pid"
+          wait "$geosite_pid"
 
           chmod +x dist/x-ui/x-ui dist/x-ui/x-ui.sh dist/x-ui/bin/xray-linux-amd64
-          tar -C dist -zcvf "$ASSET_NAME" x-ui
+          tar -C dist -zcf "$ASSET_NAME" x-ui
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

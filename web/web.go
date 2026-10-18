@@ -404,6 +404,17 @@ func (s *Server) Start() (err error) {
 		logger.Info("web server run http on", listener.Addr())
 	}
 	s.listener = listener
+	if err := service.StartMyTRNControl(); err != nil {
+		// A MyTRN listener problem must not prevent the existing x-ui
+		// panel and its unrelated VLESS inbounds from cold-starting.
+		// The MyTRN status view reports the control listener as stopped.
+		logger.Warning("MyTRN control HTTP unavailable:", err)
+	}
+	if err := service.StartMyTRNRelay(); err != nil {
+		// Port conflicts or WARP faults must never prevent unrelated
+		// VLESS listeners from starting. MyTRN View reports this separately.
+		logger.Warning("MyTRN WARP-only UDP relay unavailable:", err)
+	}
 
 	s.startTask()
 
@@ -420,6 +431,8 @@ func (s *Server) Start() (err error) {
 
 func (s *Server) Stop() error {
 	s.cancel()
+	service.StopMyTRNControl()
+	service.StopMyTRNRelay()
 	if s.reverseSocks != nil {
 		s.reverseSocks.Stop()
 	}

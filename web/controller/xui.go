@@ -19,6 +19,7 @@ type XUIController struct {
 	endpointController     *EndpointController
 	reverseSocksController *ReverseSocksController
 	reverseSocksService    *service.ReverseSocksService
+	mytrnController        *MyTRNController
 }
 
 func NewXUIController(g *gin.RouterGroup, agent *service.ReverseSocksService) *XUIController {
@@ -44,6 +45,7 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	a.caddyController = NewCaddyController(g)
 	a.settingController = NewSettingController(g)
 	a.endpointController = NewEndpointController(g)
+	a.mytrnController = NewMyTRNController(g)
 	a.reverseSocksController = NewReverseSocksController(g, a.reverseSocksService)
 }
 

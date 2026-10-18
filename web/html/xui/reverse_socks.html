@@ -122,7 +122,8 @@
                     </a-card>
                 </a-card>
 
-                <a-card title="TCP / UDP 数据通道和 WARP 强制出口">
+                <rsx-diagnostics></rsx-diagnostics>
+                <a-card title="TCP / UDP 数据通道和 WARP 强制出口" style="margin-top:18px">
                     <a-form layout="vertical">
                         <a-row :gutter="18">
                             <a-col :xs="24" :md="12">
@@ -165,6 +166,19 @@
                                 <a-form-item label="XTCP Visitor TCP 地址（frpc bindAddr:bindPort）">
                                     <a-input v-model.trim="form.visitorAddr" placeholder="127.0.0.1:6000"></a-input>
                                 </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="启用 RSX3 Diagnostics（不增加公网端口）">
+                                    <a-switch v-model="form.diagnosticsEnabled"></a-switch>
+                                </a-form-item>
+                            </a-col>
+                            <a-col v-if="form.diagnosticsEnabled" :xs="24" :md="12">
+                                <a-form-item label="境外 frpc 本机诊断接口">
+                                    <a-input v-model.trim="form.frpcDiagnosticsAddr" placeholder="127.0.0.1:9321"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col v-if="form.diagnosticsEnabled" :span="24">
+                                <a-alert type="info" show-icon message="需配套升级三个组件，旧版本会显示未采集，不会伪造正常状态" description="Windows Python 加 --diagnostics --frpc-diagnostics 127.0.0.1:9320；执行 python -m reverse_socks --print-diagnostics-config 生成境内 frpc 根部配置。境外诊断 token 由当前 RSX3 密钥自动派生，不需手填。保存并应用会按原逻辑重启 frpc/Agent；自检、测速和录制本身不重启服务。" style="margin-bottom:12px"></a-alert>
                             </a-col>
                             <a-col :xs="24" :md="12">
                                 <a-form-item label="frpc 专用 WARP SOCKS5（必须本机）">
@@ -257,6 +271,7 @@
     </a-layout>
 </a-layout>
 {{template "js" .}}
+{{template "component/rsxDiagnostics" .}}
 <script>
     const app = new Vue({
         delimiters: ['[[', ']]'],
@@ -273,6 +288,8 @@
                 congestionMode: 'cubic',
                 targetMbps: 16,
                 maxMbps: 24,
+                diagnosticsEnabled: false,
+                frpcDiagnosticsAddr: '127.0.0.1:9321',
                 visitorAddr: '127.0.0.1:6000',
                 udpBindAddr: '127.0.0.1:6002',
                 udpPeerAddr: '127.0.0.1:6001',
@@ -345,6 +362,7 @@
                         'transport.quic.maxMbps = ' + Number(this.form.maxMbps)
                     ] : []),
                     'natHoleSTUNServer = ' + quoted(this.form.stunServer),
+                    ...(this.form.diagnosticsEnabled ? ['# Diagnostics 根部字段及域分离 HMAC token 由后端保存时生成', '# 本机诊断监听：' + this.form.frpcDiagnosticsAddr] : []),
                     '',
                     '[[visitors]]',
                     'name = ' + quoted(this.form.xtcpVisitorName),
@@ -404,7 +422,7 @@
             },
             applyView(v) {
                 if (!v) return;
-                for (const key of ['enabled', 'protocol', 'congestionMode', 'targetMbps', 'maxMbps',
+                for (const key of ['enabled', 'protocol', 'congestionMode', 'targetMbps', 'maxMbps', 'diagnosticsEnabled', 'frpcDiagnosticsAddr',
                     'visitorAddr', 'udpBindAddr',
                     'udpPeerAddr', 'warpAddr', 'targetSocksAddr', 'targetSocksUsername',
                     'targetSocksPassword', 'warpProbe', 'warpUsername',

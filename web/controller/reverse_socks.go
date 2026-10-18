@@ -20,6 +20,7 @@ func NewReverseSocksController(g *gin.RouterGroup, agent *service.ReverseSocksSe
 	g.POST("/verify-frpc", a.verifyFRPC)
 	g.POST("/restart", a.restart)
 	g.POST("/restart-logs", a.restartLogs)
+	a.registerDiagnostics(g)
 	return a
 }
 

@@ -26,6 +26,8 @@ type ReverseSocksForm struct {
 	CongestionMode      string `json:"congestionMode" form:"congestionMode"`
 	TargetMbps          int    `json:"targetMbps" form:"targetMbps"`
 	MaxMbps             int    `json:"maxMbps" form:"maxMbps"`
+	DiagnosticsEnabled  bool   `json:"diagnosticsEnabled" form:"diagnosticsEnabled"`
+	FRPCDiagnosticsAddr string `json:"frpcDiagnosticsAddr" form:"frpcDiagnosticsAddr"`
 	VisitorAddr         string `json:"visitorAddr" form:"visitorAddr"`
 	UDPBindAddr         string `json:"udpBindAddr" form:"udpBindAddr"`
 	UDPPeerAddr         string `json:"udpPeerAddr" form:"udpPeerAddr"`
@@ -55,6 +57,9 @@ type ReverseSocksView struct {
 	CongestionMode      string                    `json:"congestionMode"`
 	TargetMbps          int                       `json:"targetMbps"`
 	MaxMbps             int                       `json:"maxMbps"`
+	DiagnosticsEnabled  bool                      `json:"diagnosticsEnabled"`
+	FRPCDiagnosticsAddr string                    `json:"frpcDiagnosticsAddr"`
+	DiagnosticsError    string                    `json:"diagnosticsError,omitempty"`
 	VisitorAddr         string                    `json:"visitorAddr"`
 	UDPBindAddr         string                    `json:"udpBindAddr"`
 	UDPPeerAddr         string                    `json:"udpPeerAddr"`
@@ -81,13 +86,15 @@ type ReverseSocksView struct {
 }
 
 type ReverseSocksService struct {
-	mu             sync.Mutex
-	settings       SettingService
-	manager        *reverseexit.Manager
-	frpc           *managedFRPC
-	parent         context.Context
-	startupError   string
-	restartCapture bool
+	mu               sync.Mutex
+	settings         SettingService
+	manager          *reverseexit.Manager
+	frpc             *managedFRPC
+	parent           context.Context
+	startupError     string
+	restartCapture   bool
+	diagnostics      *DiagnosticsRuntime
+	diagnosticsError string
 }
 
 func NewReverseSocksService() *ReverseSocksService {
@@ -141,6 +148,10 @@ func (s *ReverseSocksService) Start(ctx context.Context) error {
 func (s *ReverseSocksService) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.diagnostics != nil {
+		s.diagnostics.Close()
+		s.diagnostics = nil
+	}
 	s.manager.Stop()
 	s.frpc.Stop()
 }
@@ -156,6 +167,9 @@ func (s *ReverseSocksService) view(config reverseSocksSaved) ReverseSocksView {
 		CongestionMode:      config.CongestionMode,
 		TargetMbps:          config.TargetMbps,
 		MaxMbps:             config.MaxMbps,
+		DiagnosticsEnabled:  config.DiagnosticsEnabled,
+		FRPCDiagnosticsAddr: config.FRPCDiagnosticsAddr,
+		DiagnosticsError:    s.diagnosticsError,
 		VisitorAddr:         config.VisitorAddr,
 		UDPBindAddr:         config.UDPBindAddr,
 		UDPPeerAddr:         config.UDPPeerAddr,
@@ -224,6 +238,11 @@ func (s *ReverseSocksService) applyLocked(config reverseSocksSaved, persist bool
 		}
 	}
 	s.startupError = ""
+	if s.diagnostics != nil {
+		s.diagnostics.Close()
+		s.diagnostics = nil
+	}
+	s.diagnosticsError = ""
 	// Always stop the Agent before replacing its local Visitor.
 	s.manager.Stop()
 	s.frpc.Stop()
@@ -244,6 +263,13 @@ func (s *ReverseSocksService) applyLocked(config reverseSocksSaved, persist bool
 			s.frpc.Stop()
 			s.startupError = err.Error()
 			return ReverseSocksView{}, err
+		}
+		if config.DiagnosticsEnabled {
+			if d, err := newDiagnostics(s.parent, config, s.manager, s.frpc); err != nil {
+				s.diagnosticsError = err.Error()
+			} else {
+				s.diagnostics = d
+			}
 		}
 	}
 	return s.view(config), nil
@@ -269,6 +295,10 @@ func configFromReverseSocksForm(config reverseSocksSaved, form ReverseSocksForm)
 	config.CongestionMode = form.CongestionMode
 	config.TargetMbps = form.TargetMbps
 	config.MaxMbps = form.MaxMbps
+	config.DiagnosticsEnabled = form.DiagnosticsEnabled
+	if form.FRPCDiagnosticsAddr != "" {
+		config.FRPCDiagnosticsAddr = form.FRPCDiagnosticsAddr
+	}
 	config.VisitorAddr = form.VisitorAddr
 	config.UDPBindAddr = form.UDPBindAddr
 	config.UDPPeerAddr = form.UDPPeerAddr

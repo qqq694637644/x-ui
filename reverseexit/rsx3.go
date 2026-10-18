@@ -10,6 +10,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"x-ui/rsxdiag"
 )
 
 var (
@@ -28,13 +30,17 @@ var (
 )
 
 type rsx3Control struct {
-	agent   *agent
-	epoch   [16]byte
-	ctx     context.Context
-	cancel  context.CancelFunc
-	mu      sync.Mutex
-	pending map[uint32]context.CancelFunc
-	wg      sync.WaitGroup
+	agent      *agent
+	epoch      [16]byte
+	ctx        context.Context
+	cancel     context.CancelFunc
+	mu         sync.Mutex
+	pending    map[uint32]context.CancelFunc
+	wg         sync.WaitGroup
+	diagNonce  string
+	diagOnce   sync.Once
+	benchMu    sync.Mutex
+	benchmarks map[string]*benchmarkPermit
 }
 
 func rsx3AuthenticateControl(c net.Conn, secret []byte) ([16]byte, error) {
@@ -120,7 +126,7 @@ func serveRSX3(ctx context.Context, c net.Conn, cfg Config, status func(string, 
 	defer a.stopAll()
 	controlCtx, cancel := context.WithCancel(ctx)
 	control := &rsx3Control{agent: a, epoch: epoch, ctx: controlCtx, cancel: cancel,
-		pending: make(map[uint32]context.CancelFunc)}
+		pending: make(map[uint32]context.CancelFunc), benchmarks: make(map[string]*benchmarkPermit)}
 	defer func() {
 		cancel()
 		control.mu.Lock()
@@ -132,6 +138,12 @@ func serveRSX3(ctx context.Context, c net.Conn, cfg Config, status func(string, 
 	}()
 	go a.datagramLoop()
 	status("online", "")
+	if cfg.DiagnosticsEnabled {
+		control.diagNonce = rsxdiag.ID()
+		// Old RSX3 peers echo this unchanged. Only an explicit capability
+		// response allows the new separate diagnostic stream handshake.
+		go func() { _ = a.send(frame{ping, 0, []byte(diagCapabilityRequest + control.diagNonce)}) }()
+	}
 	go func() {
 		for controlCtx.Err() == nil {
 			status("warp-checking", "")
@@ -218,6 +230,7 @@ func serveRSX3(ctx context.Context, c net.Conn, cfg Config, status func(string, 
 				return err
 			}
 		case pong:
+			control.diagnosticsPong(f.data)
 		default:
 			return fmt.Errorf("RSX3 invalid control frame kind %d", f.kind)
 		}
@@ -226,11 +239,20 @@ func serveRSX3(ctx context.Context, c net.Conn, cfg Config, status func(string, 
 
 func (control *rsx3Control) handleTCP(ctx context.Context, sid uint32, host string, port int) {
 	started := time.Now()
+	span := control.agent.cfg.Meter.Open(hex.EncodeToString(control.epoch[:]), sid, net.JoinHostPort(host, fmt.Sprint(port)))
+	var finalError error
+	finalOperation := "open_tcp"
+	defer func() { span.Finish(finalOperation, finalError) }()
 	beginTarget := time.Now()
-	target, err := targetTCP(ctx, control.agent.cfg, host, port)
+	target, synthetic, err := control.benchmarkTarget(host)
+	if !synthetic {
+		target, err = targetTCP(ctx, control.agent.cfg, host, port)
+	}
 	targetMS := time.Since(beginTarget).Milliseconds()
 	if err != nil {
 		log.Printf("RSX3 metric tcp_error sid=%d step=target_socks_connect target_ms=%d type=%T", sid, targetMS, err)
+		finalOperation = "target_socks_connect"
+		finalError = err
 		_ = control.agent.send(frame{tcpResult, sid, []byte{5}})
 		return
 	}
@@ -243,6 +265,8 @@ func (control *rsx3Control) handleTCP(ctx context.Context, sid uint32, host stri
 	if err != nil {
 		log.Printf("RSX3 metric tcp_error sid=%d step=visitor_stream target_ms=%d visitor_ms=%d type=%T",
 			sid, targetMS, dialMS, err)
+		finalOperation = "visitor_stream"
+		finalError = err
 		_ = control.agent.send(frame{tcpResult, sid, []byte{5}})
 		return
 	}
@@ -254,7 +278,22 @@ func (control *rsx3Control) handleTCP(ctx context.Context, sid uint32, host stri
 		sid, targetMS, dialMS, authMS, err == nil)
 	if err != nil {
 		_ = control.agent.send(frame{tcpResult, sid, []byte{5}})
+		finalOperation = "data_auth"
+		finalError = err
 		return
+	}
+	span.Ready(time.Duration(targetMS)*time.Millisecond, time.Duration(dialMS)*time.Millisecond, time.Duration(authMS)*time.Millisecond)
+	span.Endpoints(visitor, target)
+	if span != nil {
+		lookupAt := time.Now().UTC().Format(time.RFC3339Nano)
+		go func() {
+			queryCtx, done := context.WithTimeout(ctx, time.Second)
+			defer done()
+			local := rsxdiag.LocalClient{Addr: control.agent.cfg.FRPCDiagnosticsAddr, Token: rsxdiag.LocalToken(control.agent.cfg.Token)}
+			if link, err := local.Lookup(queryCtx, visitor.LocalAddr().String(), visitor.RemoteAddr().String(), lookupAt); err == nil {
+				span.SetLink(link)
+			}
+		}()
 	}
 
 	// A control-side cancel aborts both directions, including idle target TCP.
@@ -269,28 +308,36 @@ func (control *rsx3Control) handleTCP(ctx context.Context, sid uint32, host stri
 		}
 	}()
 	var upstream, downstream atomic.Uint64
-	type outcome struct{ err error }
+	type outcome struct {
+		err       error
+		direction string
+	}
 	out := make(chan outcome, 2)
-	pump := func(src, dst net.Conn, count *atomic.Uint64) {
-		buf := make([]byte, 64*1024)
-		n, copyErr := io.CopyBuffer(dst, src, buf)
+	pump := func(src, dst net.Conn, count *atomic.Uint64, direction string) {
+		n, copyErr := span.Copy(dst, src, direction)
 		count.Add(uint64(n))
 		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		} else {
 			_ = dst.Close()
 		}
-		out <- outcome{copyErr}
+		out <- outcome{copyErr, direction}
 	}
-	go pump(visitor, target, &upstream)
-	go pump(target, visitor, &downstream)
+	go pump(visitor, target, &upstream, "upload")
+	go pump(target, visitor, &downstream, "download")
 	first := <-out
 	if first.err != nil {
+		finalError = first.err
+		finalOperation = first.direction
 		// Avoid waiting forever on a peer after a hard I/O failure.
 		_ = visitor.Close()
 		_ = target.Close()
 	}
-	<-out
+	second := <-out
+	if finalError == nil {
+		finalError = second.err
+		finalOperation = second.direction
+	}
 	log.Printf("RSX3 metric tcp_summary sid=%d upload_bytes=%d download_bytes=%d duration_ms=%d",
 		sid, upstream.Load(), downstream.Load(), time.Since(started).Milliseconds())
 }

@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"time"
+	"x-ui/rsxdiag"
 )
 
 type Config struct {
@@ -20,24 +21,29 @@ type Config struct {
 	// preserves the original all-WARP behavior. When specified, it can be
 	// an Xray loopback SOCKS5 inbound that applies the user's routing rules.
 	// It NEVER changes frpc/STUN/XTCP's mandatory WARP transport.
-	TargetSOCKSAddr     string        `json:"targetSocksAddr,omitempty"`
-	TargetSOCKSUsername string        `json:"targetSocksUsername,omitempty"`
-	TargetSOCKSPassword string        `json:"targetSocksPassword,omitempty"`
-	WARPProbe           string        `json:"warpProbe"`
-	WARPUsername        string        `json:"warpUsername"`
-	WARPPassword        string        `json:"warpPassword"`
-	Token               string        `json:"token"`
-	RetryInterval       time.Duration `json:"-"`
+	TargetSOCKSAddr       string                                 `json:"targetSocksAddr,omitempty"`
+	TargetSOCKSUsername   string                                 `json:"targetSocksUsername,omitempty"`
+	TargetSOCKSPassword   string                                 `json:"targetSocksPassword,omitempty"`
+	WARPProbe             string                                 `json:"warpProbe"`
+	WARPUsername          string                                 `json:"warpUsername"`
+	WARPPassword          string                                 `json:"warpPassword"`
+	Token                 string                                 `json:"token"`
+	RetryInterval         time.Duration                          `json:"-"`
+	DiagnosticsEnabled    bool                                   `json:"diagnosticsEnabled"`
+	FRPCDiagnosticsAddr   string                                 `json:"frpcDiagnosticsAddr,omitempty"`
+	Meter                 *rsxdiag.Meter                         `json:"-"`
+	DiagnosticPeerChanged func(*DiagnosticPeer, *DiagnosticPeer) `json:"-"`
 }
 
 func DefaultConfig() Config {
 	return Config{
-		Protocol:      "rsx3",
-		VisitorAddr:   "127.0.0.1:6000",
-		UDPBindAddr:   "127.0.0.1:6002",
-		UDPPeerAddr:   "127.0.0.1:6001",
-		WARPProbe:     "1.1.1.1:443",
-		RetryInterval: 2 * time.Second,
+		Protocol:            "rsx3",
+		VisitorAddr:         "127.0.0.1:6000",
+		UDPBindAddr:         "127.0.0.1:6002",
+		UDPPeerAddr:         "127.0.0.1:6001",
+		WARPProbe:           "1.1.1.1:443",
+		RetryInterval:       2 * time.Second,
+		FRPCDiagnosticsAddr: "127.0.0.1:9321",
 	}
 }
 
@@ -56,6 +62,14 @@ func localhostAddr(addr string) error {
 // Validate deliberately rejects all non-loopback egress proxy endpoints.
 // There is no direct egress path or fallback to the VPS public IP.
 func (c Config) Validate() error {
+	if c.DiagnosticsEnabled {
+		if c.Protocol == "rsx2" {
+			return errors.New("diagnostics require RSX3; legacy forwarding remains available with diagnostics disabled")
+		}
+		if err := localhostAddr(c.FRPCDiagnosticsAddr); err != nil {
+			return err
+		}
+	}
 	if c.Protocol != "" && c.Protocol != "rsx3" && c.Protocol != "rsx2" {
 		return errors.New("reverse SOCKS protocol must be rsx3 or rsx2")
 	}

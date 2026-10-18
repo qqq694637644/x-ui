@@ -1,0 +1,91 @@
+name: RSX Diagnostics
+
+on:
+  push:
+    branches: [gpt/rsx3-diagnostics]
+  pull_request:
+    branches: [main]
+
+jobs:
+  diagnostics:
+    name: Diagnostics four-stage tests / official frps / Go-Python
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.8'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Test metrics, bounded histories, alerts and raw reports
+        run: go test -race -count=1 -timeout 120s ./rsxdiag ./reverseexit
+      - name: Test authenticated Web APIs, configuration and rendered templates
+        run: go test -count=1 -timeout 120s ./web/service ./web/controller ./web -run 'TestDiagnostics'
+      - name: Test real dashboard JavaScript and unknown-data handling
+        run: |
+          node web/html/xui/test_reverse_socks_frpc_fields.cjs
+          node web/html/xui/test_rsx_diagnostics.cjs
+      - name: Checkout matching diagnostics companion branches
+        run: |
+          git clone --depth 1 --branch gpt/rsx3-diagnostics \
+            https://github.com/qqq694637644/frp.git "$RUNNER_TEMP/frp"
+          git clone --depth 1 --branch gpt/rsx3-diagnostics \
+            https://github.com/qqq694637644/nat_node.git "$RUNNER_TEMP/nat_node"
+          printf 'x-ui='; git rev-parse HEAD
+          printf 'frp='; git -C "$RUNNER_TEMP/frp" rev-parse HEAD
+          printf 'nat_node='; git -C "$RUNNER_TEMP/nat_node" rev-parse HEAD
+      - name: Build custom frpc and download unchanged official frps 0.69.0
+        run: |
+          cd "$RUNNER_TEMP/frp"
+          CGO_ENABLED=0 go build -tags 'frpc,noweb' -o "$RUNNER_TEMP/frpc-diagnostics" ./cmd/frpc
+          curl -fL --retry 3 \
+            'https://github.com/fatedier/frp/releases/download/v0.69.0/frp_0.69.0_linux_amd64.tar.gz' \
+            -o "$RUNNER_TEMP/frps069.tar.gz"
+          tar -xzf "$RUNNER_TEMP/frps069.tar.gz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/frp_0.69.0_linux_amd64/frps" --version | grep -F '0.69.0'
+      - name: Verify real double-frpc metrics, TCP/UDP probes and both qlog exports
+        env:
+          RSX_DIAG_NODE_DIR: ${{ runner.temp }}/nat_node
+          RSX_DIAG_FRPC_BIN: ${{ runner.temp }}/frpc-diagnostics
+          RSX_DIAG_FRPS_BIN: ${{ runner.temp }}/frp_0.69.0_linux_amd64/frps
+          RSX_DIAG_KEEP_FIXTURE: ${{ runner.temp }}/diagnostics-fixture
+        run: go test -race -count=1 -v -timeout 180s ./reverseexit -run 'TestDiagnosticsGoPythonRPCAndRealFRPC|TestDiagnosticsOldNodeCapabilityDoesNotBreakRSX3'
+      - name: Test Windows-side Python diagnostics with no pip dependencies
+        working-directory: ${{ runner.temp }}/nat_node
+        run: python -S -m unittest -v tests.test_diagnostics tests.test_protocol tests.test_dependencies tests.test_scheduler
+      - name: Build Linux panel and independent Agent
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$RUNNER_TEMP/xui-panel" .
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$RUNNER_TEMP/reverse-socks-exit" ./cmd/reverse-socks-exit
+          {
+            printf 'x-ui='; git rev-parse HEAD
+            printf 'frp='; git -C "$RUNNER_TEMP/frp" rev-parse HEAD
+            printf 'nat_node='; git -C "$RUNNER_TEMP/nat_node" rev-parse HEAD
+          } > "$RUNNER_TEMP/diagnostics-versions.txt"
+          (cd "$RUNNER_TEMP" && sha256sum xui-panel reverse-socks-exit > diagnostics.sha256)
+      - name: Regression actual RSX3 and explicit RSX2 business forwarding
+        working-directory: ${{ runner.temp }}/nat_node
+        env:
+          REVERSE_SOCKS_EXIT_BIN: ${{ runner.temp }}/reverse-socks-exit
+        run: python -S -m unittest -v tests.test_end_to_end
+      - name: Upload complete x-ui panel and Agent
+        uses: actions/upload-artifact@v4
+        with:
+          name: x-ui-diagnostics-linux-amd64
+          path: |
+            ${{ runner.temp }}/xui-panel
+            ${{ runner.temp }}/reverse-socks-exit
+            ${{ runner.temp }}/diagnostics.sha256
+            ${{ runner.temp }}/diagnostics-versions.txt
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload test-only fixture logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-test-fixture-logs
+          path: ${{ runner.temp }}/diagnostics-fixture/*.log
+          if-no-files-found: ignore
+          retention-days: 3

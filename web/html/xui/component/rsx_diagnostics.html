@@ -1,0 +1,133 @@
+{{define "component/rsxDiagnosticsMarkup"}}
+<a-card title="RSX3 Diagnostics · 实测与诊断" style="margin-top:18px">
+  <a-alert v-if="!snapshot.enabled" type="info" show-icon message="诊断未启用或采集不可用" :description="snapshot.error || '在下方配置中启用 Diagnostics；境内 Python 使用 --diagnostics，并配置两端 frpc 诊断接口。不会增加公网监听。'"></a-alert>
+  <template v-else>
+    <a-space style="margin-bottom:14px">
+      <a-tag :color="snapshot.settings.paused ? 'orange' : 'green'">[[ snapshot.settings.paused ? '采样暂停' : '采样运行' ]]</a-tag>
+      <a-tag :color="snapshot.local_frpc.stale ? 'orange' : 'green'">境外 frpc：[[ snapshot.local_frpc.stale ? '无新样本' : '实时' ]]</a-tag>
+      <a-tag :color="snapshot.node.stale ? 'orange' : 'green'">境内 Python/frpc：[[ snapshot.node.stale ? '无新样本' : '实时' ]]</a-tag>
+      <a-tag :color="snapshot.target_health && snapshot.target_health.state==='ready' ? 'green' : 'orange'">目标 SOCKS5：[[ snapshot.target_health && snapshot.target_health.state || '未检测' ]]</a-tag>
+      <a-button size="small" @click="refreshAll">刷新</a-button>
+      <a-button size="small" @click="togglePause">[[ snapshot.settings.paused ? '恢复采样' : '暂停采样' ]]</a-button>
+    </a-space>
+    <a-alert v-if="snapshot.node.error || snapshot.local_frpc.error || snapshot.history_error" type="warning" show-icon :message="snapshot.node.error || snapshot.local_frpc.error || snapshot.history_error" style="margin-bottom:12px"></a-alert>
+    <a-tabs v-model="tab">
+      <a-tab-pane key="live" tab="实时指标与曲线">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:16px">
+          <a-card v-for="metric in cards" :key="metric.key" size="small" :title="metric.label">
+            <strong style="font-size:23px">[[ number(pointValue(metric.key),metric.scale) ]]</strong> [[metric.unit]]
+          </a-card>
+        </div>
+        <a-alert type="info" show-icon message="指标口径" description="Go/Python 字节为转发到下一段 socket 的字节，不保证浏览器已经消费。QUIC 发包不含外层 WARP/SOCKS5/IP 开销；丢包判定、重复 STREAM 字节与应用 UDP 丢失分别统计。缺失为 --，不是 0。" style="margin-bottom:16px"></a-alert>
+        <a-space>
+          <a-select v-model="minutes" @change="loadHistory" style="width:140px">
+            <a-select-option :value="5">最近 5 分钟</a-select-option><a-select-option :value="15">最近 15 分钟</a-select-option><a-select-option :value="60">最近 1 小时</a-select-option><a-select-option :value="1440">最近 24 小时</a-select-option><a-select-option :value="10080">最近 7 天</a-select-option><a-select-option :value="43200">最近 30 天</a-select-option>
+          </a-select>
+          <a-select v-model="chartMetric" style="width:240px"><a-select-option v-for="metric in chartOptions" :key="metric.key" :value="metric.key">[[metric.label]]</a-select-option></a-select>
+          <span>单位：[[ chartUnit ]] · 断线/未采集不补零</span>
+        </a-space>
+        <div style="width:100%;min-height:220px;margin:12px 0;border:1px solid #e3e8ee;padding:12px">
+          <svg v-if="chartPaths.length" viewBox="0 0 900 230" role="img" :aria-label="chartMetric" style="width:100%;max-height:280px">
+            <line x1="55" y1="190" x2="880" y2="190" stroke="#c9d1db"></line><line x1="55" y1="20" x2="55" y2="190" stroke="#c9d1db"></line>
+            <text x="2" y="24" font-size="13">[[ number(chartMax,1) ]]</text><text x="15" y="190" font-size="13">0</text>
+            <path v-for="(path,i) in chartPaths" :key="i" :d="path" fill="none" stroke="#1677ad" stroke-width="2"></path>
+            <text x="55" y="218" font-size="12">[[ chartStart ]]</text><text x="750" y="218" font-size="12">[[ chartEnd ]]</text>
+          </svg><p v-else style="padding:60px;text-align:center">此时间段暂无有效测量样本</p>
+        </div>
+        <a-collapse>
+          <a-collapse-panel key="raw" header="双端 QUIC / Brutal 实际快照、能力与测量说明"><pre style="max-height:480px;overflow:auto;white-space:pre-wrap">[[ pretty({local:snapshot.local_frpc,node:snapshot.node,notes:snapshot.measurement_notes}) ]]</pre></a-collapse-panel>
+        </a-collapse>
+      </a-tab-pane>
+      <a-tab-pane key="test" tab="链路自检与分段测速">
+        <a-alert type="warning" show-icon message="主动测试会消耗链路流量；同一时刻仅运行一个任务" description="不会关闭、重启现有隧道，不修改 Xray 规则；可取消。原始 QUIC 测试不含 RSX3；RSX3 测试经过 Windows SOCKS5，但使用一次性授权的合成目标；出口测速只测 VPS → 网站。" style="margin-bottom:16px"></a-alert>
+        <a-space style="margin-bottom:16px"><a-button type="primary" :disabled="busy" @click="startTask('self_test')">一键链路自检</a-button><a-button :disabled="busy" @click="startTask('report')">生成当前原始报告</a-button></a-space>
+        <a-row :gutter="14">
+          <a-col :xs="24" :md="8"><a-form-item label="测试区段"><a-select v-model="test.kind"><a-select-option value="raw_benchmark">A · 原始 XTCP QUIC</a-select-option><a-select-option value="socks_benchmark">B · Windows SOCKS5 / RSX3</a-select-option><a-select-option value="target_benchmark">C · VPS 最终网站出口</a-select-option></a-select></a-form-item></a-col>
+          <a-col :xs="12" :md="8"><a-form-item label="测试流量"><a-select v-model="test.bytes"><a-select-option :value="1000000">1 MB</a-select-option><a-select-option :value="10000000">10 MB</a-select-option><a-select-option :value="50000000">50 MB</a-select-option></a-select></a-form-item></a-col>
+          <a-col :xs="12" :md="8"><a-form-item label="相对 Windows 的方向"><a-select v-model="test.direction"><a-select-option value="download">下载</a-select-option><a-select-option value="upload">上传</a-select-option></a-select></a-form-item></a-col>
+        </a-row>
+        <template v-if="test.kind==='target_benchmark'"><a-input v-model.trim="test.url" placeholder="明确填写 HTTPS 测试 URL；不自动跟随重定向" style="margin-bottom:8px"></a-input><a-checkbox v-model="test.use_warp">绕过 Xray 规则，仅测试 WARP 目标出口（frpc 路径不变）</a-checkbox></template>
+        <a-button :disabled="busy" @click="startTask(test.kind)" style="margin:12px 0">运行分段测速</a-button>
+        <a-divider>验证 Xray 实际出站</a-divider>
+        <a-space><a-input v-model.trim="test.target" placeholder="domain.example:443" style="width:280px"></a-input><a-button :disabled="busy" @click="startTask('route_check')">测试此域名</a-button></a-space>
+        <p style="margin-top:10px">只使用实际 SOCKS 连接与 Xray 访问日志的 source/destination 证据。无法对应出站标签时显示未验证；不根据规则文本猜测。任意网站不一定能回显公网 IP。</p>
+        <a-input v-model.trim="test.url" placeholder="公网 IP 回显 HTTPS URL（返回纯 IP 或 JSON ip 字段）" style="margin-bottom:8px"></a-input>
+        <a-space><a-checkbox v-model="test.use_warp">仅使用 WARP 目标出口</a-checkbox><a-button :disabled="busy" @click="startTask('egress_check')">验证这个回显站看到的公网 IP</a-button></a-space>
+        <a-divider>任务记录</a-divider>
+        <a-card v-for="task in (snapshot.tasks || []).slice(0,8)" :key="task.id" size="small" style="margin-bottom:8px" :title="task.spec.kind + ' · ' + task.state">
+          <a-button v-if="task.state==='running'||task.state==='cancelling'" slot="extra" size="small" @click="cancelTask(task.id)">取消</a-button>
+          <a-alert v-if="task.error" type="warning" :message="task.error"></a-alert>
+          <pre style="max-height:340px;overflow:auto;white-space:pre-wrap">[[ pretty({id:task.id,steps:task.steps,result:task.result}) ]]</pre>
+        </a-card>
+      </a-tab-pane>
+      <a-tab-pane key="trace" tab="会话关联与原始报告">
+        <a-space style="margin-bottom:10px"><a-select v-model="captureSeconds" style="width:150px"><a-select-option :value="30">录制 30 秒</a-select-option><a-select-option :value="60">录制 60 秒</a-select-option><a-select-option :value="300">录制 300 秒</a-select-option></a-select><a-button :disabled="busy" @click="startTask('capture')">双端录制 qlog 并导出</a-button><a-button @click="loadReports">刷新报告</a-button></a-space>
+        <a-alert type="warning" show-icon message="报告不脱敏：保留真实 IP、域名、端口、会话标识和原始错误" description="仅手动生成并保存在私有目录，绝不自动上传；不会额外读取密码文件或业务 payload。qlog 每端最多 16 MiB，超过上限或记录缺失均标明。连接中途录制没有此前握手事件。" style="margin-bottom:12px"></a-alert>
+        <a-table :data-source="reports" :columns="reportColumns" row-key="id" size="small" :pagination="{pageSize:5}">
+          <template slot="downloads" slot-scope="text,row"><a :href="downloadURL(row.id,'zip')">ZIP 原始包</a> · <a :href="downloadURL(row.id,'html')">HTML 报告</a> · <a-popconfirm title="删除这个报告？" @confirm="deleteReport(row.id)"><a>删除</a></a-popconfirm></template>
+        </a-table>
+        <a-divider>最近 TCP 会话（有界记录）</a-divider>
+        <a-table :data-source="sessions" :columns="sessionColumns" row-key="key" size="small" :pagination="{pageSize:8}" :scroll="{x:1000}">
+          <template slot="trace" slot-scope="text,row"><a @click="traceSession(row.key)">关联双端</a></template>
+        </a-table>
+        <pre v-if="traceResult" style="max-height:500px;overflow:auto;white-space:pre-wrap">[[pretty(traceResult)]]</pre>
+      </a-tab-pane>
+      <a-tab-pane key="alerts" tab="提醒与长期稳定性">
+        <p>当前历史范围 [[minutes]] 分钟；观察覆盖率 [[number(history.summary && history.summary.coverage_pct,1)]]%。停止监控或 x-ui 停机期间为未知，不算在线。</p>
+        <pre style="max-height:260px;overflow:auto">[[pretty(history.summary || {})]]</pre>
+        <a-alert v-if="(snapshot.alerts.active||[]).length" type="warning" show-icon :message="'活动异常：' + snapshot.alerts.active.length" :description="(snapshot.alerts.active||[]).map(a=>a.detail).join('；')"></a-alert>
+        <a-space style="margin:12px 0"><a-button @click="editSettings">载入提醒设置</a-button><a-button type="primary" @click="saveSettings">保存提醒设置</a-button><a-checkbox v-model="settings.notifications" @change="requestNotification">本浏览器开启时显示异常通知</a-checkbox></a-space>
+        <a-row :gutter="12"><a-col :span="12"><a-form-item label="持久化保留天数（1–30）"><a-input-number v-model="settings.retention_days" :min="1" :max="30"></a-input-number></a-form-item></a-col><a-col :span="12"><a-form-item label="独立历史磁盘预算（MiB，1–512）"><a-input-number v-model="settings.history_budget_mib" :min="1" :max="512"></a-input-number></a-form-item></a-col></a-row>
+        <div style="overflow-x:auto"><table class="ant-table" style="width:100%"><thead><tr><th>启用 / 指标</th><th>触发阈值</th><th>恢复阈值</th><th>持续秒数</th><th>恢复秒数</th></tr></thead><tbody><tr v-for="rule in settings.rules" :key="rule.id"><td><a-checkbox v-model="rule.enabled">[[rule.id]] ([[rule.direction]])</a-checkbox></td><td><a-input-number v-model="rule.threshold" :min="0"></a-input-number></td><td><a-input-number v-model="rule.recover" :min="0"></a-input-number></td><td><a-input-number v-model="rule.hold_seconds" :min="0" :max="3600"></a-input-number></td><td><a-input-number v-model="rule.recover_seconds" :min="0" :max="3600"></a-input-number></td></tr></tbody></table></div>
+        <a-collapse style="margin-top:14px"><a-collapse-panel key="events" header="异常触发 / 恢复事件（同一故障去重）"><pre style="max-height:380px;overflow:auto">[[pretty(snapshot.alerts.events || [])]]</pre></a-collapse-panel></a-collapse>
+      </a-tab-pane>
+    </a-tabs>
+  </template>
+</a-card>
+{{end}}
+
+{{define "component/rsxDiagnostics"}}
+<script>
+Vue.component('rsx-diagnostics', {
+ delimiters:['[[',']]'],
+ template:`{{template "component/rsxDiagnosticsMarkup"}}`,
+ data(){return {tab:'live',snapshot:{enabled:false},history:{points:[],summary:{}},minutes:60,chartMetric:'node_download_bytes_per_second',captureSeconds:60,traceResult:null,reports:[],busyRefresh:false,pollCount:0,seenAlerts:{},settings:{rules:[],retention_days:30,history_budget_mib:128,notifications:false},test:{kind:'socks_benchmark',bytes:10000000,direction:'download',url:'',target:'',use_warp:false},
+ cards:[{key:'node_download_bytes_per_second',label:'境内转发下载',scale:1000000,unit:'MB/s'},{key:'upload_bytes_per_second',label:'境外接收上传',scale:1000000,unit:'MB/s'},{key:'quic_rtt_ms',label:'境外 QUIC RTT',scale:1,unit:'ms'},{key:'quic_loss_pct',label:'境外丢包判定比',scale:1,unit:'%'},{key:'quic_pacing_bytes_per_second',label:'Brutal pacing',scale:125000,unit:'Mbps'},{key:'active_tcp',label:'活跃 TCP',scale:1,unit:''},{key:'active_udp',label:'活跃 UDP',scale:1,unit:''},{key:'confirm_p95_ms',label:'近 60s 建连 P95',scale:1,unit:'ms'}],
+ chartOptions:[{key:'node_download_bytes_per_second',label:'境内下载转发速率',scale:1000000,unit:'MB/s'},{key:'download_bytes_per_second',label:'Go → Visitor 写入速率',scale:1000000,unit:'MB/s'},{key:'quic_sent_bytes_per_second',label:'境外 QUIC 实际发送',scale:125000,unit:'Mbps'},{key:'quic_pacing_bytes_per_second',label:'境外 Brutal pacing',scale:125000,unit:'Mbps'},{key:'quic_rtt_ms',label:'境外 RTT',scale:1,unit:'ms'},{key:'node_rtt_ms',label:'境内 RTT',scale:1,unit:'ms'},{key:'quic_loss_pct',label:'境外丢包判定比',scale:1,unit:'%'},{key:'quic_stream_retransmit_pct',label:'重复 STREAM 字节比',scale:1,unit:'%'},{key:'active_tcp',label:'活跃 TCP',scale:1,unit:'条'}],
+ reportColumns:[{title:'报告 ID',dataIndex:'id'},{title:'UTC 创建时间',dataIndex:'created'},{title:'大小 B',dataIndex:'bytes'},{title:'下载 / 删除',key:'downloads',scopedSlots:{customRender:'downloads'}}],
+ sessionColumns:[{title:'会话',dataIndex:'sid'},{title:'目标',dataIndex:'target'},{title:'状态',dataIndex:'state'},{title:'上传 B',dataIndex:'upload_bytes'},{title:'下载 B',dataIndex:'download_bytes'},{title:'关闭原因',dataIndex:'close_code'},{title:'操作',key:'trace',scopedSlots:{customRender:'trace'}}]
+ }},
+ computed:{
+ busy(){return (this.snapshot.tasks||[]).some(t=>t.state==='running'||t.state==='cancelling')},
+ sessions(){return this.snapshot.agent && this.snapshot.agent.sessions || []},
+ chartInfo(){return this.chartOptions.find(m=>m.key===this.chartMetric)||this.chartOptions[0]},
+ chartUnit(){return this.chartInfo.unit},
+ chartMax(){const vals=(this.history.points||[]).map(p=>p.values&&p.values[this.chartMetric]).filter(v=>v!==null&&v!==undefined&&Number.isFinite(v));return vals.length ? Math.max(1e-6,...vals)/this.chartInfo.scale : 1},
+ chartStart(){const p=(this.history.points||[])[0];return p?new Date(p.time).toLocaleTimeString():''},
+ chartEnd(){const p=(this.history.points||[]).slice(-1)[0];return p?new Date(p.time).toLocaleTimeString():''},
+ chartPaths(){const points=this.history.points||[];if(!points.length)return [];const t0=new Date(points[0].time).getTime(),tn=new Date(points[points.length-1].time).getTime();let paths=[],path='',previous=0;for(const p of points){const t=new Date(p.time).getTime(),v=p.values && p.values[this.chartMetric];if(v===null||v===undefined||!Number.isFinite(v)){if(path)paths.push(path);path='';previous=0;continue}if(previous && t-previous>Math.max(15000,this.minutes*60000/Math.max(1,points.length)*3)){if(path)paths.push(path);path=''}const x=55+825*(t-t0)/Math.max(1,tn-t0),y=190-170*(v/this.chartInfo.scale)/this.chartMax;path+=(path?' L ':'M ')+x.toFixed(1)+' '+y.toFixed(1);previous=t}if(path)paths.push(path);return paths}
+ },
+ methods:{
+ pretty(value){return JSON.stringify(value,null,2)},
+ number(value,scale){return value===null||value===undefined||!Number.isFinite(value)?'--':(value/(scale||1)).toFixed(value/(scale||1)>=100?0:2)},
+ pointValue(key){return this.snapshot.point&&this.snapshot.point.values?this.snapshot.point.values[key]:null},
+ async refresh(){if(this.busyRefresh)return;this.busyRefresh=true;try{const r=await HttpUtil.post('/xui/reverse-socks/diagnostics/snapshot');if(r.success&&r.obj){this.snapshot=r.obj;if(this.snapshot.enabled){if(!this.settings.rules.length)this.editSettings();this.notify()}}}finally{this.busyRefresh=false}},
+ async refreshAll(){await this.refresh();if(this.snapshot.enabled){await this.loadHistory();await this.loadReports()}},
+ async loadHistory(){const r=await HttpUtil.post('/xui/reverse-socks/diagnostics/history',{minutes:this.minutes});if(r.success)this.history=r.obj||{points:[]}},
+ async startTask(kind){if(this.busy)return;const spec=Object.assign({},this.test,{kind,seconds:this.captureSeconds});if(['raw_benchmark','socks_benchmark','target_benchmark'].includes(kind)&&!window.confirm('将消耗约 '+(spec.bytes/1000000)+' MB 测试流量（上传/封装/重传额外计算）。开始？'))return;const r=await HttpUtil.post('/xui/reverse-socks/diagnostics/task',spec);if(r.success){this.tab=kind==='capture'||kind==='report'?'trace':'test';await this.refresh()}},
+ async cancelTask(id){await HttpUtil.post('/xui/reverse-socks/diagnostics/cancel',{id});await this.refresh()},
+ async traceSession(key){this.traceResult={state:'loading',key};const r=await HttpUtil.post('/xui/reverse-socks/diagnostics/trace',{key});this.traceResult=r.success?r.obj:{error:r.msg}},
+ async loadReports(){const r=await HttpUtil.post('/xui/reverse-socks/diagnostics/reports');if(r.success)this.reports=r.obj||[]},
+ downloadURL(id,format){return window.location.pathname.replace(/\/$/,'')+'/diagnostics/download/'+encodeURIComponent(id)+'/'+format},
+ async deleteReport(id){await HttpUtil.post('/xui/reverse-socks/diagnostics/delete-report',{id});await this.loadReports()},
+ editSettings(){if(this.snapshot.settings)this.settings=JSON.parse(JSON.stringify(this.snapshot.settings))},
+ async saveSettings(){const r=await HttpUtil.post('/xui/reverse-socks/diagnostics/settings',this.settings);if(r.success){this.$message.success('诊断设置已保存');await this.refresh()}},
+ async togglePause(){const s=JSON.parse(JSON.stringify(this.snapshot.settings));s.paused=!s.paused;await HttpUtil.post('/xui/reverse-socks/diagnostics/settings',s);await this.refresh()},
+ requestNotification(){if(this.settings.notifications&&'Notification' in window&&Notification.permission==='default')Notification.requestPermission()},
+ notify(){for(const a of (this.snapshot.alerts&&this.snapshot.alerts.active)||[]){if(this.seenAlerts[a.id])continue;this.seenAlerts[a.id]=true;if(this.snapshot.settings.notifications&&'Notification' in window&&Notification.permission==='granted')new Notification('RSX3 '+a.rule,{body:a.detail})}}
+ },
+ mounted(){this.refreshAll();this.timer=setInterval(async()=>{await this.refresh();if(this.snapshot.enabled&&++this.pollCount%3===0)await this.loadHistory();if(this.snapshot.enabled&&this.pollCount%5===0)await this.loadReports()},2000)},
+ beforeDestroy(){clearInterval(this.timer)}
+});
+</script>
+{{end}}

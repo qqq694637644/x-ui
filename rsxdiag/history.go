@@ -100,6 +100,7 @@ func (a *minuteAccumulator) point() Point {
 type History struct {
 	mu         sync.Mutex
 	dir        string
+	bootMinute time.Time
 	recent     []Point
 	minute     *minuteAccumulator
 	queue      chan Point
@@ -125,7 +126,7 @@ func NewHistory(dir string, retentionDays int, budget int64) (*History, error) {
 	if err := privateDirectory(dir); err != nil {
 		return nil, err
 	}
-	h := &History{dir: dir, queue: make(chan Point, 128), done: make(chan struct{}), stop: make(chan struct{}), retainDays: retentionDays, budget: budget}
+	h := &History{dir: dir, bootMinute: time.Now().UTC().Truncate(time.Minute), queue: make(chan Point, 128), done: make(chan struct{}), stop: make(chan struct{}), retainDays: retentionDays, budget: budget}
 	go h.writer()
 	return h, nil
 }
@@ -316,9 +317,10 @@ func (h *History) Read(since time.Time, maxPoints int) ([]Point, error) {
 	h.mu.Lock()
 	budget := h.budget
 	h.mu.Unlock()
-	if time.Since(since) <= time.Hour {
-		return h.Recent(since), nil
-	}
+	// Callers compute `since = now - 60m` before this method runs;
+	// comparison against exactly one hour would falsely exclude the
+	// standard 60-minute dashboard due to a few microseconds of overhead.
+	short := time.Since(since) < time.Hour+time.Minute
 	if maxPoints < 1 || maxPoints > 2000 {
 		maxPoints = 1000
 	}
@@ -352,7 +354,9 @@ func (h *History) Read(since time.Time, maxPoints int) ([]Point, error) {
 		scanner.Buffer(make([]byte, 32768), 65536)
 		for scanner.Scan() {
 			var p Point
-			if json.Unmarshal(scanner.Bytes(), &p) == nil && !p.Time.Before(since) {
+			// Persisted points represent a whole minute, not an instant at
+			// minute start; the last partially overlapping minute still matters.
+			if json.Unmarshal(scanner.Bytes(), &p) == nil && p.Time.Add(time.Minute).After(since) {
 				out = append(out, p)
 			}
 		}
@@ -363,7 +367,31 @@ func (h *History) Read(since time.Time, maxPoints int) ([]Point, error) {
 		}
 	}
 	h.mu.Lock()
-	if h.minute != nil && h.minute.seconds > 0 {
+	if short {
+		seen := map[int64]bool{}
+		for _, p := range h.recent {
+			if !p.Time.Before(since) {
+				seen[p.Time.UTC().Truncate(time.Minute).Unix()] = true
+			}
+		}
+		// Keep high-resolution samples for the running process and restore
+		// older periods from persistent minute aggregates. Same-process
+		// minutes already in memory must not be counted a second time.
+		// The boot minute may have an earlier (pre-restart) disk fragment,
+		// which does not overlap the new process's memory samples.
+		filtered := out[:0]
+		for _, p := range out {
+			if !seen[p.Time.UTC().Truncate(time.Minute).Unix()] || p.Time.Equal(h.bootMinute) {
+				filtered = append(filtered, p)
+			}
+		}
+		out = filtered
+		for _, p := range h.recent {
+			if !p.Time.Before(since) {
+				out = append(out, p)
+			}
+		}
+	} else if h.minute != nil && h.minute.seconds > 0 {
 		out = append(out, h.minute.point())
 	}
 	h.mu.Unlock()
@@ -402,6 +430,7 @@ func Summarize(points []Point, span time.Duration) Stability {
 	s := Stability{ExpectedSeconds: span.Seconds(), Availability: map[string]*float64{}, Totals: map[string]float64{}, Note: "Availability covers observed seconds only; gaps and stopped monitoring are not counted as uptime. Rates and quantiles are not global end-to-end delivery guarantees."}
 	s.MetricCoverage = map[string]float64{}
 	dur := map[string]float64{}
+	metricDur := map[string]float64{}
 	histograms := map[string][]uint64{}
 	sum := map[string]float64{}
 	for _, p := range points {
@@ -413,9 +442,12 @@ func Summarize(points []Point, span time.Duration) Stability {
 		}
 		s.ObservedSeconds += p.Seconds
 		for k, v := range p.Values {
-			if weight := p.SampleSeconds(k); strings.HasSuffix(k, "_online") && weight > 0 {
-				dur[k] += weight
-				sum[k] += *v * weight
+			if weight := p.SampleSeconds(k); weight > 0 {
+				metricDur[k] += weight
+				if strings.HasSuffix(k, "_online") {
+					dur[k] += weight
+					sum[k] += *v * weight
+				}
 			}
 		}
 		for k, v := range p.Totals {
@@ -425,12 +457,12 @@ func Summarize(points []Point, span time.Duration) Stability {
 	for k, v := range sum {
 		n := v / dur[k] * 100
 		s.Availability[k] = &n
-		if s.ExpectedSeconds > 0 {
-			s.MetricCoverage[k] = math.Min(100, dur[k]/s.ExpectedSeconds*100)
-		}
 	}
 	if s.ExpectedSeconds > 0 {
 		s.CoveragePct = math.Min(100, s.ObservedSeconds/s.ExpectedSeconds*100)
+		for k, seconds := range metricDur {
+			s.MetricCoverage[k] = math.Min(100, seconds/s.ExpectedSeconds*100)
+		}
 	}
 	s.Distributions = map[string]interface{}{}
 	for k, h := range histograms {

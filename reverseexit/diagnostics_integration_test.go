@@ -312,7 +312,7 @@ func TestDiagnosticsGoPythonRPCAndRealFRPC(t *testing.T) {
 	}
 	t.Log("REAL_OFFICIAL_FRPS_069_BOTH_QUIC_METRICS_DIAGNOSTIC_RPC_TCP_UDP_BENCHMARK_CAPTURE_PASS")
 }
-func TestDiagnosticsOldNodeCapabilityDoesNotBreakRSX3(t *testing.T) {
+func TestDiagnosticsRejectsPeerWithoutRequiredCapability(t *testing.T) {
 	fixture, stop, logs := startPythonFixture(t, true)
 	defer stop()
 	cfg := fixtureAgentConfig(fixture)
@@ -323,16 +323,14 @@ func TestDiagnosticsOldNodeCapabilityDoesNotBreakRSX3(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer m.Stop()
-	deadline := time.Now().Add(40 * time.Second)
-	for m.Status().State != "online" && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-	}
-	if m.Status().State != "online" {
-		t.Fatal(logs.String())
-	}
-	time.Sleep(300 * time.Millisecond)
+	// Deliberately mismatched Diagnostics cannot become online and must
+	// reject application sessions rather than falling back to old forwarding.
+	time.Sleep(14 * time.Second)
 	if m.DiagnosticPeer() != nil {
-		t.Fatal("old node echo was treated as diagnostics capability")
+		t.Fatal("unsupported diagnostics capability was treated as verified")
+	}
+	if m.Status().State == "online" {
+		t.Fatal("mismatched diagnostics peer silently became online")
 	}
 	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", fixture.SOCKSPort), time.Second)
 	if err != nil {
@@ -351,13 +349,8 @@ func TestDiagnosticsOldNodeCapabilityDoesNotBreakRSX3(t *testing.T) {
 	}
 	_, _ = c.Write(append([]byte{5, 1, 0}, address...))
 	var reply [10]byte
-	if _, err := io.ReadFull(c, reply[:]); err != nil || reply[1] != 0 {
-		t.Fatalf("legacy business stream broken: %v %v", reply, err)
-	}
-	_, _ = c.Write([]byte("still works"))
-	data := make([]byte, 11)
-	if _, err := io.ReadFull(c, data); err != nil || string(data) != "still works" {
-		t.Fatalf("legacy forwarding broken: %v", err)
+	if _, err := io.ReadFull(c, reply[:]); err == nil && reply[1] == 0 {
+		t.Fatalf("unverified legacy-style node forwarded application data: %v %s", reply, logs.String())
 	}
 }
 func TestUnauthorizedDiagnosticSyntheticTargetNeverDials(t *testing.T) {

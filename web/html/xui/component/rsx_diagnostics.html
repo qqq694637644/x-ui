@@ -54,7 +54,7 @@
         <a-input v-model.trim="test.url" placeholder="公网 IP 回显 HTTPS URL（返回纯 IP 或 JSON ip 字段）" style="margin-bottom:8px"></a-input>
         <a-space><a-checkbox v-model="test.use_warp">仅使用 WARP 目标出口</a-checkbox><a-button :disabled="busy" @click="startTask('egress_check')">验证这个回显站看到的公网 IP</a-button></a-space>
         <a-divider>任务记录</a-divider>
-        <a-card v-for="task in (snapshot.tasks || []).slice(0,8)" :key="task.id" size="small" style="margin-bottom:8px" :title="task.spec.kind + ' · ' + task.state">
+        <a-card v-for="task in (snapshot.tasks || []).slice(0,8)" :key="task.id" size="small" style="margin-bottom:8px" :title="task.spec.kind + ' · ' + ({completed_passed:'验证通过',completed_failed:'验证失败',cancelled:'已取消',running:'执行中',cancelling:'取消中'}[task.state] || task.state)">
           <a-button v-if="task.state==='running'||task.state==='cancelling'" slot="extra" size="small" @click="cancelTask(task.id)">取消</a-button>
           <a-alert v-if="task.error" type="warning" :message="task.error"></a-alert>
           <pre style="max-height:340px;overflow:auto;white-space:pre-wrap">[[ pretty({id:task.id,steps:task.steps,result:task.result}) ]]</pre>
@@ -73,7 +73,11 @@
         <pre v-if="traceResult" style="max-height:500px;overflow:auto;white-space:pre-wrap">[[pretty(traceResult)]]</pre>
       </a-tab-pane>
       <a-tab-pane key="alerts" tab="提醒与长期稳定性">
-        <p>当前历史范围 [[minutes]] 分钟；观察覆盖率 [[number(history.summary && history.summary.coverage_pct,1)]]%。停止监控或 x-ui 停机期间为未知，不算在线。</p>
+        <p>当前历史范围 [[minutes]] 分钟；<strong>采集器运行覆盖率</strong> [[number(history.summary && history.summary.coverage_pct,1)]]%。采集器运行不代表境内 Python、境外 QUIC 或境内 QUIC 都采集到了指标。</p>
+        <div style="overflow-x:auto"><table class="ant-table" style="width:100%"><thead><tr><th>指标有效采样覆盖率（独立统计）</th><th>当前时段</th></tr></thead><tbody>
+          <tr v-for="(coverage,key) in (history.summary && history.summary.metric_coverage_pct || {})" :key="key"><td>[[key]]</td><td>[[number(coverage,1)]]%</td></tr>
+          <tr v-if="!Object.keys(history.summary && history.summary.metric_coverage_pct || {}).length"><td colspan="2">无有效测量样本</td></tr>
+        </tbody></table></div>
         <pre style="max-height:260px;overflow:auto">[[pretty(history.summary || {})]]</pre>
         <a-alert v-if="(snapshot.alerts.active||[]).length" type="warning" show-icon :message="'活动异常：' + snapshot.alerts.active.length" :description="(snapshot.alerts.active||[]).map(a=>a.detail).join('；')"></a-alert>
         <a-space style="margin:12px 0"><a-button @click="editSettings">载入提醒设置</a-button><a-button type="primary" @click="saveSettings">保存提醒设置</a-button><a-checkbox v-model="settings.notifications" @change="requestNotification">本浏览器开启时显示异常通知</a-checkbox></a-space>

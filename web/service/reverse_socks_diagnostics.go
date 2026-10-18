@@ -36,33 +36,35 @@ type counterObservation struct {
 	value float64
 	at    time.Time
 }
+type diagnosticFailureSample struct {
+	at                 time.Time
+	attempts, failures float64
+}
 type DiagnosticsRuntime struct {
-	ctx           context.Context
-	cancel        context.CancelFunc
-	wg            sync.WaitGroup
-	mu            sync.Mutex
-	cfg           reverseSocksSaved
-	manager       *reverseexit.Manager
-	frpc          *managedFRPC
-	root          string
-	settings      DiagnosticsSettings
-	history       *rsxdiag.History
-	alerts        *rsxdiag.AlertEngine
-	runner        *rsxdiag.Runner
-	local         diagnosticSource
-	node          diagnosticSource
-	targetHealth  targetHealth
-	quality       []rsxdiag.Point
-	last          rsxdiag.Point
-	counters      map[string]counterObservation
-	recentSuccess []struct {
-		at                 time.Time
-		attempts, failures float64
-	}
-	reconnects     []time.Time
-	previousState  string
-	historyError   string
-	lastAlertWrite time.Time
+	ctx               context.Context
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup
+	mu                sync.Mutex
+	cfg               reverseSocksSaved
+	manager           *reverseexit.Manager
+	frpc              *managedFRPC
+	root              string
+	settings          DiagnosticsSettings
+	history           *rsxdiag.History
+	alerts            *rsxdiag.AlertEngine
+	runner            *rsxdiag.Runner
+	local             diagnosticSource
+	node              diagnosticSource
+	targetHealth      targetHealth
+	quality           []rsxdiag.Point
+	last              rsxdiag.Point
+	counters          map[string]counterObservation
+	recentSuccess     []diagnosticFailureSample
+	recentNodeSuccess []diagnosticFailureSample
+	reconnects        []time.Time
+	previousState     string
+	historyError      string
+	lastAlertWrite    time.Time
 }
 
 func newDiagnostics(parent context.Context, cfg reverseSocksSaved, manager *reverseexit.Manager, frpc *managedFRPC) (*DiagnosticsRuntime, error) {
@@ -333,22 +335,11 @@ func (d *DiagnosticsRuntime) makePoint(now time.Time, seconds float64) rsxdiag.P
 				}
 			}
 		}
-		d.recentSuccess = append(d.recentSuccess, struct {
-			at                 time.Time
-			attempts, failures float64
-		}{now, point.Totals["attempts"], point.Totals["failures"]})
-		var attempts, failures float64
-		valid := d.recentSuccess[:0]
-		for _, v := range d.recentSuccess {
-			if now.Sub(v.at) < 5*time.Minute {
-				valid = append(valid, v)
-				attempts += v.attempts
-				failures += v.failures
-			}
-		}
-		d.recentSuccess = valid
-		if attempts >= 10 {
-			point.Values["tcp_failure_pct"] = fptr(math.Min(100, failures/attempts*100))
+		var rate *float64
+		d.recentSuccess, rate = failureWindow(d.recentSuccess, now, point.Totals["attempts"], point.Totals["failures"])
+		if rate != nil {
+			point.Values["agent_tcp_failure_pct"] = rate
+			point.Values["tcp_failure_pct"] = rate
 		}
 	}
 	for _, side := range []struct {
@@ -361,12 +352,40 @@ func (d *DiagnosticsRuntime) makePoint(now time.Time, seconds float64) rsxdiag.P
 		m := diagnosticMap(side.source.Data)
 		if side.name == "node" {
 			if met := child(m, "metrics"); met != nil {
+				at := sourceTime(m, side.source.Observed)
 				if v, ok := number(met, "download_bytes"); ok {
-					at := sourceTime(m, side.source.Observed)
 					if delta, dt, ok := d.delta("python/"+text(m, "process_id")+"/download", v, at); ok {
 						point.Values["node_download_bytes_per_second"] = fptr(delta / dt)
 						point.Totals["node_download_bytes"] = delta
 					}
+				}
+				for _, name := range []string{"attempts", "failures", "success", "slow_write"} {
+					if v, ok := number(met, name); ok {
+						if delta, _, valid := d.delta("python/"+text(m, "process_id")+"/"+name, v, at); valid {
+							point.Totals["node_"+name] = delta
+						}
+					}
+				}
+				for name, raw := range child(met, "errors") {
+					if len(name) > 48 {
+						continue
+					}
+					if v, ok := raw.(float64); ok {
+						if delta, _, valid := d.delta("python/"+text(m, "process_id")+"/errors/"+name, v, at); valid {
+							point.Totals["node_error_"+name] = delta
+						}
+					}
+				}
+				var rate *float64
+				d.recentNodeSuccess, rate = failureWindow(d.recentNodeSuccess, now, point.Totals["node_attempts"], point.Totals["node_failures"])
+				if rate != nil {
+					point.Values["node_tcp_failure_pct"] = rate
+					if previous := point.Values["tcp_failure_pct"]; previous == nil || *rate > *previous {
+						point.Values["tcp_failure_pct"] = rate
+					}
+				}
+				if v, ok := number(met, "active"); ok {
+					point.Values["node_active_tcp"] = fptr(v)
 				}
 			}
 			m = child(m, "frpc")
@@ -447,6 +466,28 @@ func boolFloat(v bool) float64 {
 	}
 	return 0
 }
+
+// Each side has its own five-minute counter window. We never sum Agent and
+// Python attempts as though both represented distinct browser requests.
+func failureWindow(history []diagnosticFailureSample, now time.Time, attempts, failures float64) ([]diagnosticFailureSample, *float64) {
+	if attempts > 0 || failures > 0 {
+		history = append(history, diagnosticFailureSample{at: now, attempts: attempts, failures: failures})
+	}
+	kept := history[:0]
+	var total, failed float64
+	for _, v := range history {
+		if now.Sub(v.at) < 5*time.Minute {
+			kept = append(kept, v)
+			total += v.attempts
+			failed += v.failures
+		}
+	}
+	if total < 10 {
+		return kept, nil
+	}
+	value := math.Min(100, failed/total*100)
+	return kept, &value
+}
 func mergeDiagnosticPoints(points []rsxdiag.Point) rsxdiag.Point {
 	out := rsxdiag.Point{Time: points[len(points)-1].Time, Values: map[string]*float64{}, Totals: map[string]float64{}, Config: points[len(points)-1].Config}
 	out.Histograms = map[string][]uint64{}
@@ -506,13 +547,7 @@ func (s *ReverseSocksService) Diagnostics() (*DiagnosticsRuntime, error) {
 }
 func (d *DiagnosticsRuntime) History(span time.Duration) (interface{}, error) {
 	since := time.Now().UTC().Add(-span)
-	var points []rsxdiag.Point
-	var err error
-	if span <= time.Hour {
-		points = d.history.Recent(since)
-	} else {
-		points, err = d.history.Read(since, 1000)
-	}
+	points, err := d.history.Read(since, 1000)
 	if err != nil {
 		return nil, err
 	}

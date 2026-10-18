@@ -38,7 +38,7 @@ func TestReverseSocksWebConfigSecretsAndLifecycle(t *testing.T) {
 		TargetSOCKSPassword: "target-socks-password",
 		WARPUsername:        "myuser",
 		WARPPassword:        "super-secret-warp-password",
-		Token:               "super-secret-rsx2-token-123",
+		Token:               "super-secret-rsx3-token-123",
 		FRPCBinaryPath:      frpc,
 		FRPCConfigPath:      configPath,
 		FRPSServerAddr:      "127.0.0.1",
@@ -46,7 +46,7 @@ func TestReverseSocksWebConfigSecretsAndLifecycle(t *testing.T) {
 		FRPCUser:            "0123456789abcdef",
 		FRPSToken:           "private-frps-token",
 		XTCPVisitorName:     "overseas-xtcp-visitor",
-		XTCPServerName:      "rsx2_node",
+		XTCPServerName:      "rsx3_node",
 		XTCPSecretKey:       "private-xtcp-key",
 		STUNServer:          "1.1.1.1:3478",
 	}
@@ -80,7 +80,7 @@ func TestReverseSocksWebConfigSecretsAndLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Token != "super-secret-rsx2-token-123" ||
+	if saved.Token != "super-secret-rsx3-token-123" ||
 		saved.WARPPassword != "super-secret-warp-password" ||
 		saved.FRPSToken != "private-frps-token" || saved.XTCPSecretKey != "private-xtcp-key" ||
 		saved.FRPCUser != form.FRPCUser || saved.XTCPVisitorName != form.XTCPVisitorName ||
@@ -173,7 +173,7 @@ func TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation(t *testing.T) {
 		UDPBindAddr:     "127.0.0.1:6002",
 		UDPPeerAddr:     "127.0.0.1:6001",
 		WARPAddr:        "127.0.0.1:40000",
-		Token:           "long-private-rsx2-shared-token",
+		Token:           "long-private-rsx3-shared-token",
 		FRPCBinaryPath:  bin,
 		FRPCConfigPath:  configFile,
 		FRPSServerAddr:  "127.0.0.1",
@@ -181,7 +181,7 @@ func TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation(t *testing.T) {
 		FRPCUser:        "0123456789abcdef",
 		FRPSToken:       "private-frps-token",
 		XTCPVisitorName: "overseas-xtcp-visitor",
-		XTCPServerName:  "rsx2_node",
+		XTCPServerName:  "rsx3_node",
 		XTCPSecretKey:   "private-xtcp-key",
 		STUNServer:      "1.1.1.1:3478",
 	}
@@ -200,7 +200,7 @@ func TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation(t *testing.T) {
 	for _, field := range []string{
 		"user = \"0123456789abcdef\"",
 		"name = \"overseas-xtcp-visitor\"",
-		"serverName = \"rsx2_node\"",
+		"serverName = \"rsx3_node\"",
 		"transport.wireProtocol = \"v1\"",
 		"auth.token = \"private-frps-token\"",
 		"transport.proxyURL = \"socks5://127.0.0.1:40000\"",

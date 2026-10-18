@@ -31,6 +31,21 @@ type ReportInfo struct {
 	Files    map[string]string `json:"files"`
 }
 
+// An archive cannot contain its own final SHA-256 and length without
+// changing those values again. The internal manifest therefore contains
+// only stable member-level information; the authoritative ZIP digest and
+// byte length live in the adjacent, post-write <id>.json sidecar.
+type ReportManifest struct {
+	ID              string            `json:"id"`
+	Created         time.Time         `json:"created"`
+	Redacted        bool              `json:"redacted"`
+	Partial         bool              `json:"partial"`
+	Missing         []string          `json:"missing"`
+	Files           map[string]string `json:"files"`
+	ArchiveMetadata string            `json:"archive_metadata"`
+	IntegrityScope  string            `json:"integrity_scope"`
+}
+
 func validID(id string) bool {
 	if len(id) != 32 {
 		return false
@@ -94,7 +109,15 @@ func WriteReport(root, id string, files map[string][]byte, summary interface{}, 
 		sum := sha256.Sum256(data)
 		info.Files[name] = hex.EncodeToString(sum[:])
 	}
-	manifest, _ := json.MarshalIndent(info, "", "  ")
+	manifest, err := json.MarshalIndent(ReportManifest{
+		ID: info.ID, Created: info.Created, Redacted: info.Redacted,
+		Partial: info.Partial, Missing: info.Missing, Files: info.Files,
+		ArchiveMetadata: id + ".json",
+		IntegrityScope:  "member SHA-256 hashes here; completed ZIP length and SHA-256 in archive_metadata sidecar",
+	}, "", "  ")
+	if err != nil {
+		return info, err
+	}
 	filesCopy["manifest.json"] = manifest
 	tmp, err := os.CreateTemp(dir, ".report-*.tmp")
 	if err != nil {

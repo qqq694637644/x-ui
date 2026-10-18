@@ -1,4 +1,4 @@
-name: RSX3 / RSX2 WARP DATAGRAM
+name: RSX3 WARP DATAGRAM
 
 on:
   push:
@@ -12,6 +12,8 @@ jobs:
   exit-panel:
     name: Go exit / Web panel / Python SOCKS5 interoperability
     runs-on: ubuntu-latest
+    env:
+      NAT_NODE_DIAGNOSTICS_SHA: 04245af4c41810efe19eddb7805b2b4cc2c67c53
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -20,8 +22,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Test RSX3 / RSX2 Go and Web configuration
-        run: go test -count=1 ./reverseexit ./web/service -run 'TestExitRequiresWARPAndLoopbackOnly|TestWARPHealthProbeChecksTCPAndUDPSeparately|TestManagerTracksXTCPAndWARPIndependently|TestTargetSOCKSSeparatedFromWARPTransportAndLegacyFallback|TestConfiguredTargetFailureNeverFallsBackToWARP|TestTargetSOCKSRejectsNonLocalAndMismatchedCredentials|TestTargetSOCKSIndependentXrayAuthentication|TestReverseSocksWebConfigSecretsAndLifecycle|TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation|TestManagedFRPCOptionalRestartLogs|TestFRPCLogBufferBounded|TestManagedFRPCUserAndVisitorNameRender|TestManagedFRPCBrutalRendersAtRootAndVerifiesCapability|TestManagedFRPCBrutalFormRoundTripAndView|TestManagedFRPCWithoutDatabase|TestManagedFRPCRealForkPrivacyValidation|TestReverseSocksSavedSettingsPreserveManagedFRPCFields|TestReverseSocksFormUsesCurrentSTUNAndClearsSecrets|TestReverseSocksProtocolSelectionIsExplicit|TestRSXWriter'
+      - name: Test RSX3 Go Agent and Web configuration
+        run: go test -count=1 ./reverseexit ./web/service -run 'TestExitRequiresWARPAndLoopbackOnly|TestWARPHealthProbeChecksTCPAndUDPSeparately|TestManagerTracksXTCPAndWARPIndependently|TestTargetSOCKSSeparatedFromWARPTransportAndDefault|TestConfiguredTargetFailureNeverFallsBackToWARP|TestTargetSOCKSRejectsNonLocalAndMismatchedCredentials|TestTargetSOCKSIndependentXrayAuthentication|TestReverseSocksWebConfigSecretsAndLifecycle|TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation|TestManagedFRPCOptionalRestartLogs|TestFRPCLogBufferBounded|TestManagedFRPCUserAndVisitorNameRender|TestManagedFRPCBrutalRendersAtRootAndVerifiesCapability|TestManagedFRPCBrutalFormRoundTripAndView|TestManagedFRPCWithoutDatabase|TestManagedFRPCRealForkPrivacyValidation|TestReverseSocksSavedSettingsPreserveManagedFRPCFields|TestReverseSocksFormUsesCurrentSTUNAndClearsSecrets|TestReverseSocksProtocolSelectionIsExplicit|TestRSXWriter'
       - name: Check Web frpc WARP and independent Xray target SOCKS5 bindings
         run: node web/html/xui/test_reverse_socks_frpc_fields.cjs
       - name: Build private frpc fork and verify its fail-closed XTCP capabilities
@@ -51,9 +53,13 @@ jobs:
           retention-days: 7
       - name: Get Python 3.13 NAT node companion
         run: |
-          # The stable RSX3 baseline is now in main.
-          git clone --depth 1 --branch main \
-            https://github.com/qqq694637644/nat_node.git "$RUNNER_TEMP/nat_node"
+          # Pin the new RSX3-only Python to the Go Agent's strict diagnostics
+          # capability version. Never fetch a legacy main fallback.
+          git init "$RUNNER_TEMP/nat_node"
+          git -C "$RUNNER_TEMP/nat_node" remote add origin https://github.com/qqq694637644/nat_node.git
+          git -C "$RUNNER_TEMP/nat_node" fetch --depth 1 origin "$NAT_NODE_DIAGNOSTICS_SHA"
+          git -C "$RUNNER_TEMP/nat_node" checkout --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/nat_node" rev-parse HEAD)" = "$NAT_NODE_DIAGNOSTICS_SHA"
       - name: Run Python/Go actual agent against fake WARP SOCKS5
         working-directory: ${{ runner.temp }}/nat_node
         env:

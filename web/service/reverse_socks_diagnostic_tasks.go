@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -444,6 +445,20 @@ func (d *DiagnosticsRuntime) routeCheck(ctx context.Context, target string) (int
 		}
 	}
 }
+
+// copyTargetExactly distinguishes an ordinary EOF from a complete requested
+// download, so an origin ending at 1 MB cannot pass a 50 MB benchmark.
+func copyTargetExactly(dst io.Writer, src io.Reader, expected int64) (int64, string, error) {
+	n, err := io.CopyN(dst, src, expected)
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || (err == nil && n != expected) {
+		return n, "short_body", fmt.Errorf("incomplete target download: received %d of %d requested bytes: %w", n, expected, io.ErrUnexpectedEOF)
+	}
+	if err != nil {
+		return n, "interrupted", err
+	}
+	return n, "complete", nil
+}
+
 func (d *DiagnosticsRuntime) targetBenchmark(ctx context.Context, s rsxdiag.TaskSpec) (interface{}, error) {
 	parsed, err := url.Parse(s.URL)
 	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
@@ -480,15 +495,13 @@ func (d *DiagnosticsRuntime) targetBenchmark(ctx context.Context, s rsxdiag.Task
 	}
 	dataStart := time.Now()
 	hash := sha256.New()
-	n, err := io.CopyN(hash, response.Body, s.Bytes)
-	if errors.Is(err, io.EOF) {
-		err = nil
-	}
+	n, verification, err := copyTargetExactly(hash, response.Body, s.Bytes)
 	elapsed := time.Since(start)
 	dataTime := time.Since(dataStart)
-	result := map[string]interface{}{"state": "ok", "http_status": response.StatusCode, "bytes": n, "requested_bytes": s.Bytes, "first_ms": float64(first) / float64(time.Millisecond), "total_ms": float64(elapsed) / float64(time.Millisecond), "bytes_per_second": float64(n) / elapsed.Seconds(), "data_phase_bytes_per_second": float64(n) / dataTime.Seconds(), "sha256": hex.EncodeToString(hash.Sum(nil)), "proxy": d.cfg.TargetSOCKSAddr, "use_warp": s.UseWARP, "truncated_at_user_limit": n == s.Bytes, "note": "This test measures the VPS final egress, not the mainland-to-VPS tunnel. Target bytes remain encrypted HTTPS until the test client."}
+	result := map[string]interface{}{"state": "ok", "verification": verification, "http_status": response.StatusCode, "bytes": n, "requested_bytes": s.Bytes, "first_ms": float64(first) / float64(time.Millisecond), "total_ms": float64(elapsed) / float64(time.Millisecond), "bytes_per_second": float64(n) / elapsed.Seconds(), "data_phase_bytes_per_second": float64(n) / dataTime.Seconds(), "sha256": hex.EncodeToString(hash.Sum(nil)), "proxy": d.cfg.TargetSOCKSAddr, "use_warp": s.UseWARP, "truncated_at_user_limit": n == s.Bytes, "note": "This test measures the VPS final egress, not the mainland-to-VPS tunnel. Target bytes remain encrypted HTTPS until the test client."}
 	if err != nil {
 		result["state"] = "failed"
+		result["error"] = err.Error()
 	}
 	return result, err
 }

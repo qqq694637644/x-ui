@@ -13,7 +13,7 @@ jobs:
     timeout-minutes: 20
     env:
       FRP_DIAGNOSTICS_SHA: 3b7aeb62777bbd898ffd0720a1a672ca3a7e1293
-      NAT_NODE_DIAGNOSTICS_SHA: faf0a656679c600c35ffa42752c12e88c967cd02
+      NAT_NODE_DIAGNOSTICS_SHA: 04245af4c41810efe19eddb7805b2b4cc2c67c53
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -60,7 +60,7 @@ jobs:
           RSX_DIAG_FRPC_BIN: ${{ runner.temp }}/frpc-diagnostics
           RSX_DIAG_FRPS_BIN: ${{ runner.temp }}/frp_0.69.0_linux_amd64/frps
           RSX_DIAG_KEEP_FIXTURE: ${{ runner.temp }}/diagnostics-fixture
-        run: go test -race -count=1 -v -timeout 180s ./reverseexit -run 'TestDiagnosticsGoPythonRPCAndRealFRPC|TestDiagnosticsOldNodeCapabilityDoesNotBreakRSX3'
+        run: go test -race -count=1 -v -timeout 180s ./reverseexit -run 'TestDiagnosticsGoPythonRPCAndRealFRPC|TestDiagnosticsRejectsPeerWithoutRequiredCapability'
       - name: Test Windows-side Python diagnostics with no pip dependencies
         working-directory: ${{ runner.temp }}/nat_node
         run: python -S -m unittest -v tests.test_diagnostics tests.test_protocol tests.test_dependencies tests.test_scheduler
@@ -74,7 +74,7 @@ jobs:
             printf 'nat_node='; git -C "$RUNNER_TEMP/nat_node" rev-parse HEAD
           } > "$RUNNER_TEMP/diagnostics-versions.txt"
           (cd "$RUNNER_TEMP" && sha256sum xui-panel reverse-socks-exit > diagnostics.sha256)
-      - name: Regression actual RSX3 and explicit RSX2 business forwarding
+      - name: Regression RSX3-only business forwarding and mismatch rejection
         working-directory: ${{ runner.temp }}/nat_node
         env:
           REVERSE_SOCKS_EXIT_BIN: ${{ runner.temp }}/reverse-socks-exit

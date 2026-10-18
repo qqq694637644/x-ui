@@ -30,17 +30,21 @@ var (
 )
 
 type rsx3Control struct {
-	agent      *agent
-	epoch      [16]byte
-	ctx        context.Context
-	cancel     context.CancelFunc
-	mu         sync.Mutex
-	pending    map[uint32]context.CancelFunc
-	wg         sync.WaitGroup
-	diagNonce  string
-	diagOnce   sync.Once
-	benchMu    sync.Mutex
-	benchmarks map[string]*benchmarkPermit
+	agent         *agent
+	epoch         [16]byte
+	ctx           context.Context
+	cancel        context.CancelFunc
+	mu            sync.Mutex
+	pending       map[uint32]context.CancelFunc
+	wg            sync.WaitGroup
+	diagNonce     string
+	diagOnce      sync.Once
+	diagReadyOnce sync.Once
+	diagReady     chan struct{}
+	diagMismatch  atomic.Bool
+	status        func(string, string)
+	benchMu       sync.Mutex
+	benchmarks    map[string]*benchmarkPermit
 }
 
 func rsx3AuthenticateControl(c net.Conn, secret []byte) ([16]byte, error) {
@@ -126,7 +130,7 @@ func serveRSX3(ctx context.Context, c net.Conn, cfg Config, status func(string, 
 	defer a.stopAll()
 	controlCtx, cancel := context.WithCancel(ctx)
 	control := &rsx3Control{agent: a, epoch: epoch, ctx: controlCtx, cancel: cancel,
-		pending: make(map[uint32]context.CancelFunc), benchmarks: make(map[string]*benchmarkPermit)}
+		pending: make(map[uint32]context.CancelFunc), benchmarks: make(map[string]*benchmarkPermit), status: status}
 	defer func() {
 		cancel()
 		control.mu.Lock()
@@ -137,12 +141,24 @@ func serveRSX3(ctx context.Context, c net.Conn, cfg Config, status func(string, 
 		control.wg.Wait()
 	}()
 	go a.datagramLoop()
-	status("online", "")
 	if cfg.DiagnosticsEnabled {
+		status("diagnostics-negotiating", "require matched RSX3 Diagnostics peer")
+		control.diagReady = make(chan struct{})
 		control.diagNonce = rsxdiag.ID()
-		// Old RSX3 peers echo this unchanged. Only an explicit capability
-		// response allows the new separate diagnostic stream handshake.
 		go func() { _ = a.send(frame{ping, 0, []byte(diagCapabilityRequest + control.diagNonce)}) }()
+		go func() {
+			select {
+			case <-control.diagReady:
+				return
+			case <-time.After(12 * time.Second):
+				control.diagMismatch.Store(true)
+				status("error", "RSX3 Diagnostics version/capability mismatch: require matching Windows Python and both frpc versions")
+				_ = c.Close()
+			case <-controlCtx.Done():
+			}
+		}()
+	} else {
+		status("online", "")
 	}
 	go func() {
 		for controlCtx.Err() == nil {
@@ -174,10 +190,21 @@ func serveRSX3(ctx context.Context, c net.Conn, cfg Config, status func(string, 
 	for {
 		f, err := readFrame(c)
 		if err != nil {
+			if control.diagMismatch.Load() {
+				return fmt.Errorf("RSX3 Diagnostics version/capability mismatch (check Windows Python, VPS Agent and both frpc): %w", err)
+			}
 			return err
 		}
 		switch f.kind {
 		case openTCP:
+			if cfg.DiagnosticsEnabled {
+				select {
+				case <-control.diagReady:
+				default:
+					_ = a.send(frame{tcpResult, f.id, []byte{5}})
+					continue
+				}
+			}
 			host, port, used, err := decodeAddress(f.data)
 			if err != nil || used != len(f.data) || f.id == 0 {
 				_ = a.send(frame{tcpResult, f.id, []byte{5}})
@@ -210,6 +237,14 @@ func serveRSX3(ctx context.Context, c net.Conn, cfg Config, status func(string, 
 			}
 			control.mu.Unlock()
 		case openUDP:
+			if cfg.DiagnosticsEnabled {
+				select {
+				case <-control.diagReady:
+				default:
+					_ = a.send(frame{udpResult, f.id, []byte{5}})
+					continue
+				}
+			}
 			if len(f.data) != 0 {
 				continue
 			}

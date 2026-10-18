@@ -56,7 +56,7 @@ assert.ok(preview.indexOf('user = "0123456789abcdef"') <
     preview.indexOf("[[visitors]]"), "user must be at TOML root");
 assert.ok(preview.indexOf('name = "overseas-xtcp-visitor"') >
     preview.indexOf("[[visitors]]"), "Visitor name must belong to [[visitors]]");
-assert.ok(!preview.includes('name = "rsx2_outside"'),
+assert.ok(!preview.includes('name = "rsx3_outside"'),
     "preview must not replace configured Visitor name with a constant");
 assert.ok(preview.includes('transport.proxyURL = "socks5://127.0.0.1:40000"'),
     "frpc must continue using WARP SOCKS5");

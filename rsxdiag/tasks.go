@@ -36,6 +36,77 @@ type Task struct {
 	Result   interface{} `json:"result,omitempty"`
 	Error    string      `json:"error,omitempty"`
 }
+
+// verifyTaskResult checks the measured outcome, not merely whether the
+// diagnostic RPC returned HTTP 200 or the Go task callback returned nil.
+// "unverified" and partial reports are never silently labelled as passed.
+func verifyTaskResult(spec TaskSpec, result interface{}, steps []Step) error {
+	for _, step := range steps {
+		if step.State != "ok" {
+			if step.Error != "" {
+				return fmt.Errorf("%s: %s", step.Name, step.Error)
+			}
+			return fmt.Errorf("%s: %s", step.Name, step.State)
+		}
+	}
+	if result == nil {
+		return errors.New("diagnostic returned no result")
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("cannot inspect diagnostic result: %w", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return fmt.Errorf("invalid diagnostic result: %w", err)
+	}
+	var state, detail string
+	_ = json.Unmarshal(m["state"], &state)
+	_ = json.Unmarshal(m["error"], &detail)
+	if state != "" && state != "ok" && state != "passed" {
+		if detail == "" {
+			detail = "diagnostic returned state " + state
+		}
+		return errors.New(detail)
+	}
+	var partial bool
+	_ = json.Unmarshal(m["partial"], &partial)
+	if partial {
+		return errors.New("diagnostic report is incomplete")
+	}
+	switch spec.Kind {
+	case "raw_benchmark", "socks_benchmark", "target_benchmark", "egress_check":
+		if state != "ok" {
+			return errors.New("diagnostic test did not confirm success")
+		}
+		if spec.Kind != "egress_check" {
+			var received int64
+			if err := json.Unmarshal(m["bytes"], &received); err != nil || received != spec.Bytes {
+				return fmt.Errorf("diagnostic received %d of %d requested bytes", received, spec.Bytes)
+			}
+			if spec.Kind != "target_benchmark" {
+				var verified bool
+				if err := json.Unmarshal(m["verified"], &verified); err != nil || !verified {
+					return errors.New("diagnostic payload verification not established")
+				}
+			}
+		} else {
+			var verified bool
+			if err := json.Unmarshal(m["verified"], &verified); err != nil || !verified {
+				return errors.New("IP echo verification not established")
+			}
+		}
+	case "route_check":
+		var routing struct {
+			Verified bool `json:"verified"`
+		}
+		if err := json.Unmarshal(m["routing"], &routing); err != nil || !routing.Verified {
+			return errors.New("Xray route has no verified access-log evidence")
+		}
+	}
+	return nil
+}
+
 type Runner struct {
 	mu     sync.Mutex
 	tasks  map[string]*Task
@@ -126,10 +197,13 @@ func (r *Runner) Start(parent context.Context, s TaskSpec, run func(context.Cont
 		now := time.Now().UTC()
 		t.Finished = &now
 		t.Result = result
-		t.State = "completed"
+		t.State = "completed_passed"
 		if err != nil {
 			t.Error = err.Error()
-			t.State = "failed"
+			t.State = "completed_failed"
+		} else if err := verifyTaskResult(s, result, t.Steps); err != nil {
+			t.State = "completed_failed"
+			t.Error = err.Error()
 		}
 		if ctx.Err() != nil {
 			t.State = "cancelled"

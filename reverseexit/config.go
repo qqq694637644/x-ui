@@ -10,8 +10,8 @@ import (
 )
 
 type Config struct {
-	// Protocol defaults to RSX3, which maps each TCP SOCKS session to its
-	// own authenticated XTCP QUIC stream. RSX2 is explicit legacy mode.
+	// RSX3 is the sole supported wire protocol; saved legacy configurations
+	// are rejected rather than silently downgraded or reinterpreted.
 	Protocol    string `json:"protocol,omitempty"`
 	VisitorAddr string `json:"visitorAddr"`
 	UDPBindAddr string `json:"udpBindAddr"`
@@ -63,15 +63,12 @@ func localhostAddr(addr string) error {
 // There is no direct egress path or fallback to the VPS public IP.
 func (c Config) Validate() error {
 	if c.DiagnosticsEnabled {
-		if c.Protocol == "rsx2" {
-			return errors.New("diagnostics require RSX3; legacy forwarding remains available with diagnostics disabled")
-		}
 		if err := localhostAddr(c.FRPCDiagnosticsAddr); err != nil {
 			return err
 		}
 	}
-	if c.Protocol != "" && c.Protocol != "rsx3" && c.Protocol != "rsx2" {
-		return errors.New("reverse SOCKS protocol must be rsx3 or rsx2")
+	if c.Protocol != "rsx3" {
+		return errors.New("reverse SOCKS protocol must be RSX3; legacy protocols are no longer supported")
 	}
 	for _, addr := range []string{c.VisitorAddr, c.UDPBindAddr, c.UDPPeerAddr, c.WARPAddr} {
 		if err := localhostAddr(addr); err != nil {

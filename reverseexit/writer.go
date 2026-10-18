@@ -1,8 +1,7 @@
 package reverseexit
 
-// Bounded RSX2/RSX3 frame writer: one owner of the underlying TCP stream,
-// control-first scheduling, round-robin DATA per session, and explicit
-// backpressure. A FIN stays behind pending DATA from the same session.
+// RSX3 control-only frame writer: one serialized owner of the authenticated
+// control stream. TCP payloads travel on independent QUIC streams, never here.
 import (
 	"errors"
 	"log"
@@ -13,8 +12,6 @@ import (
 
 const (
 	rsxControlQueueLimit = 128
-	rsxDataQueueLimit    = 256
-	rsxPerSessionLimit   = 8
 	rsxSlowThreshold     = 100 * time.Millisecond
 )
 
@@ -30,9 +27,6 @@ type fairWriter struct {
 	mu       sync.Mutex
 	changed  *sync.Cond
 	controls []*frameRequest
-	data     map[uint32][]*frameRequest
-	turns    []uint32
-	numData  int
 	closed   bool
 	failure  error
 	done     chan struct{}
@@ -43,7 +37,7 @@ type fairWriter struct {
 }
 
 func newFairWriter(conn net.Conn) *fairWriter {
-	w := &fairWriter{conn: conn, data: make(map[uint32][]*frameRequest), done: make(chan struct{})}
+	w := &fairWriter{conn: conn, done: make(chan struct{})}
 	w.changed = sync.NewCond(&w.mu)
 	go w.run()
 	return w
@@ -51,16 +45,8 @@ func newFairWriter(conn net.Conn) *fairWriter {
 
 func (w *fairWriter) send(f frame) error {
 	req := &frameRequest{value: f, queued: time.Now(), replied: make(chan error, 1)}
-	dataLane := f.kind == tcpData || f.kind == tcpFIN
 	w.mu.Lock()
-	for !w.closed {
-		if dataLane {
-			if w.numData < rsxDataQueueLimit && len(w.data[f.id]) < rsxPerSessionLimit {
-				break
-			}
-		} else if len(w.controls) < rsxControlQueueLimit {
-			break
-		}
+	for !w.closed && len(w.controls) >= rsxControlQueueLimit {
 		w.changed.Wait()
 	}
 	if w.closed {
@@ -71,15 +57,7 @@ func (w *fairWriter) send(f frame) error {
 		}
 		return err
 	}
-	if dataLane {
-		if len(w.data[f.id]) == 0 {
-			w.turns = append(w.turns, f.id)
-		}
-		w.data[f.id] = append(w.data[f.id], req)
-		w.numData++
-	} else {
-		w.controls = append(w.controls, req)
-	}
+	w.controls = append(w.controls, req)
 	w.changed.Signal()
 	w.mu.Unlock()
 	return <-req.replied
@@ -88,32 +66,15 @@ func (w *fairWriter) send(f frame) error {
 func (w *fairWriter) pop() *frameRequest {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	for !w.closed && len(w.controls) == 0 && w.numData == 0 {
+	for !w.closed && len(w.controls) == 0 {
 		w.changed.Wait()
 	}
 	if w.closed {
 		return nil
 	}
-	var req *frameRequest
-	if len(w.controls) > 0 {
-		req = w.controls[0]
-		w.controls[0] = nil
-		w.controls = w.controls[1:]
-	} else {
-		sid := w.turns[0]
-		w.turns = w.turns[1:]
-		queue := w.data[sid]
-		req = queue[0]
-		queue[0] = nil
-		queue = queue[1:]
-		w.numData--
-		if len(queue) == 0 {
-			delete(w.data, sid)
-		} else {
-			w.data[sid] = queue
-			w.turns = append(w.turns, sid)
-		}
-	}
+	req := w.controls[0]
+	w.controls[0] = nil
+	w.controls = w.controls[1:]
 	w.changed.Broadcast()
 	return req
 }
@@ -165,13 +126,7 @@ func (w *fairWriter) finish(err error) {
 	w.closed = true
 	w.failure = err
 	pending := w.controls
-	for _, lane := range w.data {
-		pending = append(pending, lane...)
-	}
 	w.controls = nil
-	w.data = make(map[uint32][]*frameRequest)
-	w.turns = nil
-	w.numData = 0
 	w.changed.Broadcast()
 	w.mu.Unlock()
 	for _, req := range pending {

@@ -230,7 +230,7 @@ func testTargetUDP(t *testing.T, cfg Config, want *mockLocalSocks) {
 	}
 }
 
-func TestTargetSOCKSSeparatedFromWARPTransportAndLegacyFallback(t *testing.T) {
+func TestTargetSOCKSSeparatedFromWARPTransportAndDefault(t *testing.T) {
 	warp := startLocalSocks(t)
 	xray := startLocalSocks(t)
 	cfg := DefaultConfig()
@@ -242,7 +242,7 @@ func TestTargetSOCKSSeparatedFromWARPTransportAndLegacyFallback(t *testing.T) {
 	testTargetTCP(t, cfg, warp)
 	testTargetUDP(t, cfg, warp)
 	if warp.tcpReqs.Load() != 1 || warp.udpReqs.Load() != 1 {
-		t.Fatalf("legacy all-WARP case did not dial WARP proxy: TCP=%d UDP=%d",
+		t.Fatalf("default all-WARP target did not dial WARP proxy: TCP=%d UDP=%d",
 			warp.tcpReqs.Load(), warp.udpReqs.Load())
 	}
 

@@ -23,8 +23,10 @@ import (
 	"x-ui/rsxdiag"
 )
 
-const diagCapabilityRequest = "RD-CAP/1 "
-const diagCapabilityReply = "RD-OK/1 "
+// Deliberately incompatible with the former optional capability probe:
+// Diagnostics v2 requires authenticated bidirectional peer readiness.
+const diagCapabilityRequest = "RD-CAP/2 "
+const diagCapabilityReply = "RD-OK/2 "
 const diagPreface = "R3G1"
 
 // Bind blocking socket I/O to a context without requiring a newer context
@@ -180,6 +182,12 @@ func (c *rsx3Control) diagnosticWorker() {
 		if err != nil {
 			c.agent.cfg.Meter.Event("diagnostics_connect", err.Error(), "")
 		} else {
+			c.diagReadyOnce.Do(func() {
+				if c.status != nil {
+					c.status("online", "")
+				}
+				close(c.diagReady)
+			})
 			if c.agent.cfg.DiagnosticPeerChanged != nil {
 				c.agent.cfg.DiagnosticPeerChanged(nil, p)
 			}

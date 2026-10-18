@@ -55,8 +55,8 @@ func defaultReverseFRPCConfig() reverseFRPCConfig {
 		TargetMbps:      16,
 		MaxMbps:         24,
 		FRPSServerPort:  7000,
-		XTCPVisitorName: "rsx2_outside",
-		XTCPServerName:  "rsx2_node",
+		XTCPVisitorName: "rsx3_outside",
+		XTCPServerName:  "rsx3_node",
 	}
 }
 

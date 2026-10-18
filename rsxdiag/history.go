@@ -22,7 +22,26 @@ type Point struct {
 	Totals     map[string]float64  `json:"totals"`
 	Config     map[string]string   `json:"config,omitempty"`
 	Histograms map[string][]uint64 `json:"histograms,omitempty"`
+	Weights    map[string]float64  `json:"value_seconds,omitempty"`
 }
+
+// SampleSeconds preserves each metric's observed duration across aggregation.
+// A raw sample covers Seconds; an aggregate carries explicit per-value weights.
+func (p Point) SampleSeconds(key string) float64 {
+	value := p.Values[key]
+	if value == nil || math.IsNaN(*value) || math.IsInf(*value, 0) {
+		return 0
+	}
+	seconds := p.Seconds
+	if p.Weights != nil {
+		seconds = p.Weights[key]
+	}
+	if seconds <= 0 || seconds > p.Seconds || math.IsNaN(seconds) || math.IsInf(seconds, 0) {
+		return 0
+	}
+	return seconds
+}
+
 type minuteAccumulator struct {
 	time       time.Time
 	seconds    float64
@@ -48,9 +67,9 @@ func (a *minuteAccumulator) add(p Point) {
 	}
 	a.seconds += p.Seconds
 	for k, v := range p.Values {
-		if v != nil && !math.IsNaN(*v) && !math.IsInf(*v, 0) {
-			a.sums[k] += *v * p.Seconds
-			a.weights[k] += p.Seconds
+		if weight := p.SampleSeconds(k); weight > 0 {
+			a.sums[k] += *v * weight
+			a.weights[k] += weight
 		}
 	}
 	for k, v := range p.Totals {
@@ -60,6 +79,7 @@ func (a *minuteAccumulator) add(p Point) {
 }
 func (a *minuteAccumulator) point() Point {
 	p := Point{Time: a.time, Seconds: a.seconds, Values: map[string]*float64{}, Totals: map[string]float64{}, Config: map[string]string{}, Histograms: map[string][]uint64{}}
+	p.Weights = map[string]float64{}
 	for k, v := range a.totals {
 		p.Totals[k] = v
 	}
@@ -72,6 +92,7 @@ func (a *minuteAccumulator) point() Point {
 	for k, sum := range a.sums {
 		v := sum / a.weights[k]
 		p.Values[k] = &v
+		p.Weights[k] = a.weights[k]
 	}
 	return p
 }
@@ -372,12 +393,14 @@ type Stability struct {
 	ExpectedSeconds float64                `json:"expected_seconds"`
 	CoveragePct     float64                `json:"coverage_pct"`
 	Availability    map[string]*float64    `json:"availability_pct"`
+	MetricCoverage  map[string]float64     `json:"metric_coverage_pct"`
 	Totals          map[string]float64     `json:"totals"`
 	Note            string                 `json:"note"`
 }
 
 func Summarize(points []Point, span time.Duration) Stability {
 	s := Stability{ExpectedSeconds: span.Seconds(), Availability: map[string]*float64{}, Totals: map[string]float64{}, Note: "Availability covers observed seconds only; gaps and stopped monitoring are not counted as uptime. Rates and quantiles are not global end-to-end delivery guarantees."}
+	s.MetricCoverage = map[string]float64{}
 	dur := map[string]float64{}
 	histograms := map[string][]uint64{}
 	sum := map[string]float64{}
@@ -390,9 +413,9 @@ func Summarize(points []Point, span time.Duration) Stability {
 		}
 		s.ObservedSeconds += p.Seconds
 		for k, v := range p.Values {
-			if strings.HasSuffix(k, "_online") && v != nil {
-				dur[k] += p.Seconds
-				sum[k] += *v * p.Seconds
+			if weight := p.SampleSeconds(k); strings.HasSuffix(k, "_online") && weight > 0 {
+				dur[k] += weight
+				sum[k] += *v * weight
 			}
 		}
 		for k, v := range p.Totals {
@@ -402,6 +425,9 @@ func Summarize(points []Point, span time.Duration) Stability {
 	for k, v := range sum {
 		n := v / dur[k] * 100
 		s.Availability[k] = &n
+		if s.ExpectedSeconds > 0 {
+			s.MetricCoverage[k] = math.Min(100, dur[k]/s.ExpectedSeconds*100)
+		}
 	}
 	if s.ExpectedSeconds > 0 {
 		s.CoveragePct = math.Min(100, s.ObservedSeconds/s.ExpectedSeconds*100)

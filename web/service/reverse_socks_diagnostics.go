@@ -450,6 +450,7 @@ func boolFloat(v bool) float64 {
 func mergeDiagnosticPoints(points []rsxdiag.Point) rsxdiag.Point {
 	out := rsxdiag.Point{Time: points[len(points)-1].Time, Values: map[string]*float64{}, Totals: map[string]float64{}, Config: points[len(points)-1].Config}
 	out.Histograms = map[string][]uint64{}
+	out.Weights = map[string]float64{}
 	sums, weights := map[string]float64{}, map[string]float64{}
 	for _, p := range points {
 		for k, h := range p.Histograms {
@@ -460,9 +461,9 @@ func mergeDiagnosticPoints(points []rsxdiag.Point) rsxdiag.Point {
 		}
 		out.Seconds += p.Seconds
 		for k, v := range p.Values {
-			if v != nil {
-				sums[k] += *v * p.Seconds
-				weights[k] += p.Seconds
+			if weight := p.SampleSeconds(k); weight > 0 {
+				sums[k] += *v * weight
+				weights[k] += weight
 			}
 		}
 		for k, v := range p.Totals {
@@ -471,6 +472,7 @@ func mergeDiagnosticPoints(points []rsxdiag.Point) rsxdiag.Point {
 	}
 	for k, v := range sums {
 		out.Values[k] = fptr(v / weights[k])
+		out.Weights[k] = weights[k]
 	}
 	return out
 }

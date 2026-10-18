@@ -66,7 +66,7 @@ The self-test checks managed process state, generated WARP-only transport config
 - Default rules: XTCP down, repeated WARP failures, high RTT/loss, TCP establishment failure rate (minimum sample count), unexpected frpc failure, frequent reconnects, stale node metrics and repeated target-SOCKS failure.
 - A sustained fault produces one active alert and one recovery event, not a notification per poll. Browser notifications are optional and require user permission; they work while the dashboard is open, not as a background external notification service.
 - 24h/7d/30d history uses separate bounded JSONL minute aggregates, not x-ui's configuration database. Default retention 30 days, budget 128 MiB; reports default budget 256 MiB.
-- Availability uses **observed time** as denominator and separately shows coverage. Panel downtime, pause intervals and missing data are not silently counted as uptime.
+- Availability uses **each metric's observed time** as denominator and separately shows collector and per-metric coverage. Five-second, minute and long-term aggregates preserve `value_seconds`; a minute with only one known WARP sample never counts as sixty seconds of measured uptime. Panel downtime, pause intervals and missing data are not silently counted as uptime.
 - Long-term latency quantiles merge fixed histogram buckets; they are labelled upper-bound estimates. No averages of P95 values are presented as a global P95.
 
 ## Metric interpretation

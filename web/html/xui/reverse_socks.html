@@ -143,14 +143,14 @@
                             </a-col>
                             <template v-if="form.congestionMode === 'brutal'">
                                 <a-col :xs="24" :md="12">
-                                    <a-form-item label="境外发送目标带宽 (Mbps, 1–64)">
-                                        <a-input-number v-model.number="form.targetMbps" :min="1" :max="64"
+                                    <a-form-item label="境外发送目标带宽 (Mbps，不再限制为 64)">
+                                        <a-input-number v-model.number="form.targetMbps" :min="1"
                                             :precision="0" style="width:100%"></a-input-number>
                                     </a-form-item>
                                 </a-col>
                                 <a-col :xs="24" :md="12">
                                     <a-form-item label="境外总发送上限 (Mbps, 不低于目标)">
-                                        <a-input-number v-model.number="form.maxMbps" :min="1" :max="64"
+                                        <a-input-number v-model.number="form.maxMbps" :min="1"
                                             :precision="0" style="width:100%"></a-input-number>
                                     </a-form-item>
                                 </a-col>
@@ -158,7 +158,7 @@
                             <a-col :span="24">
                                 <a-alert type="warning" show-icon
                                     message="Brutal 必须境内 Proxy / 境外 Visitor 两端分别启用"
-                                    description="本页面仅管理境外 frpc。境内 Windows frpc.toml 也要设置相同的 transport.quic.congestionMode、targetMbps 和 maxMbps，保留 UDP 39999。Brutal 只改变 XTCP QUIC 发送侧，仍需 WARP SOCKS5 UDP；高丢包时可能降低性能。"
+                                    description="本页面仅管理境外 frpc。境内 Windows frpc.toml 可独立设置 transport.quic.congestionMode、targetMbps 和 maxMbps，保留 UDP 39999。已取消 64 Mbps 人为上限，但仍有数值安全校验、发送窗口和背压保护。Brutal 仍需 WARP SOCKS5 UDP；设置过高可能加剧拥塞。"
                                     style="margin-bottom: 12px;"></a-alert>
                             </a-col>
                             <a-col :xs="24" :md="12">

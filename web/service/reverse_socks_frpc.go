@@ -23,6 +23,10 @@ const (
 	defaultFRPCBinary = "/opt/customfrp/frpc_linux_amd64"
 	defaultFRPCConfig = "/etc/x-ui/reverse-socks/frpc.toml"
 	frpcManagedMarker = "# Managed by x-ui reverse SOCKS5. Changes are overwritten on save."
+	// Keep in sync with frp/pkg/transport/xtcpbrutal.MaxSafeMbps.
+	// The only upper limit protects the nanosecond pacing calculation from
+	// int64 overflow, rather than artificially capping the network at 64 Mbps.
+	maxSafeBrutalMbps = int((1<<63 - 1) / (125_000 * int64(time.Second)))
 )
 
 type reverseFRPCConfig struct {
@@ -88,9 +92,9 @@ func (c reverseFRPCConfig) validate() error {
 	switch c.CongestionMode {
 	case "", "cubic":
 	case "brutal":
-		if c.TargetMbps < 1 || c.TargetMbps > 64 ||
-			c.MaxMbps < c.TargetMbps || c.MaxMbps > 64 {
-			return fmt.Errorf("bounded Brutal requires targetMbps=1..64, maxMbps=targetMbps..64")
+		if c.TargetMbps < 1 || c.TargetMbps > maxSafeBrutalMbps ||
+			c.MaxMbps < c.TargetMbps || c.MaxMbps > maxSafeBrutalMbps {
+			return fmt.Errorf("bounded Brutal requires 1 <= targetMbps <= maxMbps <= %d (arithmetic safety limit)", maxSafeBrutalMbps)
 		}
 	default:
 		return fmt.Errorf("unknown XTCP QUIC congestionMode %q", c.CongestionMode)

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -118,7 +119,31 @@ func TestManagedFRPCBrutalRendersAtRootAndVerifiesCapability(t *testing.T) {
 	if strings.Contains(content, "transport.quic.congestionMode") {
 		t.Fatal("default mode emitted experimental congestion options")
 	}
-	for _, setting := range [][3]int{{0, 16, 24}, {1, 0, 24}, {1, 16, 15}, {1, 16, 65}} {
+	// Old 64 Mbps limit is gone: both generated TOML and the managed
+	// frpc capability probe must accept higher throughput settings.
+	for _, limits := range [][2]int{{65, 96}, {128, 192}, {256, 512}, {1000, 2000}} {
+		cfg.CongestionMode = "brutal"
+		cfg.TargetMbps, cfg.MaxMbps = limits[0], limits[1]
+		content, err := renderManagedFRPC(cfg, agent)
+		if err != nil {
+			t.Fatalf("expanded rate %v rejected: %v", limits, err)
+		}
+		for _, expected := range []string{
+			"transport.quic.targetMbps = " + strconv.Itoa(limits[0]),
+			"transport.quic.maxMbps = " + strconv.Itoa(limits[1]),
+		} {
+			if !strings.Contains(content, expected) {
+				t.Fatalf("expanded setting %v not preserved in TOML: %q", limits, expected)
+			}
+		}
+	}
+	for _, setting := range [][3]int{
+		{0, 16, 24},
+		{1, 0, 24},
+		{1, 16, 15},
+		{1, 16, maxSafeBrutalMbps + 1},
+		{1, maxSafeBrutalMbps + 1, maxSafeBrutalMbps + 1},
+	} {
 		cfg.CongestionMode = "brutal"
 		cfg.TargetMbps, cfg.MaxMbps = setting[1], setting[2]
 		if setting[0] == 0 {
@@ -263,14 +288,14 @@ func TestManagedFRPCBrutalFormRoundTripAndView(t *testing.T) {
 		Config:            reverseexit.DefaultConfig(),
 		reverseFRPCConfig: defaultReverseFRPCConfig(),
 	}
-	form := ReverseSocksForm{CongestionMode: "brutal", TargetMbps: 16, MaxMbps: 24}
+	form := ReverseSocksForm{CongestionMode: "brutal", TargetMbps: 128, MaxMbps: 192}
 	updated := configFromReverseSocksForm(stored, form)
-	if updated.CongestionMode != "brutal" || updated.TargetMbps != 16 || updated.MaxMbps != 24 {
+	if updated.CongestionMode != "brutal" || updated.TargetMbps != 128 || updated.MaxMbps != 192 {
 		t.Fatalf("Brutal form values did not persist: %+v", updated.reverseFRPCConfig)
 	}
 	service := NewReverseSocksService()
 	view := service.view(updated)
-	if view.CongestionMode != "brutal" || view.TargetMbps != 16 || view.MaxMbps != 24 {
+	if view.CongestionMode != "brutal" || view.TargetMbps != 128 || view.MaxMbps != 192 {
 		t.Fatalf("Brutal data missing from Web form response: %+v", view)
 	}
 	form.CongestionMode = "cubic"

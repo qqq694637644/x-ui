@@ -66,6 +66,70 @@ func TestFRPCLogBufferBounded(t *testing.T) {
 	}
 }
 
+func TestManagedFRPCBrutalRendersAtRootAndVerifiesCapability(t *testing.T) {
+	cfg := defaultReverseFRPCConfig()
+	cfg.FRPCBinaryPath = buildMockFRPC(t)
+	cfg.FRPCConfigPath = filepath.Join(t.TempDir(), "frpc.toml")
+	cfg.FRPSServerAddr = "203.0.113.7"
+	cfg.FRPSToken = "test-frps-token"
+	cfg.XTCPSecretKey = "test-xtcp-secret"
+	cfg.STUNServer = "stun.miwifi.com:3478"
+	agent := reverseexit.DefaultConfig()
+	agent.WARPAddr = "127.0.0.1:40000"
+	agent.Token = "test-token-more-than-16-characters"
+	cfg.CongestionMode, cfg.TargetMbps, cfg.MaxMbps = "brutal", 16, 24
+
+	content, err := renderManagedFRPC(cfg, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"transport.quic.congestionMode = \"brutal\"",
+		"transport.quic.targetMbps = 16",
+		"transport.quic.maxMbps = 24",
+		"transport.proxyURL = \"socks5://127.0.0.1:40000\"",
+		"udpProxyURL = \"socks5://127.0.0.1:40000\"",
+	} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("missing managed Brutal/WARP config %q", expected)
+		}
+	}
+	if strings.Index(content, "transport.quic.congestionMode") > strings.Index(content, "[[visitors]]") {
+		t.Fatal("XTCP Brutal option was not placed at TOML root")
+	}
+	stage, err := stageFRPCConfig(context.Background(), cfg, content)
+	if err != nil {
+		t.Fatalf("bounded Brutal-capable mock rejected: %v", err)
+	}
+	_ = os.Remove(stage)
+
+	// Reject previous custom frpc builds that SILENTLY ignore new CC fields.
+	t.Setenv("MOCK_FRPC_IGNORE_CC", "1")
+	if stage, err := stageFRPCConfig(context.Background(), cfg, content); err == nil {
+		_ = os.Remove(stage)
+		t.Fatal("x-ui would report Brutal enabled even though old frpc ignored it")
+	}
+	// Leave the mode unset: no new fields, no compatibility break.
+	cfg.CongestionMode = "cubic"
+	content, err = renderManagedFRPC(cfg, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(content, "transport.quic.congestionMode") {
+		t.Fatal("default mode emitted experimental congestion options")
+	}
+	for _, setting := range [][3]int{{0, 16, 24}, {1, 0, 24}, {1, 16, 15}, {1, 16, 65}} {
+		cfg.CongestionMode = "brutal"
+		cfg.TargetMbps, cfg.MaxMbps = setting[1], setting[2]
+		if setting[0] == 0 {
+			cfg.CongestionMode = "unsupported"
+		}
+		if _, err := renderManagedFRPC(cfg, agent); err == nil {
+			t.Fatalf("accepted invalid bounded Brutal settings: %+v", setting)
+		}
+	}
+}
+
 func TestManagedFRPCUserAndVisitorNameRender(t *testing.T) {
 	cfg := defaultReverseFRPCConfig()
 	cfg.FRPCBinaryPath = buildMockFRPC(t)
@@ -156,6 +220,9 @@ func TestReverseSocksSavedSettingsPreserveManagedFRPCFields(t *testing.T) {
 		reverseFRPCConfig: reverseFRPCConfig{
 			FRPCBinaryPath:  defaultFRPCBinary,
 			FRPCConfigPath:  defaultFRPCConfig,
+			CongestionMode:  "brutal",
+			TargetMbps:      16,
+			MaxMbps:         24,
 			FRPSServerAddr:  "203.0.113.7",
 			FRPSServerPort:  7000,
 			FRPCUser:        "user-from-frps",
@@ -181,12 +248,35 @@ func TestReverseSocksSavedSettingsPreserveManagedFRPCFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	if decoded.FRPCBinaryPath != defaultFRPCBinary || decoded.FRPCConfigPath != defaultFRPCConfig ||
+		decoded.CongestionMode != "brutal" || decoded.TargetMbps != 16 || decoded.MaxMbps != 24 ||
 		decoded.FRPCUser != "user-from-frps" || decoded.XTCPVisitorName != "custom-visitor" ||
 		decoded.FRPSToken != "frps-secret" || decoded.XTCPSecretKey != "xtcp-secret" || !decoded.Enabled {
 		t.Fatalf("managed frpc settings did not survive JSON roundtrip: %+v", decoded.reverseFRPCConfig)
 	}
 	if decoded.Protocol != "rsx3" {
 		t.Fatalf("RSX3 protocol was not persisted: %q", decoded.Protocol)
+	}
+}
+
+func TestManagedFRPCBrutalFormRoundTripAndView(t *testing.T) {
+	stored := reverseSocksSaved{
+		Config:            reverseexit.DefaultConfig(),
+		reverseFRPCConfig: defaultReverseFRPCConfig(),
+	}
+	form := ReverseSocksForm{CongestionMode: "brutal", TargetMbps: 16, MaxMbps: 24}
+	updated := configFromReverseSocksForm(stored, form)
+	if updated.CongestionMode != "brutal" || updated.TargetMbps != 16 || updated.MaxMbps != 24 {
+		t.Fatalf("Brutal form values did not persist: %+v", updated.reverseFRPCConfig)
+	}
+	service := NewReverseSocksService()
+	view := service.view(updated)
+	if view.CongestionMode != "brutal" || view.TargetMbps != 16 || view.MaxMbps != 24 {
+		t.Fatalf("Brutal data missing from Web form response: %+v", view)
+	}
+	form.CongestionMode = "cubic"
+	updated = configFromReverseSocksForm(updated, form)
+	if updated.CongestionMode != "cubic" {
+		t.Fatal("cannot revert congestion mode to default")
 	}
 }
 

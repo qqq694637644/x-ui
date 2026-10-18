@@ -22,6 +22,11 @@ func main() {
 			os.Exit(3)
 		}
 		src := string(contents)
+		if os.Getenv("MOCK_FRPC_IGNORE_CC") != "1" &&
+			strings.Contains(src, "transport.quic.congestionMode = \"__unsupported__\"") {
+			fmt.Fprintln(os.Stderr, "unsupported congestionMode")
+			os.Exit(2)
+		}
 		for _, required := range []string{
 			"# Managed by x-ui reverse SOCKS5.",
 			"transport.wireProtocol = \"v1\"",

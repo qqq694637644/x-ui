@@ -23,6 +23,9 @@ type reverseSocksSaved struct {
 type ReverseSocksForm struct {
 	Enabled         bool   `json:"enabled" form:"enabled"`
 	Protocol        string `json:"protocol" form:"protocol"`
+	CongestionMode  string `json:"congestionMode" form:"congestionMode"`
+	TargetMbps      int    `json:"targetMbps" form:"targetMbps"`
+	MaxMbps         int    `json:"maxMbps" form:"maxMbps"`
 	VisitorAddr     string `json:"visitorAddr" form:"visitorAddr"`
 	UDPBindAddr     string `json:"udpBindAddr" form:"udpBindAddr"`
 	UDPPeerAddr     string `json:"udpPeerAddr" form:"udpPeerAddr"`
@@ -46,6 +49,9 @@ type ReverseSocksForm struct {
 type ReverseSocksView struct {
 	Enabled         bool                      `json:"enabled"`
 	Protocol        string                    `json:"protocol"`
+	CongestionMode  string                    `json:"congestionMode"`
+	TargetMbps      int                       `json:"targetMbps"`
+	MaxMbps         int                       `json:"maxMbps"`
 	VisitorAddr     string                    `json:"visitorAddr"`
 	UDPBindAddr     string                    `json:"udpBindAddr"`
 	UDPPeerAddr     string                    `json:"udpPeerAddr"`
@@ -141,6 +147,9 @@ func (s *ReverseSocksService) view(config reverseSocksSaved) ReverseSocksView {
 	return ReverseSocksView{
 		Enabled:         config.Enabled,
 		Protocol:        config.Protocol,
+		CongestionMode:  config.CongestionMode,
+		TargetMbps:      config.TargetMbps,
+		MaxMbps:         config.MaxMbps,
 		VisitorAddr:     config.VisitorAddr,
 		UDPBindAddr:     config.UDPBindAddr,
 		UDPPeerAddr:     config.UDPPeerAddr,
@@ -248,6 +257,9 @@ func configFromReverseSocksForm(config reverseSocksSaved, form ReverseSocksForm)
 	if form.Protocol != "" {
 		config.Protocol = form.Protocol
 	}
+	config.CongestionMode = form.CongestionMode
+	config.TargetMbps = form.TargetMbps
+	config.MaxMbps = form.MaxMbps
 	config.VisitorAddr = form.VisitorAddr
 	config.UDPBindAddr = form.UDPBindAddr
 	config.UDPPeerAddr = form.UDPPeerAddr

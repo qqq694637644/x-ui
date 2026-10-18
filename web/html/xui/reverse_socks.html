@@ -134,6 +134,34 @@
                                 </a-form-item>
                             </a-col>
                             <a-col :xs="24" :md="12">
+                                <a-form-item label="XTCP QUIC 双端发送拥塞模式（仅境外此处配置）">
+                                    <a-select v-model="form.congestionMode">
+                                        <a-select-option value="cubic">CUBIC / 默认（保持原行为）</a-select-option>
+                                        <a-select-option value="brutal">Brutal 风格 · 有界发送速率（实验）</a-select-option>
+                                    </a-select>
+                                </a-form-item>
+                            </a-col>
+                            <template v-if="form.congestionMode === 'brutal'">
+                                <a-col :xs="24" :md="12">
+                                    <a-form-item label="境外发送目标带宽 (Mbps, 1–64)">
+                                        <a-input-number v-model.number="form.targetMbps" :min="1" :max="64"
+                                            :precision="0" style="width:100%"></a-input-number>
+                                    </a-form-item>
+                                </a-col>
+                                <a-col :xs="24" :md="12">
+                                    <a-form-item label="境外总发送上限 (Mbps, 不低于目标)">
+                                        <a-input-number v-model.number="form.maxMbps" :min="1" :max="64"
+                                            :precision="0" style="width:100%"></a-input-number>
+                                    </a-form-item>
+                                </a-col>
+                            </template>
+                            <a-col :span="24">
+                                <a-alert type="warning" show-icon
+                                    message="Brutal 必须境内 Proxy / 境外 Visitor 两端分别启用"
+                                    description="本页面仅管理境外 frpc。境内 Windows frpc.toml 也要设置相同的 transport.quic.congestionMode、targetMbps 和 maxMbps，保留 UDP 39999。Brutal 只改变 XTCP QUIC 发送侧，仍需 WARP SOCKS5 UDP；高丢包时可能降低性能。"
+                                    style="margin-bottom: 12px;"></a-alert>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
                                 <a-form-item label="XTCP Visitor TCP 地址（frpc bindAddr:bindPort）">
                                     <a-input v-model.trim="form.visitorAddr" placeholder="127.0.0.1:6000"></a-input>
                                 </a-form-item>
@@ -218,6 +246,9 @@
             form: {
                 enabled: false,
                 protocol: 'rsx3',
+                congestionMode: 'cubic',
+                targetMbps: 16,
+                maxMbps: 24,
                 visitorAddr: '127.0.0.1:6000',
                 udpBindAddr: '127.0.0.1:6002',
                 udpPeerAddr: '127.0.0.1:6001',
@@ -281,6 +312,11 @@
                     'transport.protocol = "tcp"',
                     'transport.wireProtocol = "v1"',
                     'transport.proxyURL = ' + quoted(socks),
+                    ...(this.form.congestionMode === 'brutal' ? [
+                        'transport.quic.congestionMode = "brutal"',
+                        'transport.quic.targetMbps = ' + Number(this.form.targetMbps),
+                        'transport.quic.maxMbps = ' + Number(this.form.maxMbps)
+                    ] : []),
                     'natHoleSTUNServer = ' + quoted(this.form.stunServer),
                     '',
                     '[[visitors]]',
@@ -341,7 +377,8 @@
             },
             applyView(v) {
                 if (!v) return;
-                for (const key of ['enabled', 'protocol', 'visitorAddr', 'udpBindAddr',
+                for (const key of ['enabled', 'protocol', 'congestionMode', 'targetMbps', 'maxMbps',
+                    'visitorAddr', 'udpBindAddr',
                     'udpPeerAddr', 'warpAddr', 'warpProbe', 'warpUsername',
                     'warpPassword', 'token', 'frpsToken', 'xtcpSecretKey',
                     'frpcBinaryPath', 'frpcConfigPath', 'frpsServerAddr', 'frpsServerPort',

@@ -26,8 +26,12 @@ const (
 )
 
 type reverseFRPCConfig struct {
-	FRPCBinaryPath  string `json:"frpcBinaryPath"`
-	FRPCConfigPath  string `json:"frpcConfigPath"`
+	FRPCBinaryPath string `json:"frpcBinaryPath"`
+	FRPCConfigPath string `json:"frpcConfigPath"`
+	// XTCP QUIC sender only; no effect on frpc-to-frps control traffic.
+	CongestionMode  string `json:"congestionMode,omitempty"`
+	TargetMbps      int    `json:"targetMbps,omitempty"`
+	MaxMbps         int    `json:"maxMbps,omitempty"`
 	FRPSServerAddr  string `json:"frpsServerAddr"`
 	FRPSServerPort  int    `json:"frpsServerPort"`
 	FRPCUser        string `json:"frpcUser"`
@@ -42,6 +46,9 @@ func defaultReverseFRPCConfig() reverseFRPCConfig {
 	return reverseFRPCConfig{
 		FRPCBinaryPath:  defaultFRPCBinary,
 		FRPCConfigPath:  defaultFRPCConfig,
+		CongestionMode:  "cubic",
+		TargetMbps:      16,
+		MaxMbps:         24,
 		FRPSServerPort:  7000,
 		XTCPVisitorName: "rsx2_outside",
 		XTCPServerName:  "rsx2_node",
@@ -77,6 +84,16 @@ func validManagedPath(path, name string) error {
 func (c reverseFRPCConfig) validate() error {
 	if err := c.validatePaths(); err != nil {
 		return err
+	}
+	switch c.CongestionMode {
+	case "", "cubic":
+	case "brutal":
+		if c.TargetMbps < 1 || c.TargetMbps > 64 ||
+			c.MaxMbps < c.TargetMbps || c.MaxMbps > 64 {
+			return fmt.Errorf("bounded Brutal requires targetMbps=1..64, maxMbps=targetMbps..64")
+		}
+	default:
+		return fmt.Errorf("unknown XTCP QUIC congestionMode %q", c.CongestionMode)
 	}
 	if err := validateFRPCBinary(c.FRPCBinaryPath); err != nil {
 		return err
@@ -193,7 +210,17 @@ func renderManagedFRPC(c reverseFRPCConfig, agent reverseexit.Config) (string, e
 	socks := u.String()
 	quoted := strconv.Quote
 	var b strings.Builder
-	for _, line := range []string{
+	// Global TOML keys must appear BEFORE [[visitors]]; no native UDP
+	// fallback is generated in either mode.
+	congestionLines := []string{}
+	if c.CongestionMode == "brutal" {
+		congestionLines = append(congestionLines,
+			"transport.quic.congestionMode = \"brutal\"",
+			"transport.quic.targetMbps = "+strconv.Itoa(c.TargetMbps),
+			"transport.quic.maxMbps = "+strconv.Itoa(c.MaxMbps),
+		)
+	}
+	lines := []string{
 		frpcManagedMarker,
 		"# Private XTCP Visitor; requires the custom frpc with natTraversal.udpProxyURL",
 		"serverAddr = " + quoted(c.FRPSServerAddr),
@@ -204,29 +231,33 @@ func renderManagedFRPC(c reverseFRPCConfig, agent reverseexit.Config) (string, e
 		"transport.protocol = \"tcp\"",
 		"transport.wireProtocol = \"v1\"",
 		"transport.proxyURL = " + quoted(socks),
-		"natHoleSTUNServer = " + quoted(c.STUNServer),
+	}
+	lines = append(lines, congestionLines...)
+	lines = append(lines,
+		"natHoleSTUNServer = "+quoted(c.STUNServer),
 		"",
 		"[[visitors]]",
-		"name = " + quoted(c.XTCPVisitorName),
+		"name = "+quoted(c.XTCPVisitorName),
 		"type = \"xtcp\"",
-		"serverName = " + quoted(c.XTCPServerName),
-		"secretKey = " + quoted(c.XTCPSecretKey),
+		"serverName = "+quoted(c.XTCPServerName),
+		"secretKey = "+quoted(c.XTCPSecretKey),
 		"protocol = \"quic\"",
 		"keepTunnelOpen = true",
 		"minRetryInterval = 10",
 		"maxRetriesAnHour = 120",
 		"bindAddr = \"127.0.0.1\"",
-		"bindPort = " + visitorPort,
+		"bindPort = "+visitorPort,
 		"",
 		"[visitors.datagram]",
-		"listenAddr = " + quoted(agent.UDPPeerAddr),
-		"peerAddr = " + quoted(agent.UDPBindAddr),
+		"listenAddr = "+quoted(agent.UDPPeerAddr),
+		"peerAddr = "+quoted(agent.UDPBindAddr),
 		"",
 		"[visitors.natTraversal]",
 		"disableAssistedAddrs = true",
-		"udpProxyURL = " + quoted(socks),
+		"udpProxyURL = "+quoted(socks),
 		"",
-	} {
+	)
+	for _, line := range lines {
 		b.WriteString(line)
 		b.WriteByte('\n')
 	}
@@ -337,6 +368,39 @@ func stageFRPCConfig(ctx context.Context, cfg reverseFRPCConfig, content string)
 		}
 		if verifyErr == nil {
 			return "", fmt.Errorf("custom frpc binary accepts unsafe %s omission; update to the private XTCP UDP-capable frpc build", strings.TrimSpace(forbidden))
+		}
+	}
+	if strings.Contains(content, "transport.quic.congestionMode = \"brutal\"") {
+		// Older frpc versions silently discard unknown TOML fields. Require
+		// this binary to actively reject a deliberately unsupported CC mode.
+		// Otherwise x-ui would misleadingly claim Brutal while running CUBIC.
+		probeContent := strings.Replace(content,
+			"transport.quic.congestionMode = \"brutal\"",
+			"transport.quic.congestionMode = \"__unsupported__\"", 1)
+		probe, err := os.CreateTemp(filepath.Dir(cfg.FRPCConfigPath), ".xui-frpc-brutal-test-*.toml")
+		if err != nil {
+			return "", err
+		}
+		probeName := probe.Name()
+		if err := probe.Chmod(0600); err != nil {
+			_ = probe.Close()
+			_ = os.Remove(probeName)
+			return "", err
+		}
+		_, writeErr := io.WriteString(probe, probeContent)
+		closeErr := probe.Close()
+		if writeErr != nil || closeErr != nil {
+			_ = os.Remove(probeName)
+			return "", fmt.Errorf("cannot write bounded Brutal capability test")
+		}
+		verify := exec.CommandContext(timeoutCtx, cfg.FRPCBinaryPath, "verify", "-c", probeName)
+		verifyErr := verify.Run()
+		_ = os.Remove(probeName)
+		if timeoutCtx.Err() != nil {
+			return "", fmt.Errorf("bounded Brutal capability verification timed out: %w", timeoutCtx.Err())
+		}
+		if verifyErr == nil {
+			return "", fmt.Errorf("this custom frpc ignores XTCP QUIC congestionMode; install the new dual-ended bounded Brutal build")
 		}
 	}
 	success = true

@@ -21,13 +21,14 @@ jobs:
         with:
           python-version: '3.13'
       - name: Test RSX3 / RSX2 Go and Web configuration
-        run: go test -count=1 ./reverseexit ./web/service -run 'TestExitRequiresWARPAndLoopbackOnly|TestWARPHealthProbeChecksTCPAndUDPSeparately|TestManagerTracksXTCPAndWARPIndependently|TestReverseSocksWebConfigSecretsAndLifecycle|TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation|TestManagedFRPCOptionalRestartLogs|TestFRPCLogBufferBounded|TestManagedFRPCUserAndVisitorNameRender|TestManagedFRPCWithoutDatabase|TestManagedFRPCRealForkPrivacyValidation|TestReverseSocksSavedSettingsPreserveManagedFRPCFields|TestReverseSocksFormUsesCurrentSTUNAndClearsSecrets|TestReverseSocksProtocolSelectionIsExplicit|TestRSXWriter'
+        run: go test -count=1 ./reverseexit ./web/service -run 'TestExitRequiresWARPAndLoopbackOnly|TestWARPHealthProbeChecksTCPAndUDPSeparately|TestManagerTracksXTCPAndWARPIndependently|TestReverseSocksWebConfigSecretsAndLifecycle|TestReverseSocksManagedFRPCVerifyLifecycleAndIsolation|TestManagedFRPCOptionalRestartLogs|TestFRPCLogBufferBounded|TestManagedFRPCUserAndVisitorNameRender|TestManagedFRPCBrutalRendersAtRootAndVerifiesCapability|TestManagedFRPCBrutalFormRoundTripAndView|TestManagedFRPCWithoutDatabase|TestManagedFRPCRealForkPrivacyValidation|TestReverseSocksSavedSettingsPreserveManagedFRPCFields|TestReverseSocksFormUsesCurrentSTUNAndClearsSecrets|TestReverseSocksProtocolSelectionIsExplicit|TestRSXWriter'
       - name: Check Web frpc user and Visitor name form bindings
         run: node web/html/xui/test_reverse_socks_frpc_fields.cjs
       - name: Build private frpc fork and verify its fail-closed XTCP capabilities
         run: |
-          # The custom frp PR is merged into dev; the feature branch was removed.
-          git clone --depth 1 --branch dev \
+          # Brutal capability checking requires the matching private frpc
+          # PR branch until these changes are merged into dev.
+          git clone --depth 1 --branch gpt/warp-socks5-ipv6-unspecified \
             https://github.com/qqq694637644/frp.git "$RUNNER_TEMP/frp"
           cd "$RUNNER_TEMP/frp"
           CGO_ENABLED=0 go build -tags 'frpc,noweb' -o "$RUNNER_TEMP/frpc-private" ./cmd/frpc

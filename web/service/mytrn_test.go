@@ -91,28 +91,30 @@ func testMyTRNOutboundsAndRules(t *testing.T, config *xray.Config, item *model.M
 	if err := json.Unmarshal(config.OutboundConfigs, &outbounds); err != nil {
 		t.Fatal(err)
 	}
-	if len(outbounds) != 4 {
-		t.Fatalf("outbounds count %d != 4 (original 2 + MyTRN dial and SOCKS)", len(outbounds))
+	if len(outbounds) != 3 {
+		t.Fatalf("outbounds count %d != 3 (original 2 + MyTRN local UDP dial)", len(outbounds))
 	}
 	if outbounds[0]["protocol"] != "freedom" || outbounds[0]["tag"] != mytrnFreedomTag ||
 		outbounds[1]["tag"] != "blocked" {
 		t.Fatalf("existing freedom/blackhole was replaced: %#v", outbounds[:2])
 	}
-	if outbounds[2]["tag"] != mytrnDialTag || outbounds[3]["tag"] != mytrnWarpTag {
+	if outbounds[2]["tag"] != mytrnDialTag {
 		t.Fatalf("unexpected MyTRN tags: %#v", outbounds[2:])
 	}
 	dial := outbounds[2]
 	settings := dial["settings"].(map[string]interface{})
-	if settings["address"] != item.EndpointIP || int(settings["port"].(float64)) != item.EndpointPort {
-		t.Fatalf("wrong A endpoint: %#v", settings)
+	if settings["address"] != "127.0.0.1" || int(settings["port"].(float64)) != 41001 {
+		t.Fatalf("Xray must use the fixed loopback UDP relay: %#v", settings)
 	}
 	if settings["reverse"].(map[string]interface{})["tag"] != mytrnInboundTag {
 		t.Fatal("reverse-in is not the MyTRN data channel")
 	}
 	stream := dial["streamSettings"].(map[string]interface{})
-	if stream["network"] != "hysteria" || stream["security"] != "tls" ||
-		stream["sockopt"].(map[string]interface{})["dialerProxy"] != mytrnWarpTag {
-		t.Fatalf("wrong Hysteria2 / WARP dialer: %#v", stream)
+	if stream["network"] != "hysteria" || stream["security"] != "tls" {
+		t.Fatalf("wrong Hysteria2 transport: %#v", stream)
+	}
+	if _, present := stream["sockopt"]; present {
+		t.Fatalf("legacy Xray dialerProxy path retained: %#v", stream)
 	}
 	if stream["hysteriaSettings"].(map[string]interface{})["auth"] != mytrnHy2Auth(item.ControlToken) {
 		t.Fatal("Hysteria authentication is not derived from the shared control token")
@@ -137,10 +139,6 @@ func testMyTRNOutboundsAndRules(t *testing.T, config *xray.Config, item *model.M
 	}
 	if tls["alpn"].([]interface{})[0] != "h3" {
 		t.Fatal("HTTP3 ALPN is mandatory for Hysteria2")
-	}
-	warp := outbounds[3]["settings"].(map[string]interface{})["servers"].([]interface{})[0].(map[string]interface{})
-	if warp["address"] != "127.0.0.1" || int(warp["port"].(float64)) != 40000 {
-		t.Fatalf("WARP must only be the existing SOCKS5 port: %#v", warp)
 	}
 	var routing struct {
 		Rules []map[string]interface{} `json:"rules"`
@@ -178,6 +176,33 @@ func TestMyTRNMergeKeepsExistingXrayAndNoSecondFreedom(t *testing.T) {
 		t.Fatal(err)
 	}
 	testMyTRNOutboundsAndRules(t, config, item)
+}
+
+func TestMyTRNEndpointChangesLeaveEntireXrayConfigurationUnchanged(t *testing.T) {
+	item := mytrnTestRecord(t)
+	previous := mytrnTestConfig(t)
+	if err := mergeMyTRNConfig(previous, item, "a-cert.pem"); err != nil {
+		t.Fatal(err)
+	}
+	tuned := *item
+	tuned.EndpointIP, tuned.EndpointPort = "119.98.144.219", 55001
+	if !mytrnMatchesRunningConfig(&tuned, previous) {
+		t.Fatal("changed public NAT mapping was incorrectly bound to active Xray configuration")
+	}
+	updated := mytrnTestConfig(t)
+	if err := mergeMyTRNConfig(updated, &tuned, "a-cert.pem"); err != nil {
+		t.Fatal(err)
+	}
+	if !previous.Equals(updated) {
+		t.Fatal("public NAT IP/port change caused a different Xray configuration")
+	}
+	value, err := json.Marshal(updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(value, []byte(item.EndpointIP)) || bytes.Contains(value, []byte(tuned.EndpointIP)) {
+		t.Fatal("A public IPv4 endpoint leaked into static Xray data plane configuration")
+	}
 }
 
 func TestMyTRNHy2DefaultsAndDomainSeparatedAuth(t *testing.T) {
@@ -278,6 +303,7 @@ func TestMyTRNHy2SettingsPersistAndRequireRestartOnlyWhenChanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer StopMyTRNControl()
+	defer StopMyTRNRelay()
 	service := &MyTRNService{}
 	stored := mytrnTestRecord(t)
 	stored.ControlPort = freeMyTRNPort(t)
@@ -301,6 +327,11 @@ func TestMyTRNHy2SettingsPersistAndRequireRestartOnlyWhenChanged(t *testing.T) {
 	changed, err = service.UpdateSettings(settings)
 	if err != nil || changed {
 		t.Fatalf("saving the exact same Hy2 parameters must not restart Xray: changed=%t err=%v", changed, err)
+	}
+	settings.WarpPort = 40001
+	changed, err = service.UpdateSettings(settings)
+	if err != nil || changed {
+		t.Fatalf("WARP SOCKS port must hot-reconfigure only the Go relay: changed=%t err=%v", changed, err)
 	}
 	settings.ControlToken = "mytrn-rotated-token-for-hysteria-9876543210"
 	changed, err = service.UpdateSettings(settings)
@@ -339,7 +370,7 @@ func TestMyTRNMergeDisabledAndUnknownEndpointAreNoOps(t *testing.T) {
 
 func TestMyTRNMergeRejectsTagConflictAndWrongFreedom(t *testing.T) {
 	item := mytrnTestRecord(t)
-	for _, value := range []string{mytrnDialTag, mytrnWarpTag, mytrnInboundTag} {
+	for _, value := range []string{mytrnDialTag, "mytrn-warp", mytrnInboundTag} {
 		config := mytrnTestConfig(t)
 		var outbounds []map[string]interface{}
 		_ = json.Unmarshal(config.OutboundConfigs, &outbounds)
@@ -418,7 +449,8 @@ func postMyTRN(t *testing.T, url, token string, body interface{}) (int, []byte) 
 }
 
 func TestMyTRNGoControlMatchesExistingPythonA(t *testing.T) {
-	// The production control registration schedules a global Xray restart.
+	// Only the first trusted registration schedules an Xray restart. Later
+	// endpoint changes must not disturb any Xray inbounds.
 	// Restore the exact pre-test state so independent subscription/managed
 	// health tests are not affected by this isolated HTTP integration case.
 	beforeRestart := isNeedXrayRestart.Load()
@@ -431,6 +463,7 @@ func TestMyTRNGoControlMatchesExistingPythonA(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer StopMyTRNControl()
+	defer StopMyTRNRelay()
 	service := &MyTRNService{}
 	port := freeMyTRNPort(t)
 	settings := MyTRNSettings{
@@ -455,6 +488,10 @@ func TestMyTRNGoControlMatchesExistingPythonA(t *testing.T) {
 	if status != 200 || !bytes.Contains(data, []byte(`"changed":true`)) {
 		t.Fatalf("first registration HTTP=%d %s", status, data)
 	}
+	if !isNeedXrayRestart.Load() {
+		t.Fatal("initial trusted endpoint must install the new Xray reverse outbound")
+	}
+	isNeedXrayRestart.Store(false)
 	stored, err := service.Get()
 	if err != nil {
 		t.Fatal(err)
@@ -480,6 +517,12 @@ func TestMyTRNGoControlMatchesExistingPythonA(t *testing.T) {
 	newEndpoint.Port = 55001
 	if status, data = postMyTRN(t, url, mytrnTestToken, newEndpoint); status != 200 || !bytes.Contains(data, []byte(`"changed":true`)) {
 		t.Fatalf("mapping change rejected HTTP=%d %s", status, data)
+	}
+	if isNeedXrayRestart.Load() {
+		t.Fatal("A endpoint port change incorrectly requested a global Xray restart")
+	}
+	if state, _ := mytrnRelayState(); state == "relay_unavailable" {
+		t.Fatal("configured B relay did not start")
 	}
 	stored, err = service.Get()
 	if err != nil || stored.EndpointPort != 55001 {
@@ -685,6 +728,7 @@ func TestMyTRNControlBindAddressSamePortNeedsOnlyPanelRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer StopMyTRNControl()
+	defer StopMyTRNRelay()
 	service := &MyTRNService{}
 	port := freeMyTRNPort(t)
 	settings := MyTRNSettings{

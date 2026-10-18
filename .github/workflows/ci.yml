@@ -62,6 +62,9 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Race-check MyTRN WARP-only UDP relay and hot endpoint switches
+        run: go test -race -count=3 ./mytrnrelay
+
   portal-smoke:
     name: Actual x-ui A + b_client_xray B smoke
     runs-on: ubuntu-latest

@@ -184,7 +184,7 @@
                         <a-checkbox v-model="mytrnEdit.resetTrust">清除已固定的证书与旧 endpoint（仅确认 A 身份变更后使用）</a-checkbox>
                     </a-form-item>
                 </a-form>
-                <a-alert type="warning" show-icon message="A 映射变化时将重启 x-ui 管理的整个 Xray；现有 VLESS 会短暂断开"></a-alert>
+                <a-alert type="info" show-icon message="A 公网 IP/端口变化只热更新本机 Go UDP 中继，不重启 Xray；仅修改 Xray 凭据、证书或速率时才重启。中继固定监听 127.0.0.1:41001，所有公网 UDP 必须经过 WARP SOCKS5，无直连兜底。"></a-alert>
                 <a-alert v-if="mytrn.controlListenerRestartRequired" type="warning" show-icon
                          message="已保存控制监听地址；同端口改 IP 需重启 x-ui 面板后生效" style="margin-top:8px"></a-alert>
                 <a-alert v-if="mytrn.status === 'invalid_certificate'" type="error" show-icon
@@ -286,7 +286,11 @@
             },
             mytrnStatusLabel(status) {
                 return {
-                    applied: 'Xray 已应用',
+                    applied: 'Xray/UDP 中继已就绪',
+                    relay_listening: 'UDP 中继监听中',
+                    relay_unavailable: 'UDP 中继未运行',
+                    warp_unavailable: 'WARP UDP 未就绪',
+                    warp_degraded: 'WARP UDP 部分失效',
                     apply_failed: '应用失败 · 重试中',
                     invalid_certificate: 'A 证书失效',
                     pending_apply: '等待 Xray 应用',
@@ -297,6 +301,10 @@
             mytrnStatusColor(status) {
                 return {
                     applied: 'blue',
+                    relay_listening: 'orange',
+                    relay_unavailable: 'red',
+                    warp_unavailable: 'red',
+                    warp_degraded: 'orange',
                     apply_failed: 'red',
                     invalid_certificate: 'red',
                     pending_apply: 'orange',
@@ -306,7 +314,7 @@
             mytrnStatusTooltip(inbound) {
                 const messages = [];
                 if (inbound.status === 'applied') {
-                    messages.push('运行中的 Xray 已加载当前 MyTRN 配置');
+                    messages.push('Xray 静态目标 127.0.0.1:41001 且 Go WARP UDP ASSOCIATE 已建立（未验证完整端到端流量）');
                 }
                 if (inbound.statusMessage) messages.push(inbound.statusMessage);
                 if (inbound.controlListenerMessage) messages.push(inbound.controlListenerMessage);

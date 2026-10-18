@@ -410,6 +410,11 @@ func (s *Server) Start() (err error) {
 		// The MyTRN status view reports the control listener as stopped.
 		logger.Warning("MyTRN control HTTP unavailable:", err)
 	}
+	if err := service.StartMyTRNRelay(); err != nil {
+		// Port conflicts or WARP faults must never prevent unrelated
+		// VLESS listeners from starting. MyTRN View reports this separately.
+		logger.Warning("MyTRN WARP-only UDP relay unavailable:", err)
+	}
 
 	s.startTask()
 
@@ -427,6 +432,7 @@ func (s *Server) Start() (err error) {
 func (s *Server) Stop() error {
 	s.cancel()
 	service.StopMyTRNControl()
+	service.StopMyTRNRelay()
 	if s.reverseSocks != nil {
 		s.reverseSocks.Stop()
 	}

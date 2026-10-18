@@ -32,7 +32,6 @@ import (
 const (
 	mytrnID             = 1
 	mytrnDialTag        = "mytrn-dial"
-	mytrnWarpTag        = "mytrn-warp"
 	mytrnInboundTag     = "mytrn-data-in"
 	mytrnFreedomTag     = "mytrn-freedom"
 	mytrnServerName     = "mytrn-a.test"
@@ -163,6 +162,9 @@ func (s *MyTRNService) View() (*MyTRNView, error) {
 		return nil, err
 	}
 	status, statusMessage := mytrnStatus(item, currentXrayConfig(), xrayApplyFailure())
+	if status == "applied" {
+		status, statusMessage = mytrnRelayState()
+	}
 	if status == "pending_apply" {
 		if configIssue := getMyTRNConfigIssue(); configIssue != "" {
 			status, statusMessage = "apply_failed", configIssue
@@ -203,7 +205,7 @@ func mytrnStatus(item *model.MyTRN, active *xray.Config, applyError string) (str
 	if applyError != "" {
 		return "apply_failed", applyError
 	}
-	return "pending_apply", "公网映射已保存，等待 Xray 完成配置应用"
+	return "pending_apply", "MyTRN 静态 Xray 配置待应用（公网映射后续由 UDP 中继热更新）"
 }
 
 func mytrnMatchesRunningConfig(item *model.MyTRN, active *xray.Config) bool {
@@ -220,10 +222,6 @@ func mytrnMatchesRunningConfig(item *model.MyTRN, active *xray.Config) bool {
 			Reverse struct {
 				Tag string `json:"tag"`
 			} `json:"reverse"`
-			Servers []struct {
-				Address string `json:"address"`
-				Port    int    `json:"port"`
-			} `json:"servers"`
 		} `json:"settings"`
 		StreamSettings struct {
 			Network          string                     `json:"network"`
@@ -235,34 +233,28 @@ func mytrnMatchesRunningConfig(item *model.MyTRN, active *xray.Config) bool {
 			TLSSettings struct {
 				ALPN []string `json:"alpn"`
 			} `json:"tlsSettings"`
-			Sockopt struct {
-				DialerProxy string `json:"dialerProxy"`
-			} `json:"sockopt"`
+			Sockopt json.RawMessage `json:"sockopt"`
 		} `json:"streamSettings"`
 	}
 	if err := json.Unmarshal(active.OutboundConfigs, &outbounds); err != nil {
 		return false
 	}
-	var dialOK, warpOK bool
+	var dialOK bool
 	for _, outbound := range outbounds {
 		switch outbound.Tag {
 		case mytrnDialTag:
-			dialOK = outbound.Protocol == "vless" && outbound.Settings.Address == item.EndpointIP &&
-				outbound.Settings.Port == item.EndpointPort && outbound.Settings.ID == item.UUID &&
+			dialOK = outbound.Protocol == "vless" && outbound.Settings.Address == "127.0.0.1" &&
+				outbound.Settings.Port == 41001 && outbound.Settings.ID == item.UUID &&
 				outbound.Settings.Reverse.Tag == mytrnInboundTag &&
 				outbound.StreamSettings.Network == "hysteria" && outbound.StreamSettings.Security == "tls" &&
 				mytrnJSONMatches(outbound.StreamSettings.HysteriaSettings, mytrnHysteriaSettings(item)) &&
 				mytrnJSONMatches(outbound.StreamSettings.Finalmask.QuicParams, mytrnQuicParams(item)) &&
 				len(outbound.StreamSettings.TLSSettings.ALPN) == 1 &&
 				outbound.StreamSettings.TLSSettings.ALPN[0] == "h3" &&
-				outbound.StreamSettings.Sockopt.DialerProxy == mytrnWarpTag
-		case mytrnWarpTag:
-			warpOK = outbound.Protocol == "socks" && len(outbound.Settings.Servers) == 1 &&
-				outbound.Settings.Servers[0].Address == item.WarpHost &&
-				outbound.Settings.Servers[0].Port == item.WarpPort
+				len(outbound.StreamSettings.Sockopt) == 0
 		}
 	}
-	return dialOK && warpOK
+	return dialOK
 }
 
 func mytrnJSONMatches(active map[string]json.RawMessage, expected map[string]interface{}) bool {
@@ -290,8 +282,8 @@ func validateMyTRNSettings(item *model.MyTRN) error {
 	if net.ParseIP(item.ControlListen) == nil {
 		return errors.New("MyTRN 控制监听地址必须是 IP")
 	}
-	if net.ParseIP(item.WarpHost) == nil || net.ParseIP(item.WarpHost).To4() == nil {
-		return errors.New("MyTRN WARP SOCKS5 地址必须是 IPv4")
+	if ip := net.ParseIP(item.WarpHost); ip == nil || ip.To4() == nil || !ip.IsLoopback() {
+		return errors.New("MyTRN WARP SOCKS5 地址必须是 IPv4 回环地址，避免绕过本机 WARP")
 	}
 	if item.Hy2UpMbps < 1 || item.Hy2UpMbps > 10000 ||
 		item.Hy2DownMbps < 1 || item.Hy2DownMbps > 10000 {
@@ -340,10 +332,14 @@ func (s *MyTRNService) UpdateSettings(edit MyTRNSettings) (bool, error) {
 		return false, err
 	}
 	applyMyTRNControlListener(&next)
+	// The relay is process-local, not bound to Xray's lifecycle. Reconfigure
+	// WARP in place; changes to the target never trigger an Xray restart.
+	if err := syncMyTRNRelay(&next); err != nil {
+		logger.Warning("MyTRN UDP relay configuration saved but could not start:", err)
+	}
 	// HTTP listener changes do not restart Xray. Changing the control token
 	// also changes the domain-separated Hy2 auth and MUST restart Xray.
 	changesData := old.Enable != next.Enable || old.UUID != next.UUID ||
-		old.WarpHost != next.WarpHost || old.WarpPort != next.WarpPort ||
 		old.Hy2UpMbps != next.Hy2UpMbps || old.Hy2DownMbps != next.Hy2DownMbps ||
 		old.ControlToken != next.ControlToken ||
 		old.CertificateFingerprint != next.CertificateFingerprint
@@ -419,6 +415,7 @@ func (s *MyTRNService) Register(token string, value MyTRNRegistration) (*MyTRNRe
 	if item.CertificateFingerprint != "" && item.CertificateFingerprint != fingerprint {
 		return nil, errMyTRNCertificateChanged
 	}
+	firstRegistration := item.EndpointIP == "" || item.EndpointPort == 0 || item.CertificateFingerprint == ""
 	changed := item.EndpointIP != value.IP || item.EndpointPort != value.Port || item.CertificateFingerprint == ""
 	item.CertificatePEM, item.CertificateFingerprint = value.Certificate, fingerprint
 	item.EndpointIP, item.EndpointPort = value.IP, value.Port
@@ -426,9 +423,13 @@ func (s *MyTRNService) Register(token string, value MyTRNRegistration) (*MyTRNRe
 	if err := database.GetDB().Save(item).Error; err != nil {
 		return nil, err
 	}
-	if changed {
+	// A changed NAT IP/port only modifies the SOCKS5 UDP destination header.
+	// The first trusted registration needs one Xray config application because
+	// the reverse outbound did not exist before any endpoint/cert was known.
+	if changed && firstRegistration {
 		(&XrayService{}).SetToNeedRestart()
 	}
+	mytrnRelayUpdateEndpoint(item.EndpointIP, item.EndpointPort)
 	return &MyTRNRegisterResult{Changed: changed, Fingerprint: fingerprint}, nil
 }
 
@@ -508,7 +509,7 @@ func mergeMyTRNConfig(conf *xray.Config, item *model.MyTRN, certFile string) err
 			seen[tag] = true
 		}
 	}
-	for _, tag := range []string{mytrnDialTag, mytrnWarpTag, mytrnInboundTag} {
+	for _, tag := range []string{mytrnDialTag, mytrnInboundTag, "mytrn-warp"} {
 		if seen[tag] {
 			return fmt.Errorf("MyTRN tag 冲突: %s", tag)
 		}
@@ -528,7 +529,7 @@ func mergeMyTRNConfig(conf *xray.Config, item *model.MyTRN, certFile string) err
 	dial := map[string]interface{}{
 		"tag": mytrnDialTag, "protocol": "vless",
 		"settings": map[string]interface{}{
-			"address": item.EndpointIP, "port": item.EndpointPort,
+			"address": "127.0.0.1", "port": 41001,
 			"id": item.UUID, "encryption": "none",
 			"reverse": map[string]interface{}{"tag": mytrnInboundTag},
 		},
@@ -542,16 +543,12 @@ func mergeMyTRNConfig(conf *xray.Config, item *model.MyTRN, certFile string) err
 				"alpn":              []string{"h3"},
 				"certificates":      []interface{}{map[string]interface{}{"certificateFile": certFile, "usage": "verify"}},
 			},
-			"sockopt": map[string]interface{}{"dialerProxy": mytrnWarpTag},
 		},
 	}
-	warp := map[string]interface{}{
-		"tag": mytrnWarpTag, "protocol": "socks",
-		"settings": map[string]interface{}{"servers": []interface{}{map[string]interface{}{
-			"address": item.WarpHost, "port": item.WarpPort,
-		}}},
-	}
-	outbound = append(outbound, dial, warp)
+	// Destructive update: the old Xray SOCKS outbound/dialerProxy path is
+	// deleted. Only the Go loopback relay can reach A, and it exclusively
+	// forwards through WARP SOCKS5 UDP ASSOCIATE (never native VPS UDP).
+	outbound = append(outbound, dial)
 	data, err := json.Marshal(outbound)
 	if err != nil {
 		return err

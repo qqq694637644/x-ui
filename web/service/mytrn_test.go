@@ -121,7 +121,9 @@ func testMyTRNOutboundsAndRules(t *testing.T, config *xray.Config, item *model.M
 		t.Fatal("not Hysteria2")
 	}
 	quic := stream["finalmask"].(map[string]interface{})["quicParams"].(map[string]interface{})
-	if quic["congestion"] != "brutal" || quic["brutalUp"] != "64mbps" || quic["brutalDown"] != "64mbps" ||
+	if quic["congestion"] != "brutal" ||
+		quic["brutalUp"] != fmt.Sprintf("%dmbps", item.Hy2UpMbps) ||
+		quic["brutalDown"] != fmt.Sprintf("%dmbps", item.Hy2DownMbps) ||
 		quic["disablePathMTUDiscovery"] != true || quic["maxIdleTimeout"] != float64(15) ||
 		quic["keepAlivePeriod"] != float64(5) {
 		t.Fatalf("wrong Brutal2 QUIC configuration: %#v", quic)

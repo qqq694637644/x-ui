@@ -193,6 +193,13 @@ func (d *DiagnosticsRuntime) collect() {
 		elapsed := now.Sub(lastTick).Seconds()
 		lastTick = now
 		if d.Settings().Paused {
+			if changes := d.alerts.MarkUnknown(time.Now().UTC()); len(changes) > 0 {
+				if err := rsxdiag.WriteAlerts(d.root, d.alerts.Snapshot()); err != nil {
+					d.mu.Lock()
+					d.historyError = err.Error()
+					d.mu.Unlock()
+				}
+			}
 			bucket = nil
 			continue
 		}

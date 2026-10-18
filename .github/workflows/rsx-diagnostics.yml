@@ -13,7 +13,7 @@ jobs:
     timeout-minutes: 20
     env:
       FRP_DIAGNOSTICS_SHA: 3b7aeb62777bbd898ffd0720a1a672ca3a7e1293
-      NAT_NODE_DIAGNOSTICS_SHA: e1c059ada7b9a7f7747b4482ae8e6715a9054272
+      NAT_NODE_DIAGNOSTICS_SHA: aa7aa6810c02c5dcb27ec9edd23afb35936d391f
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -60,7 +60,7 @@ jobs:
           RSX_DIAG_FRPC_BIN: ${{ runner.temp }}/frpc-diagnostics
           RSX_DIAG_FRPS_BIN: ${{ runner.temp }}/frp_0.69.0_linux_amd64/frps
           RSX_DIAG_KEEP_FIXTURE: ${{ runner.temp }}/diagnostics-fixture
-        run: go test -race -count=1 -v -timeout 180s ./reverseexit -run 'TestDiagnosticsGoPythonRPCAndRealFRPC|TestDiagnosticsRejectsPeerWithoutRequiredCapability'
+        run: go test -race -count=1 -v -timeout 180s ./reverseexit -run 'TestDiagnosticsGoPythonRPCAndRealFRPC|TestDiagnosticsRejectsPeerWithoutRequiredCapability|TestDiagnosticsPeerDisconnectBlocksNewSessionsAndReconnects'
       - name: Test Windows-side Python diagnostics with no pip dependencies
         working-directory: ${{ runner.temp }}/nat_node
         run: python -S -m unittest -v tests.test_diagnostics tests.test_protocol tests.test_dependencies tests.test_scheduler

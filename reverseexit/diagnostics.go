@@ -1,8 +1,9 @@
 package reverseexit
 
 // Diagnostics are negotiated using the existing PING/PONG opcode, then moved
-// to a separate authenticated XTCP stream. Old peers just echo the PING and
-// keep working. Bulk diagnostics never use the RSX3 lifecycle frame queue.
+// to a separate authenticated XTCP stream. An absent or disconnected
+// authenticated peer blocks new sessions when Diagnostics is enabled.
+// Bulk diagnostics never uses the RSX3 lifecycle frame queue.
 import (
 	"bytes"
 	"context"
@@ -75,7 +76,17 @@ type DiagnosticPeer struct {
 
 func (p *DiagnosticPeer) Epoch() string         { return p.epoch }
 func (p *DiagnosticPeer) Done() <-chan struct{} { return p.done }
-func (p *DiagnosticPeer) Close()                { p.once.Do(func() { _ = p.conn.Close(); close(p.done) }) }
+func (p *DiagnosticPeer) Close() {
+	p.once.Do(func() {
+		// Revoke readiness synchronously with closure, not when the retry
+		// worker eventually receives <-p.Done().
+		if p.control != nil {
+			p.control.diagOnline.Store(false)
+		}
+		_ = p.conn.Close()
+		close(p.done)
+	})
+}
 func (p *DiagnosticPeer) write(v interface{}) error {
 	raw, err := json.Marshal(v)
 	if err != nil {
@@ -182,12 +193,13 @@ func (c *rsx3Control) diagnosticWorker() {
 		if err != nil {
 			c.agent.cfg.Meter.Event("diagnostics_connect", err.Error(), "")
 		} else {
+			c.diagOnline.Store(true)
 			c.diagReadyOnce.Do(func() {
-				if c.status != nil {
-					c.status("online", "")
-				}
 				close(c.diagReady)
 			})
+			if c.status != nil {
+				c.status("online", "")
+			}
 			if c.agent.cfg.DiagnosticPeerChanged != nil {
 				c.agent.cfg.DiagnosticPeerChanged(nil, p)
 			}
@@ -197,6 +209,11 @@ func (c *rsx3Control) diagnosticWorker() {
 			case <-p.Done():
 			case <-c.ctx.Done():
 				p.Close()
+			}
+			// The transport is allowed to finish existing sessions, but the
+			// missing diagnostics stream forbids new TCP/UDP opens.
+			if c.ctx.Err() == nil && c.status != nil {
+				c.status("diagnostics-unavailable", "authenticated diagnostics stream lost; new RSX3 sessions refused until reconnect")
 			}
 			if c.agent.cfg.DiagnosticPeerChanged != nil {
 				c.agent.cfg.DiagnosticPeerChanged(p, nil)

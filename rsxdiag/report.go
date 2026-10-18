@@ -21,14 +21,17 @@ const ReportBudget = int64(256 << 20)
 const MaxReportInput = int64(64 << 20)
 
 type ReportInfo struct {
-	ID       string            `json:"id"`
-	Created  time.Time         `json:"created"`
-	Bytes    int64             `json:"bytes"`
-	SHA256   string            `json:"sha256"`
-	Redacted bool              `json:"redacted"`
-	Partial  bool              `json:"partial"`
-	Missing  []string          `json:"missing"`
-	Files    map[string]string `json:"files"`
+	ID       string    `json:"id"`
+	Created  time.Time `json:"created"`
+	Bytes    int64     `json:"bytes"`
+	SHA256   string    `json:"sha256"`
+	Redacted bool      `json:"redacted"`
+	Partial  bool      `json:"partial"`
+	Missing  []string  `json:"missing"`
+	// Optional evidence is listed for transparency but does not make an
+	// otherwise verified routine report fail its task validation.
+	OptionalMissing []string          `json:"optional_missing,omitempty"`
+	Files           map[string]string `json:"files"`
 }
 
 // An archive cannot contain its own final SHA-256 and length without
@@ -41,6 +44,7 @@ type ReportManifest struct {
 	Redacted        bool              `json:"redacted"`
 	Partial         bool              `json:"partial"`
 	Missing         []string          `json:"missing"`
+	OptionalMissing []string          `json:"optional_missing,omitempty"`
 	Files           map[string]string `json:"files"`
 	ArchiveMetadata string            `json:"archive_metadata"`
 	IntegrityScope  string            `json:"integrity_scope"`
@@ -67,7 +71,10 @@ func safeReportName(name string) bool {
 	return name != "" && !strings.HasPrefix(name, "/") && !strings.Contains(name, "\\") && !strings.Contains(name, ":") && filepath.Clean(name) == name && !strings.Contains(name, "..")
 }
 func WriteReport(root, id string, files map[string][]byte, summary interface{}, missing []string) (ReportInfo, error) {
-	info := ReportInfo{ID: id, Created: time.Now().UTC(), Redacted: false, Partial: len(missing) > 0, Missing: missing, Files: map[string]string{}}
+	return WriteReportWithOptional(root, id, files, summary, missing, nil)
+}
+func WriteReportWithOptional(root, id string, files map[string][]byte, summary interface{}, missing, optionalMissing []string) (ReportInfo, error) {
+	info := ReportInfo{ID: id, Created: time.Now().UTC(), Redacted: false, Partial: len(missing) > 0, Missing: missing, OptionalMissing: optionalMissing, Files: map[string]string{}}
 	if !validID(id) {
 		return info, errors.New("invalid report identifier")
 	}
@@ -111,7 +118,7 @@ func WriteReport(root, id string, files map[string][]byte, summary interface{}, 
 	}
 	manifest, err := json.MarshalIndent(ReportManifest{
 		ID: info.ID, Created: info.Created, Redacted: info.Redacted,
-		Partial: info.Partial, Missing: info.Missing, Files: info.Files,
+		Partial: info.Partial, Missing: info.Missing, OptionalMissing: info.OptionalMissing, Files: info.Files,
 		ArchiveMetadata: id + ".json",
 		IntegrityScope:  "member SHA-256 hashes here; completed ZIP length and SHA-256 in archive_metadata sidecar",
 	}, "", "  ")

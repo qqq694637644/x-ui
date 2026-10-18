@@ -16,7 +16,10 @@ import (
 // Points are aggregates of genuine observations, not scheduled time. Missing
 // samples stay null. Minutes while the panel was stopped are unknown, not up.
 type Point struct {
-	Time       time.Time           `json:"time"`
+	Time time.Time `json:"time"`
+	// A unique collector-instance ID distinguishes pre-restart persisted
+	// minutes from this process's still-live five-second samples.
+	SourceID   string              `json:"source_id,omitempty"`
 	Seconds    float64             `json:"observed_seconds"`
 	Values     map[string]*float64 `json:"values"`
 	Totals     map[string]float64  `json:"totals"`
@@ -100,7 +103,7 @@ func (a *minuteAccumulator) point() Point {
 type History struct {
 	mu         sync.Mutex
 	dir        string
-	bootMinute time.Time
+	sourceID   string
 	recent     []Point
 	minute     *minuteAccumulator
 	queue      chan Point
@@ -126,7 +129,7 @@ func NewHistory(dir string, retentionDays int, budget int64) (*History, error) {
 	if err := privateDirectory(dir); err != nil {
 		return nil, err
 	}
-	h := &History{dir: dir, bootMinute: time.Now().UTC().Truncate(time.Minute), queue: make(chan Point, 128), done: make(chan struct{}), stop: make(chan struct{}), retainDays: retentionDays, budget: budget}
+	h := &History{dir: dir, sourceID: ID(), queue: make(chan Point, 128), done: make(chan struct{}), stop: make(chan struct{}), retainDays: retentionDays, budget: budget}
 	go h.writer()
 	return h, nil
 }
@@ -146,6 +149,7 @@ func (h *History) Add(p Point) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	p.SourceID = h.sourceID
 	h.recent = append(h.recent, p)
 	cut := p.Time.Add(-time.Hour)
 	i := 0
@@ -162,7 +166,7 @@ func (h *History) Add(p Point) {
 	if minute.After(h.minute.time) {
 		if h.minute.seconds > 0 {
 			select {
-			case h.queue <- h.minute.point():
+			case h.queue <- h.persistedMinute():
 			default:
 				h.dropped++
 				h.lastErr = "history writer busy; minute lost"
@@ -171,6 +175,15 @@ func (h *History) Add(p Point) {
 		h.minute = newAccumulator(minute)
 	}
 	h.minute.add(p)
+}
+
+// persistedMinute is called under h.mu. A flushed minute carries the same
+// source ID as its raw in-memory samples, enabling exact source-level
+// de-duplication rather than a special rule for the boot minute.
+func (h *History) persistedMinute() Point {
+	p := h.minute.point()
+	p.SourceID = h.sourceID
+	return p
 }
 func (h *History) Recent(since time.Time) []Point {
 	h.mu.Lock()
@@ -199,7 +212,7 @@ func (h *History) Close() {
 		h.mu.Lock()
 		if h.minute != nil && h.minute.seconds > 0 {
 			select {
-			case h.queue <- h.minute.point():
+			case h.queue <- h.persistedMinute():
 			default:
 				h.dropped++
 			}
@@ -377,11 +390,13 @@ func (h *History) Read(since time.Time, maxPoints int) ([]Point, error) {
 		// Keep high-resolution samples for the running process and restore
 		// older periods from persistent minute aggregates. Same-process
 		// minutes already in memory must not be counted a second time.
-		// The boot minute may have an earlier (pre-restart) disk fragment,
-		// which does not overlap the new process's memory samples.
+		// Only suppress a persisted aggregate originating in this exact
+		// collector instance. Other instances (even if they ran in the
+		// same UTC minute) contain independent, non-overlapping data.
+		// Legacy points with no source_id are previous-run disk data.
 		filtered := out[:0]
 		for _, p := range out {
-			if !seen[p.Time.UTC().Truncate(time.Minute).Unix()] || p.Time.Equal(h.bootMinute) {
+			if p.SourceID != h.sourceID || !seen[p.Time.UTC().Truncate(time.Minute).Unix()] {
 				filtered = append(filtered, p)
 			}
 		}
@@ -392,7 +407,7 @@ func (h *History) Read(since time.Time, maxPoints int) ([]Point, error) {
 			}
 		}
 	} else if h.minute != nil && h.minute.seconds > 0 {
-		out = append(out, h.minute.point())
+		out = append(out, h.persistedMinute())
 	}
 	h.mu.Unlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].Time.Before(out[j].Time) })

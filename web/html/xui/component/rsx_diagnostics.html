@@ -80,10 +80,11 @@
         </tbody></table></div>
         <pre style="max-height:260px;overflow:auto">[[pretty(history.summary || {})]]</pre>
         <a-alert v-if="(snapshot.alerts.active||[]).length" type="warning" show-icon :message="'活动异常：' + snapshot.alerts.active.length" :description="(snapshot.alerts.active||[]).map(a=>a.detail).join('；')"></a-alert>
+        <a-alert v-if="(snapshot.alerts.unknown||[]).length" type="info" show-icon :message="'采样已中断，状态未知：' + snapshot.alerts.unknown.length" :description="(snapshot.alerts.unknown||[]).map(a=>a.detail).join('；')"></a-alert>
         <a-space style="margin:12px 0"><a-button @click="editSettings">载入提醒设置</a-button><a-button type="primary" @click="saveSettings">保存提醒设置</a-button><a-checkbox v-model="settings.notifications" @change="requestNotification">本浏览器开启时显示异常通知</a-checkbox></a-space>
         <a-row :gutter="12"><a-col :span="12"><a-form-item label="持久化保留天数（1–30）"><a-input-number v-model="settings.retention_days" :min="1" :max="30"></a-input-number></a-form-item></a-col><a-col :span="12"><a-form-item label="独立历史磁盘预算（MiB，1–512）"><a-input-number v-model="settings.history_budget_mib" :min="1" :max="512"></a-input-number></a-form-item></a-col></a-row>
         <div style="overflow-x:auto"><table class="ant-table" style="width:100%"><thead><tr><th>启用 / 指标</th><th>触发阈值</th><th>恢复阈值</th><th>持续秒数</th><th>恢复秒数</th></tr></thead><tbody><tr v-for="rule in settings.rules" :key="rule.id"><td><a-checkbox v-model="rule.enabled">[[rule.id]] ([[rule.direction]])</a-checkbox></td><td><a-input-number v-model="rule.threshold" :min="0"></a-input-number></td><td><a-input-number v-model="rule.recover" :min="0"></a-input-number></td><td><a-input-number v-model="rule.hold_seconds" :min="0" :max="3600"></a-input-number></td><td><a-input-number v-model="rule.recover_seconds" :min="0" :max="3600"></a-input-number></td></tr></tbody></table></div>
-        <a-collapse style="margin-top:14px"><a-collapse-panel key="events" header="异常触发 / 恢复事件（同一故障去重）"><pre style="max-height:380px;overflow:auto">[[pretty(snapshot.alerts.events || [])]]</pre></a-collapse-panel></a-collapse>
+        <a-collapse style="margin-top:14px"><a-collapse-panel key="events" header="异常触发 / 采样中断 / 恢复事件（同一故障去重）"><pre style="max-height:380px;overflow:auto">[[pretty(snapshot.alerts.events || [])]]</pre></a-collapse-panel></a-collapse>
       </a-tab-pane>
     </a-tabs>
   </template>

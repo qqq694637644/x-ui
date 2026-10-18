@@ -554,8 +554,15 @@ func probeStep(name string, value interface{}, err error) rsxdiag.Step {
 }
 func (d *DiagnosticsRuntime) makeReport(ctx context.Context, id string, progress func(rsxdiag.Step), includeCapture bool) (interface{}, error) {
 	files := map[string][]byte{}
-	missing := []string{}
+	missing := []string{}         // core evidence: required to declare the report verified
+	optionalMissing := []string{} // optional pre-existing logs, still reported
 	snapshot := d.Snapshot()
+	if local, ok := snapshot["local_frpc"].(diagnosticSource); !ok || local.Stale || len(local.Data) == 0 {
+		missing = append(missing, "VPS frpc diagnostics snapshot unavailable or stale")
+	}
+	if node, ok := snapshot["node"].(diagnosticSource); !ok || node.Stale || len(node.Data) == 0 {
+		missing = append(missing, "Windows Python diagnostics snapshot unavailable or stale")
+	}
 	files["snapshot.json"] = rsxdiag.CloneJSON(snapshot)
 	files["events.json"] = rsxdiag.CloneJSON(d.alerts.Snapshot())
 	files["tasks.json"] = rsxdiag.CloneJSON(d.runner.Snapshot())
@@ -564,16 +571,16 @@ func (d *DiagnosticsRuntime) makeReport(ctx context.Context, id string, progress
 	if logs, enabled := d.frpc.Logs(); enabled && len(logs) > 0 {
 		files["frpc-restart.log"] = []byte(logs)
 	} else {
-		missing = append(missing, "frpc restart log capture was not enabled")
+		optionalMissing = append(optionalMissing, "frpc restart log capture was not enabled")
 	}
 	if path, err := runningXrayLog(); err == nil {
 		if raw, err := tailFile(path, 256<<10); err == nil {
 			files["xray-access.log"] = raw
 		} else {
-			missing = append(missing, err.Error())
+			optionalMissing = append(optionalMissing, "Xray access log: "+err.Error())
 		}
 	} else {
-		missing = append(missing, "Xray access log: "+err.Error())
+		optionalMissing = append(optionalMissing, "Xray access log: "+err.Error())
 	}
 	if includeCapture {
 		c, cancel := context.WithTimeout(ctx, 12*time.Second)
@@ -612,7 +619,7 @@ func (d *DiagnosticsRuntime) makeReport(ctx context.Context, id string, progress
 		if err == nil {
 			files["python-logs.json"] = raw
 		} else {
-			missing = append(missing, "Python logs: "+err.Error())
+			optionalMissing = append(optionalMissing, "Python logs: "+err.Error())
 		}
 		if includeCapture {
 			archive, err := downloadNodeCapture(ctx, peer)
@@ -627,9 +634,9 @@ func (d *DiagnosticsRuntime) makeReport(ctx context.Context, id string, progress
 			}
 		}
 	}
-	summary := map[string]interface{}{"schema": rsxdiag.Schema, "task_id": id, "time": time.Now().UTC(), "unredacted": true, "missing": missing, "observations": snapshot, "notes": []string{"Packet-loss declarations and repeated stream offsets have different denominators.", "No absence of errors is claimed where samples are missing.", "Raw reports preserve original IP/domain/tuple identifiers. Secret files and business payloads are not collected.", "Full pre-capture QUIC handshake data is unavailable when a capture starts mid-connection."}}
+	summary := map[string]interface{}{"schema": rsxdiag.Schema, "task_id": id, "time": time.Now().UTC(), "unredacted": true, "missing": missing, "optional_missing": optionalMissing, "observations": snapshot, "notes": []string{"Packet-loss declarations and repeated stream offsets have different denominators.", "No absence of errors is claimed where samples are missing.", "Raw reports preserve original IP/domain/tuple identifiers. Secret files and business payloads are not collected.", "Full pre-capture QUIC handshake data is unavailable when a capture starts mid-connection."}}
 	summary["retention_scope"] = map[string]interface{}{"agent_sessions": 256, "python_sessions": 128, "python_log_lines": 256, "frpc_restart_log_max_bytes": 65536, "xray_access_tail_max_bytes": 262144, "capture_max_bytes_per_endpoint": 16777216}
-	return rsxdiag.WriteReport(d.root, id, files, summary, missing)
+	return rsxdiag.WriteReportWithOptional(d.root, id, files, summary, missing, optionalMissing)
 }
 func captureIncomplete(raw []byte) string {
 	var status struct {

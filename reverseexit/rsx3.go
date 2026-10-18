@@ -41,10 +41,13 @@ type rsx3Control struct {
 	diagOnce      sync.Once
 	diagReadyOnce sync.Once
 	diagReady     chan struct{}
-	diagMismatch  atomic.Bool
-	status        func(string, string)
-	benchMu       sync.Mutex
-	benchmarks    map[string]*benchmarkPermit
+	// The channel only records first authentication; current readiness is
+	// revocable when the independent diagnostics stream disconnects.
+	diagOnline   atomic.Bool
+	diagMismatch atomic.Bool
+	status       func(string, string)
+	benchMu      sync.Mutex
+	benchmarks   map[string]*benchmarkPermit
 }
 
 func rsx3AuthenticateControl(c net.Conn, secret []byte) ([16]byte, error) {
@@ -197,13 +200,9 @@ func serveRSX3(ctx context.Context, c net.Conn, cfg Config, status func(string, 
 		}
 		switch f.kind {
 		case openTCP:
-			if cfg.DiagnosticsEnabled {
-				select {
-				case <-control.diagReady:
-				default:
-					_ = a.send(frame{tcpResult, f.id, []byte{5}})
-					continue
-				}
+			if cfg.DiagnosticsEnabled && !control.diagOnline.Load() {
+				_ = a.send(frame{tcpResult, f.id, []byte{5}})
+				continue
 			}
 			host, port, used, err := decodeAddress(f.data)
 			if err != nil || used != len(f.data) || f.id == 0 {
@@ -237,13 +236,9 @@ func serveRSX3(ctx context.Context, c net.Conn, cfg Config, status func(string, 
 			}
 			control.mu.Unlock()
 		case openUDP:
-			if cfg.DiagnosticsEnabled {
-				select {
-				case <-control.diagReady:
-				default:
-					_ = a.send(frame{udpResult, f.id, []byte{5}})
-					continue
-				}
+			if cfg.DiagnosticsEnabled && !control.diagOnline.Load() {
+				_ = a.send(frame{udpResult, f.id, []byte{5}})
+				continue
 			}
 			if len(f.data) != 0 {
 				continue

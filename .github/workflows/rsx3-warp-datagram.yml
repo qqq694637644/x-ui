@@ -13,7 +13,7 @@ jobs:
     name: Go exit / Web panel / Python SOCKS5 interoperability
     runs-on: ubuntu-latest
     env:
-      NAT_NODE_DIAGNOSTICS_SHA: e1c059ada7b9a7f7747b4482ae8e6715a9054272
+      NAT_NODE_DIAGNOSTICS_SHA: aa7aa6810c02c5dcb27ec9edd23afb35936d391f
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

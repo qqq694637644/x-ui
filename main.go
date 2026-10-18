@@ -1,16 +1,19 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 	_ "unsafe"
 	"x-ui/config"
 	"x-ui/database"
 	"x-ui/logger"
+	"x-ui/reverseexit"
 	"x-ui/v2ui"
 	"x-ui/web"
 	"x-ui/web/global"
@@ -239,6 +242,15 @@ func main() {
 	settingCmd.IntVar(&tgbotchatid, "tgbotchatid", 0, "set telegrame bot chat id")
 	settingCmd.BoolVar(&enabletgbot, "enabletgbot", false, "enable telegram bot notify")
 
+	reverseCmd := flag.NewFlagSet("reverse-socks-exit", flag.ExitOnError)
+	visitor := reverseCmd.String("visitor", "127.0.0.1:6000", "local frpc XTCP Visitor address")
+	udpBind := reverseCmd.String("udp-bind", "127.0.0.1:6002", "Go UDP socket (frpc datagram.peerAddr)")
+	udpPeer := reverseCmd.String("udp-frpc", "127.0.0.1:6001", "frpc datagram.listenAddr")
+	warpSocks := reverseCmd.String("warp-socks", "", "mandatory loopback WARP SOCKS5 endpoint")
+	warpProbe := reverseCmd.String("warp-probe", "1.1.1.1:443", "WARP TCP CONNECT healthcheck destination")
+	warpUser := reverseCmd.String("warp-user", "", "optional WARP SOCKS5 username")
+	retry := reverseCmd.Duration("retry", 2*time.Second, "reconnect interval")
+
 	oldUsage := flag.Usage
 	flag.Usage = func() {
 		oldUsage()
@@ -247,6 +259,7 @@ func main() {
 		fmt.Println("    run            run web panel")
 		fmt.Println("    v2-ui          migrate form v2-ui")
 		fmt.Println("    setting        set settings")
+		fmt.Println("    reverse-socks-exit   run outbound SOCKS5 exit agent over frpc XTCP Visitor")
 	}
 
 	flag.Parse()
@@ -289,6 +302,22 @@ func main() {
 		}
 		if (tgbottoken != "") || (tgbotchatid != 0) || (tgbotRuntime != "") {
 			updateTgbotSetting(tgbottoken, tgbotchatid, tgbotRuntime)
+		}
+	case "reverse-socks-exit":
+		if err := reverseCmd.Parse(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		err := reverseexit.Run(ctx, reverseexit.Config{
+			VisitorAddr: *visitor, UDPBindAddr: *udpBind, UDPPeerAddr: *udpPeer,
+			WARPAddr: *warpSocks, WARPUsername: *warpUser,
+			WARPProbe:    *warpProbe,
+			WARPPassword: os.Getenv("WARP_SOCKS_PASSWORD"),
+			Token:        os.Getenv("REVERSE_SOCKS_TOKEN"), RetryInterval: *retry,
+		}, nil)
+		if err != nil && err != context.Canceled {
+			log.Fatal(err)
 		}
 	default:
 		fmt.Println("except 'run' or 'v2-ui' or 'setting' subcommands")

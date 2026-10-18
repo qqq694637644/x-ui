@@ -643,8 +643,8 @@ func TestMyTRNStatusUsesRunningConfigurationNotSavedEndpoint(t *testing.T) {
 	}
 	newEndpoint := *item
 	newEndpoint.EndpointPort++
-	if status, _ := mytrnStatus(&newEndpoint, config, ""); status != "pending_apply" {
-		t.Fatalf("running Xray with STALE endpoint is %q, want pending_apply", status)
+	if status, _ := mytrnStatus(&newEndpoint, config, ""); status != "applied" {
+		t.Fatalf("NAT endpoint-only change must NOT invalidate the running Xray: status=%q", status)
 	}
 	rotated := *item
 	rotated.CertificatePEM = mytrnTestCert(t)

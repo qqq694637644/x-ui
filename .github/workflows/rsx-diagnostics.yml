@@ -11,6 +11,9 @@ jobs:
     name: Diagnostics four-stage tests / official frps / Go-Python
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      FRP_DIAGNOSTICS_SHA: 3b7aeb62777bbd898ffd0720a1a672ca3a7e1293
+      NAT_NODE_DIAGNOSTICS_SHA: faf0a656679c600c35ffa42752c12e88c967cd02
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -27,12 +30,18 @@ jobs:
         run: |
           node web/html/xui/test_reverse_socks_frpc_fields.cjs
           node web/html/xui/test_rsx_diagnostics.cjs
-      - name: Checkout matching diagnostics companion branches
+      - name: Checkout pinned diagnostics companions
         run: |
-          git clone --depth 1 --branch gpt/rsx3-diagnostics \
-            https://github.com/qqq694637644/frp.git "$RUNNER_TEMP/frp"
-          git clone --depth 1 --branch gpt/rsx3-diagnostics \
-            https://github.com/qqq694637644/nat_node.git "$RUNNER_TEMP/nat_node"
+          git init "$RUNNER_TEMP/frp"
+          git -C "$RUNNER_TEMP/frp" remote add origin https://github.com/qqq694637644/frp.git
+          git -C "$RUNNER_TEMP/frp" fetch --depth 1 origin "$FRP_DIAGNOSTICS_SHA"
+          git -C "$RUNNER_TEMP/frp" checkout --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/frp" rev-parse HEAD)" = "$FRP_DIAGNOSTICS_SHA"
+          git init "$RUNNER_TEMP/nat_node"
+          git -C "$RUNNER_TEMP/nat_node" remote add origin https://github.com/qqq694637644/nat_node.git
+          git -C "$RUNNER_TEMP/nat_node" fetch --depth 1 origin "$NAT_NODE_DIAGNOSTICS_SHA"
+          git -C "$RUNNER_TEMP/nat_node" checkout --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/nat_node" rev-parse HEAD)" = "$NAT_NODE_DIAGNOSTICS_SHA"
           printf 'x-ui='; git rev-parse HEAD
           printf 'frp='; git -C "$RUNNER_TEMP/frp" rev-parse HEAD
           printf 'nat_node='; git -C "$RUNNER_TEMP/nat_node" rev-parse HEAD

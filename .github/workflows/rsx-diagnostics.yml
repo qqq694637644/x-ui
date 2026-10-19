@@ -26,10 +26,21 @@ jobs:
         run: go test -race -count=1 -timeout 120s ./rsxdiag ./reverseexit
       - name: Test authenticated Web APIs, configuration and rendered templates
         run: go test -count=1 -timeout 120s ./web/service ./web/controller ./web -run 'TestDiagnostics'
+      - name: Ensure saved Xray 26.3.27 template preserves WARP domain routing
+        run: go test -count=1 -timeout 60s ./web/service -run '^TestXray26327SavedTemplateGetsNativeStatsAPIWithoutChangingRouting$'
       - name: Test real dashboard JavaScript and unknown-data handling
         run: |
           node web/html/xui/test_reverse_socks_frpc_fields.cjs
           node web/html/xui/test_rsx_diagnostics.cjs
+          node web/html/xui/test_diagnostics_http_json.cjs
+      - name: Verify native Xray 26.3.27 StatsService API and strict loopback listener
+        run: |
+          curl -fL --retry 3 'https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip' -o "$RUNNER_TEMP/Xray-linux-64.zip"
+          mkdir -p "$RUNNER_TEMP/xray26327"
+          unzip -q "$RUNNER_TEMP/Xray-linux-64.zip" -d "$RUNNER_TEMP/xray26327"
+          chmod +x "$RUNNER_TEMP/xray26327/xray"
+          "$RUNNER_TEMP/xray26327/xray" version | grep -F 'Xray 26.3.27'
+          RSX_XRAY_26327_BIN="$RUNNER_TEMP/xray26327/xray" go test -count=1 -timeout 60s ./xray
       - name: Checkout pinned diagnostics companions
         run: |
           git init "$RUNNER_TEMP/frp"

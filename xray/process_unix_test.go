@@ -51,7 +51,8 @@ exit 42`)
 	processStartupGrace = 200 * time.Millisecond
 	defer func() { processStartupGrace = oldGrace }()
 
-	process := NewProcess(&Config{})
+	cfg := apiConfigForTest(t, `{"api":{"tag":"api","listen":"127.0.0.1:62789","services":["StatsService"]}}`)
+	process := NewProcess(cfg)
 	if err := process.Start(); err == nil {
 		t.Fatal("Start() succeeded for a process that exited immediately")
 	}
@@ -78,7 +79,8 @@ exec sleep 30`)
 		processStopTimeout = oldStopTimeout
 	}()
 
-	process := NewProcess(&Config{})
+	cfg := apiConfigForTest(t, `{"api":{"tag":"api","listen":"127.0.0.1:62789","services":["StatsService"]}}`)
+	process := NewProcess(cfg)
 	if err := process.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}

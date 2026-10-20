@@ -139,7 +139,7 @@
                 await new Promise(resolve => {
                     this.$confirm({
                         title: '重启面板',
-                        content: '确定要重启面板吗？点击确定将于 3 秒后重启，若重启后无法访问面板，请前往服务器查看面板日志信息',
+                        content: '确定要重启面板吗？面板将先停止反向 SOCKS5 的 Go Agent 和 frpc，等待连接释放，随后于 3 秒后重启，并按已保存的启用状态恢复。若重启后无法访问，请查看面板日志。',
                         okText: '确定',
                         cancelText: '取消',
                         onOk: () => resolve(),

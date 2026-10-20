@@ -146,6 +146,8 @@ func (s *ReverseSocksService) Start(ctx context.Context) error {
 }
 
 func (s *ReverseSocksService) Stop() {
+	// Only stop live resources. Keep the saved Enabled flag intact so the
+	// panel's SIGHUP restart can restore the prior user-selected state.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.diagnostics != nil {

@@ -20,10 +20,11 @@ type SettingController struct {
 	settingService service.SettingService
 	userService    service.UserService
 	panelService   service.PanelService
+	reverseSocks   *service.ReverseSocksService
 }
 
-func NewSettingController(g *gin.RouterGroup) *SettingController {
-	a := &SettingController{}
+func NewSettingController(g *gin.RouterGroup, reverseSocks *service.ReverseSocksService) *SettingController {
+	a := &SettingController{reverseSocks: reverseSocks}
 	a.initRouter(g)
 	return a
 }
@@ -83,6 +84,14 @@ func (a *SettingController) updateUser(c *gin.Context) {
 }
 
 func (a *SettingController) restartPanel(c *gin.Context) {
+	// Quiesce the managed Go Agent and frpc while the old panel is still
+	// running. Stop waits for their exit, releasing the WARP SOCKS5 sockets
+	// before the delayed SIGHUP starts the new panel instance. Unlike the
+	// dashboard's Stop button, this does not persist enabled=false: the
+	// saved setting determines whether the services resume after restart.
+	if a.reverseSocks != nil {
+		a.reverseSocks.Stop()
+	}
 	err := a.panelService.RestartPanel(time.Second * 3)
 	jsonMsg(c, "重启面板", err)
 }

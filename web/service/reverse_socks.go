@@ -158,6 +158,28 @@ func (s *ReverseSocksService) Stop() {
 	s.frpc.Stop()
 }
 
+// RestartWARP releases the managed frpc/Agent connections before restarting
+// WireProxy, then restores the saved enabled state without changing the DB.
+func (s *ReverseSocksService) RestartWARP() (ReverseSocksView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	config, err := s.load()
+	if err != nil {
+		return ReverseSocksView{}, err
+	}
+	if s.diagnostics != nil {
+		s.diagnostics.Close()
+		s.diagnostics = nil
+	}
+	s.manager.Stop()
+	s.frpc.Stop()
+	if err := RestartWireProxy(); err != nil {
+		s.startupError = err.Error()
+		return s.view(config), err
+	}
+	return s.applyLocked(config, false)
+}
+
 func (s *ReverseSocksService) view(config reverseSocksSaved) ReverseSocksView {
 	status := s.manager.Status()
 	if s.startupError != "" {

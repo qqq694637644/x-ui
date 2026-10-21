@@ -92,6 +92,12 @@ func (a *SettingController) restartPanel(c *gin.Context) {
 	if a.reverseSocks != nil {
 		a.reverseSocks.Stop()
 	}
+	// Stopping managed children does not reset WireProxy's own sockets or
+	// state. Restart it before the panel restores frpc/Agent after SIGHUP.
+	if err := service.RestartWireProxy(); err != nil {
+		jsonMsg(c, "重启面板前重启 WARP", err)
+		return
+	}
 	err := a.panelService.RestartPanel(time.Second * 3)
 	jsonMsg(c, "重启面板", err)
 }

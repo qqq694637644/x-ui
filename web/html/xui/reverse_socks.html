@@ -107,6 +107,7 @@
                     <a-space>
                         <a-button @click="verifyFrpc">校验当前填写的配置（不保存）</a-button>
                         <a-button @click="restart">重启 frpc + Agent</a-button>
+                        <a-button type="primary" @click="restartWARP">重启 WARP 并恢复连接</a-button>
                         <a-checkbox v-model="printRestartLogs">重启时打印 frpc 日志到 Web</a-checkbox>
                     </a-space>
                     <a-card v-if="showRestartLogs" size="small" title="本次重启 frpc 日志（仅内存，最多 64 KiB）"
@@ -412,6 +413,23 @@
                 } finally {
                     this.loading = false;
                 }
+            },
+            async restartWARP() {
+                this.$confirm({
+                    title: '重启 WARP',
+                    content: '将先停止本面板管理的 frpc 和 Agent，再重启系统 wireproxy.service，并按已保存的启用状态恢复连接。现有 WARP 连接会短暂中断，确定继续吗？',
+                    okText: '重启',
+                    cancelText: '取消',
+                    onOk: async () => {
+                        this.loading = true;
+                        try {
+                            const res = await HttpUtil.post('/xui/reverse-socks/restart-warp');
+                            if (res.obj) this.applyView(res.obj);
+                        } finally {
+                            this.loading = false;
+                        }
+                    }
+                });
             },
             async fetchRestartLogs() {
                 const res = await HttpUtil.post('/xui/reverse-socks/restart-logs');

@@ -52,6 +52,14 @@ class HttpUtil {
         return msg;
     }
 
+    // Diagnostics endpoints require a JSON body. The panel's ordinary
+    // post() remains form-encoded, but this call bypasses its Qs serializer.
+    static async postJSON(url, data) {
+        return this.post(url, data, {
+            headers: { 'Content-Type': 'application/json; charset=UTF-8' }
+        });
+    }
+
     static async postWithModal(url, data, modal) {
         if (modal) {
             modal.loading(true);

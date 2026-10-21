@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"x-ui/reverseexit"
+	"x-ui/rsxdiag"
 )
 
 const (
@@ -54,8 +55,8 @@ func defaultReverseFRPCConfig() reverseFRPCConfig {
 		TargetMbps:      16,
 		MaxMbps:         24,
 		FRPSServerPort:  7000,
-		XTCPVisitorName: "rsx2_outside",
-		XTCPServerName:  "rsx2_node",
+		XTCPVisitorName: "rsx3_outside",
+		XTCPServerName:  "rsx3_node",
 	}
 }
 
@@ -237,6 +238,9 @@ func renderManagedFRPC(c reverseFRPCConfig, agent reverseexit.Config) (string, e
 		"transport.proxyURL = " + quoted(socks),
 	}
 	lines = append(lines, congestionLines...)
+	if agent.DiagnosticsEnabled {
+		lines = append(lines, "diagnostics.enabled = true", "diagnostics.listenAddr = "+quoted(agent.FRPCDiagnosticsAddr), "diagnostics.token = "+quoted(rsxdiag.LocalToken(agent.Token)))
+	}
 	lines = append(lines,
 		"natHoleSTUNServer = "+quoted(c.STUNServer),
 		"",

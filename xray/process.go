@@ -22,7 +22,7 @@ import (
 	"google.golang.org/grpc"
 )
 
-var trafficRegex = regexp.MustCompile("(inbound|outbound)>>>([^>]+)>>>traffic>>>(downlink|uplink)")
+var trafficRegex = regexp.MustCompile("^(inbound|outbound)>>>([^>]+)>>>traffic>>>(downlink|uplink)$")
 
 var processStartupGrace = 2 * time.Second
 var processStopTimeout = 5 * time.Second
@@ -164,13 +164,13 @@ func (p *Process) GetConfig() *Config {
 	return p.config
 }
 
-func (p *process) refreshAPIPort() {
-	for _, inbound := range p.config.InboundConfigs {
-		if inbound.Tag == "api" {
-			p.apiPort = inbound.Port
-			break
-		}
+func (p *process) refreshAPIPort() error {
+	port, err := p.config.StatsAPIPort()
+	if err != nil {
+		return err
 	}
+	p.apiPort = port
+	return nil
 }
 
 func (p *process) refreshVersion() {
@@ -191,6 +191,9 @@ func (p *process) refreshVersion() {
 func (p *process) Start() (err error) {
 	if p.IsRunning() {
 		return errors.New("xray is already running")
+	}
+	if err = p.refreshAPIPort(); err != nil {
+		return err
 	}
 
 	defer func() {
@@ -286,7 +289,6 @@ func (p *process) Start() (err error) {
 	}
 
 	p.refreshVersion()
-	p.refreshAPIPort()
 
 	return nil
 }
@@ -330,6 +332,10 @@ func (p *process) GetTraffic(reset bool) ([]*Traffic, error) {
 	traffics := make([]*Traffic, 0)
 	for _, stat := range resp.GetStat() {
 		matchs := trafficRegex.FindStringSubmatch(stat.Name)
+		if matchs == nil {
+			// Xray may return StatsService counters unrelated to traffic.
+			continue
+		}
 		isInbound := matchs[1] == "inbound"
 		tag := matchs[2]
 		isDown := matchs[3] == "downlink"

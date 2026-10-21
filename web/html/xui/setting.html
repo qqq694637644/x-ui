@@ -68,7 +68,7 @@
                         </a-tab-pane>
                         <a-tab-pane key="3" tab="xray 相关设置">
                             <a-list item-layout="horizontal" style="background: white">
-                                <setting-list-item type="textarea" title="xray 配置模版" desc="以该模版为基础生成最终的 xray 配置文件，重启面板生效" v-model="allSetting.xrayTemplateConfig"></setting-list-item>
+                                <setting-list-item type="textarea" title="xray 配置模版" desc="仅支持 Xray 26.3.27：使用 api.listen 本机 StatsService，省略时自动添加 127.0.0.1:62789；请删除旧式 inbounds 里 tag=api 的入站，不再兼容旧 API 入站模式。重启面板生效。" v-model="allSetting.xrayTemplateConfig"></setting-list-item>
                             </a-list>
                         </a-tab-pane>
                         <a-tab-pane key="4" tab="TG提醒相关设置">
@@ -139,7 +139,7 @@
                 await new Promise(resolve => {
                     this.$confirm({
                         title: '重启面板',
-                        content: '确定要重启面板吗？点击确定将于 3 秒后重启，若重启后无法访问面板，请前往服务器查看面板日志信息',
+                        content: '确定要重启面板吗？将先停止反向 SOCKS5 的 Go Agent 和 frpc，再重启系统 WireProxy WARP，随后于 3 秒后重启面板，并按已保存的启用状态恢复。若 WARP 重启失败，面板不会重启并会提示错误。',
                         okText: '确定',
                         cancelText: '取消',
                         onOk: () => resolve(),

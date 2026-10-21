@@ -1,15 +1,12 @@
 package reverseexit
 
-// RSX2/RSX3 overseas Agent: target connections only use a configured
+// RSX3 overseas Agent: target connections only use a configured
 // loopback SOCKS5 proxy (WARP by default, or Xray for domain routing).
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -18,7 +15,6 @@ import (
 )
 
 const maxSessions = 1024
-const tcpWindowFrames = 32
 
 type stream interface {
 	deliver(frame)
@@ -53,11 +49,7 @@ func Run(ctx context.Context, cfg Config, onState func(string, string)) error {
 		c, err := dialer.DialContext(ctx, "tcp", cfg.VisitorAddr)
 		if err == nil {
 			log.Printf("reverse SOCKS: connected to XTCP visitor %s", cfg.VisitorAddr)
-			if cfg.Protocol == "rsx2" {
-				err = serve(ctx, c, cfg, status)
-			} else {
-				err = serveRSX3(ctx, c, cfg, status)
-			}
+			err = serveRSX3(ctx, c, cfg, status)
 		}
 		if ctx.Err() != nil {
 			break
@@ -72,107 +64,6 @@ func Run(ctx context.Context, cfg Config, onState func(string, string)) error {
 	return ctx.Err()
 }
 
-func serve(ctx context.Context, c net.Conn, cfg Config, status func(string, string)) error {
-	defer c.Close()
-	if err := authenticate(c, []byte(cfg.Token)); err != nil {
-		return err
-	}
-	bind, _ := net.ResolveUDPAddr("udp4", cfg.UDPBindAddr)
-	peer, _ := net.ResolveUDPAddr("udp4", cfg.UDPPeerAddr)
-	udpConn, err := net.ListenUDP("udp4", bind)
-	if err != nil {
-		return fmt.Errorf("bind RSX2 UDP socket: %w", err)
-	}
-	defer udpConn.Close()
-	a := &agent{conn: c, udpConn: udpConn, udpPeer: peer, cfg: cfg,
-		streams: make(map[uint32]stream)}
-	a.sender = newFairWriter(c)
-	defer a.sender.close()
-	go a.datagramLoop()
-	status("online", "")
-	probeCtx, cancelProbe := context.WithCancel(ctx)
-	defer cancelProbe()
-	go func() {
-		for {
-			status("warp-checking", "")
-			err := probeWARP(probeCtx, cfg)
-			if probeCtx.Err() != nil {
-				return
-			}
-			if err != nil {
-				status("warp-error", err.Error())
-			} else {
-				status("warp-ready", "")
-			}
-			timer := time.NewTimer(30 * time.Second)
-			select {
-			case <-timer.C:
-			case <-probeCtx.Done():
-				if !timer.Stop() {
-					<-timer.C
-				}
-				return
-			}
-		}
-	}()
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			c.Close()
-		case <-done:
-		}
-	}()
-	defer close(done)
-	defer a.stopAll()
-	for {
-		f, err := readFrame(c)
-		if err != nil {
-			return err
-		}
-		switch f.kind {
-		case openTCP:
-			host, port, used, err := decodeAddress(f.data)
-			if err != nil || used != len(f.data) {
-				_ = a.send(frame{tcpResult, f.id, []byte{5}})
-				continue
-			}
-			s := &tcpStream{agent: a, id: f.id, in: make(chan frame, tcpWindowFrames+2),
-				credits: make(chan struct{}, tcpWindowFrames), done: make(chan struct{})}
-			for i := 0; i < tcpWindowFrames; i++ {
-				s.credits <- struct{}{}
-			}
-			if !a.register(f.id, s) {
-				_ = a.send(frame{tcpResult, f.id, []byte{5}})
-				continue
-			}
-			go s.run(host, port)
-		case openUDP:
-			if len(f.data) != 0 {
-				continue
-			}
-			s := &udpStream{agent: a, id: f.id, in: make(chan []byte, 128),
-				done: make(chan struct{})}
-			if a.register(f.id, s) {
-				go s.run()
-			}
-		case tcpData, tcpFIN, tcpRST, tcpWindow, udpClose:
-			a.mu.Lock()
-			s := a.streams[f.id]
-			a.mu.Unlock()
-			if s != nil {
-				s.deliver(f)
-			}
-		case ping:
-			if err := a.send(frame{pong, f.id, f.data}); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("invalid RSX2 message %d", f.kind)
-		}
-	}
-}
-
 // Session ID (4 BE bytes) + unmodified RFC1928 UDP packet. Neither UDP
 // payloads nor their retransmission are ever carried through the TCP mux.
 func (a *agent) datagramLoop() {
@@ -183,10 +74,12 @@ func (a *agent) datagramLoop() {
 			return
 		}
 		if !from.IP.Equal(a.udpPeer.IP) || from.Port != a.udpPeer.Port || n < 9 || n > udpLinkMax {
+			a.cfg.Meter.UDP("", "invalid_local_frame", n)
 			continue
 		}
 		sid := binary.BigEndian.Uint32(buf[:4])
 		if _, _, _, err := decodeUDP(buf[4:n]); sid == 0 || err != nil {
+			a.cfg.Meter.UDP("", "invalid_socks_datagram", n)
 			continue
 		}
 		a.mu.Lock()
@@ -200,28 +93,19 @@ func (a *agent) datagramLoop() {
 
 func (a *agent) sendUDP(sid uint32, packet []byte) error {
 	if len(packet)+4 > udpLinkMax {
-		return errors.New("RSX2 UDP datagram exceeds 1100 bytes")
+		a.cfg.Meter.UDP("", "oversize", len(packet))
+		return errors.New("RSX3 UDP datagram exceeds 1100 bytes")
 	}
 	data := make([]byte, len(packet)+4)
 	binary.BigEndian.PutUint32(data[:4], sid)
 	copy(data[4:], packet)
 	_, err := a.udpConn.WriteToUDP(data, a.udpPeer)
+	if err == nil {
+		a.cfg.Meter.UDP("received", "", len(packet))
+	} else {
+		a.cfg.Meter.UDP("", "local_write", len(packet))
+	}
 	return err
-}
-
-func authenticate(c net.Conn, secret []byte) error {
-	c.SetDeadline(time.Now().Add(5 * time.Second))
-	defer c.SetDeadline(time.Time{})
-	var challenge [36]byte
-	if _, err := io.ReadFull(c, challenge[:]); err != nil {
-		return err
-	}
-	if string(challenge[:4]) != "RSX2" {
-		return errors.New("invalid RSX2 protocol version")
-	}
-	mac := hmac.New(sha256.New, secret)
-	_, _ = mac.Write(challenge[4:])
-	return writeAll(c, mac.Sum(nil))
 }
 
 func (a *agent) send(f frame) error {
@@ -261,163 +145,6 @@ func (a *agent) stopAll() {
 	}
 }
 
-type tcpStream struct {
-	agent   *agent
-	id      uint32
-	in      chan frame
-	credits chan struct{}
-	done    chan struct{}
-	once    sync.Once
-	mu      sync.Mutex
-	conn    *net.TCPConn
-}
-
-func (s *tcpStream) stop() {
-	s.once.Do(func() {
-		close(s.done)
-		s.mu.Lock()
-		if s.conn != nil {
-			s.conn.Close()
-		}
-		s.mu.Unlock()
-		s.agent.unregister(s.id, s)
-	})
-}
-
-func (s *tcpStream) deliver(f frame) {
-	if f.kind == tcpWindow {
-		if len(f.data) != 2 {
-			s.stop()
-			return
-		}
-		grant := int(binary.BigEndian.Uint16(f.data))
-		if grant < 1 || grant > tcpWindowFrames {
-			s.stop()
-			return
-		}
-		for i := 0; i < grant; i++ {
-			select {
-			case s.credits <- struct{}{}:
-			case <-s.done:
-				return
-			default:
-				s.stop() // unexpected extra credit from peer
-				return
-			}
-		}
-		return
-	}
-	select {
-	case <-s.done:
-		return
-	default:
-	}
-	select {
-	case s.in <- f:
-	case <-s.done:
-	default:
-		s.stop() // peer exceeded its negotiated receive window
-		go s.agent.send(frame{tcpRST, s.id, nil})
-	}
-}
-
-func (s *tcpStream) run(host string, port int) {
-	defer s.stop()
-	targetStarted := time.Now()
-	conn, err := targetTCP(context.Background(), s.agent.cfg, host, port)
-	log.Printf("RSX2 metric target_socks_connect sid=%d duration_ms=%d success=%t",
-		s.id, time.Since(targetStarted).Milliseconds(), err == nil)
-	if err != nil {
-		_ = s.agent.send(frame{tcpResult, s.id, []byte{5}})
-		return
-	}
-	c := conn
-	s.mu.Lock()
-	select {
-	case <-s.done:
-		s.mu.Unlock()
-		c.Close()
-		return
-	default:
-	}
-	s.conn = c
-	s.mu.Unlock()
-	defer c.Close()
-	if s.agent.send(frame{tcpResult, s.id, []byte{0}}) != nil {
-		return
-	}
-	readDone := make(chan struct{})
-	go func() {
-		defer close(readDone)
-		buf := make([]byte, tcpChunk)
-		for {
-			select {
-			case <-s.done:
-				return
-			case <-s.credits:
-			}
-			n, err := c.Read(buf)
-			if n > 0 {
-				if s.agent.send(frame{tcpData, s.id, append([]byte(nil), buf[:n]...)}) != nil {
-					return
-				}
-			}
-			if err != nil {
-				if err == io.EOF {
-					_ = s.agent.send(frame{tcpFIN, s.id, nil})
-				} else {
-					_ = s.agent.send(frame{tcpRST, s.id, nil})
-				}
-				return
-			}
-		}
-	}()
-	inboundFIN := false
-	creditsReady := 0
-	for {
-		if inboundFIN && readDone == nil {
-			return
-		}
-		select {
-		case <-s.done:
-			return
-		case <-readDone:
-			readDone = nil
-		case f := <-s.in:
-			switch f.kind {
-			case tcpData:
-				if inboundFIN {
-					return
-				}
-				if err := writeAll(c, f.data); err != nil {
-					_ = s.agent.send(frame{tcpRST, s.id, nil})
-					return
-				}
-				creditsReady++
-				if creditsReady >= 8 {
-					var grant [2]byte
-					binary.BigEndian.PutUint16(grant[:], uint16(creditsReady))
-					if err := s.agent.send(frame{tcpWindow, s.id, grant[:]}); err != nil {
-						return
-					}
-					creditsReady = 0
-				}
-			case tcpFIN:
-				if creditsReady > 0 {
-					var grant [2]byte
-					binary.BigEndian.PutUint16(grant[:], uint16(creditsReady))
-					_ = s.agent.send(frame{tcpWindow, s.id, grant[:]})
-					creditsReady = 0
-				}
-				inboundFIN = true
-				_ = c.CloseWrite()
-			case tcpRST:
-				return
-			}
-		}
-	}
-}
-
 type udpStream struct {
 	agent   *agent
 	id      uint32
@@ -428,12 +155,17 @@ type udpStream struct {
 	control *net.TCPConn
 	socket  *net.UDPConn
 	relay   *net.UDPAddr
+	counted bool
 }
 
 func (s *udpStream) stop() {
 	s.once.Do(func() {
 		close(s.done)
 		s.mu.Lock()
+		if s.counted {
+			s.agent.cfg.Meter.UDPActive(-1)
+			s.counted = false
+		}
 		if s.control != nil {
 			_ = s.control.Close()
 		}
@@ -462,6 +194,7 @@ func (s *udpStream) deliverDatagram(data []byte) {
 	case s.in <- data:
 	default:
 		// Drop unreliable UDP instead of blocking all TCP control sessions.
+		s.agent.cfg.Meter.UDP("", "queue_full", len(data))
 	}
 }
 
@@ -470,6 +203,7 @@ func (s *udpStream) run() {
 	control, socket, relay, err := targetUDP(context.Background(), s.agent.cfg)
 	if err != nil {
 		_ = s.agent.send(frame{udpResult, s.id, []byte{5}})
+		s.agent.cfg.Meter.UDP("", "associate_failed", 0)
 		return
 	}
 	s.mu.Lock()
@@ -482,6 +216,8 @@ func (s *udpStream) run() {
 	default:
 	}
 	s.control, s.socket, s.relay = control, socket, relay
+	s.counted = true
+	s.agent.cfg.Meter.UDPActive(1)
 	s.mu.Unlock()
 	if err := s.agent.send(frame{udpResult, s.id, []byte{0}}); err != nil {
 		return
@@ -523,7 +259,11 @@ func (s *udpStream) run() {
 				continue
 			}
 			// Xray/WARP receives the original SOCKS5 UDP target header.
-			_, _ = socket.WriteToUDP(data, relay)
+			if _, err := socket.WriteToUDP(data, relay); err != nil {
+				s.agent.cfg.Meter.UDP("", "relay_write", len(data))
+			} else {
+				s.agent.cfg.Meter.UDP("sent", "", len(data))
+			}
 		}
 	}
 }

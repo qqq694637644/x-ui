@@ -42,7 +42,7 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	a.inboundController = NewInboundController(g)
 	a.tunnelController = NewTunnelController(g)
 	a.caddyController = NewCaddyController(g)
-	a.settingController = NewSettingController(g)
+	a.settingController = NewSettingController(g, a.reverseSocksService)
 	a.endpointController = NewEndpointController(g)
 	a.reverseSocksController = NewReverseSocksController(g, a.reverseSocksService)
 }

@@ -175,7 +175,7 @@ func TestManagedFRPCUserAndVisitorNameRender(t *testing.T) {
 	cfg.STUNServer = "stun.miwifi.com:3478"
 	agent := reverseexit.DefaultConfig()
 	agent.WARPAddr = "127.0.0.1:40000"
-	agent.Token = "private-rsx2-token-more-than-16"
+	agent.Token = "private-rsx3-token-more-than-16"
 
 	assertConfigured := func(wantUser, wantVisitor string) {
 		t.Helper()
@@ -228,7 +228,7 @@ func TestManagedFRPCUserAndVisitorNameRender(t *testing.T) {
 
 	assertConfigured("0123456789abcdef", "overseas-xtcp-visitor")
 	// A repeated Save or a later x-ui restart must not silently reinstate
-	// the hardcoded rsx2_outside Visitor name.
+	// the hardcoded rsx3_outside Visitor name.
 	cfg.FRPCUser = "new-user"
 	cfg.XTCPVisitorName = "visitor-renamed"
 	assertConfigured("new-user", "visitor-renamed")
@@ -260,7 +260,7 @@ func TestReverseSocksSavedSettingsPreserveManagedFRPCFields(t *testing.T) {
 			FRPCUser:        "user-from-frps",
 			FRPSToken:       "frps-secret",
 			XTCPVisitorName: "custom-visitor",
-			XTCPServerName:  "rsx2_node",
+			XTCPServerName:  "rsx3_node",
 			XTCPSecretKey:   "xtcp-secret",
 			STUNServer:      "1.1.1.1:3478",
 		},
@@ -314,8 +314,8 @@ func TestManagedFRPCBrutalFormRoundTripAndView(t *testing.T) {
 
 func TestReverseSocksProtocolSelectionIsExplicit(t *testing.T) {
 	stored := reverseSocksSaved{Config: reverseexit.DefaultConfig()}
-	if got := configFromReverseSocksForm(stored, ReverseSocksForm{Protocol: "rsx2"}); got.Protocol != "rsx2" {
-		t.Fatalf("did not select RSX2 compatibility mode: %q", got.Protocol)
+	if got := configFromReverseSocksForm(stored, ReverseSocksForm{Protocol: "rsx2"}); got.Config.Validate() == nil {
+		t.Fatal("deprecated RSX2 mode accepted instead of rejecting saved configuration")
 	}
 	if got := configFromReverseSocksForm(stored, ReverseSocksForm{Protocol: "rsx3"}); got.Protocol != "rsx3" {
 		t.Fatalf("did not select independent QUIC stream mode: %q", got.Protocol)
@@ -340,7 +340,7 @@ func TestReverseSocksFormUsesCurrentSTUNAndClearsSecrets(t *testing.T) {
 			XTCPSecretKey:   "old-xtcp-key",
 		},
 	}
-	stored.Token = "old-rsx2-token"
+	stored.Token = "old-rsx3-token"
 	stored.WARPPassword = "old-warp-password"
 	updated := configFromReverseSocksForm(stored, ReverseSocksForm{
 		STUNServer:      "74.125.250.129:19302",
@@ -383,7 +383,7 @@ func TestManagedFRPCRealForkPrivacyValidation(t *testing.T) {
 	cfg.STUNServer = "1.1.1.1:3478"
 	agent := reverseexit.DefaultConfig()
 	agent.WARPAddr = "127.0.0.1:40000"
-	agent.Token = "private-long-shared-rsx2-token"
+	agent.Token = "private-long-shared-rsx3-token"
 	content, err := renderManagedFRPC(cfg, agent)
 	if err != nil {
 		t.Fatal(err)
@@ -431,13 +431,13 @@ func TestManagedFRPCWithoutDatabase(t *testing.T) {
 	cfg.FRPSServerAddr = "203.0.113.7"
 	cfg.FRPSServerPort = 7000
 	cfg.FRPSToken = "private-frps-token"
-	cfg.XTCPServerName = "rsx2_node"
+	cfg.XTCPServerName = "rsx3_node"
 	cfg.XTCPSecretKey = "private-xtcp-secret"
 	cfg.STUNServer = "1.1.1.1:3478"
 
 	agent := reverseexit.DefaultConfig()
 	agent.WARPAddr = "127.0.0.1:40000"
-	agent.Token = "private-rsx2-token-more-than-16"
+	agent.Token = "private-rsx3-token-more-than-16"
 
 	contents, err := renderManagedFRPC(cfg, agent)
 	if err != nil {

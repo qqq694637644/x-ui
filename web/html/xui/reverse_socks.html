@@ -83,7 +83,7 @@
                         </a-col>
                         <a-col :xs="24" :md="12">
                             <a-form-item label="境内 Proxy 的 serverName">
-                                <a-input v-model.trim="form.xtcpServerName" placeholder="rsx2_node"></a-input>
+                                <a-input v-model.trim="form.xtcpServerName" placeholder="rsx3_node"></a-input>
                             </a-form-item>
                         </a-col>
                         <a-col :xs="24" :md="12">
@@ -107,6 +107,7 @@
                     <a-space>
                         <a-button @click="verifyFrpc">校验当前填写的配置（不保存）</a-button>
                         <a-button @click="restart">重启 frpc + Agent</a-button>
+                        <a-button type="primary" @click="restartWARP">重启 WARP 并恢复连接</a-button>
                         <a-checkbox v-model="printRestartLogs">重启时打印 frpc 日志到 Web</a-checkbox>
                     </a-space>
                     <a-card v-if="showRestartLogs" size="small" title="本次重启 frpc 日志（仅内存，最多 64 KiB）"
@@ -122,14 +123,14 @@
                     </a-card>
                 </a-card>
 
-                <a-card title="TCP / UDP 数据通道和 WARP 强制出口">
+                <rsx-diagnostics></rsx-diagnostics>
+                <a-card title="TCP / UDP 数据通道和 WARP 强制出口" style="margin-top:18px">
                     <a-form layout="vertical">
                         <a-row :gutter="18">
                             <a-col :xs="24" :md="12">
                                 <a-form-item label="出口协议（境内 Python 必须使用同一版本）">
                                     <a-select v-model="form.protocol">
-                                        <a-select-option value="rsx3">RSX3 · 每条 TCP 连接独立 QUIC Stream（推荐）</a-select-option>
-                                        <a-select-option value="rsx2">RSX2 · 单 Stream 复用（兼容）</a-select-option>
+                                        <a-select-option value="rsx3">RSX3 · 每条 TCP 连接独立 QUIC Stream（唯一支持）</a-select-option>
                                     </a-select>
                                 </a-form-item>
                             </a-col>
@@ -167,6 +168,19 @@
                                 </a-form-item>
                             </a-col>
                             <a-col :xs="24" :md="12">
+                                <a-form-item label="启用 RSX3 Diagnostics（不增加公网端口）">
+                                    <a-switch v-model="form.diagnosticsEnabled"></a-switch>
+                                </a-form-item>
+                            </a-col>
+                            <a-col v-if="form.diagnosticsEnabled" :xs="24" :md="12">
+                                <a-form-item label="境外 frpc 本机诊断接口">
+                                    <a-input v-model.trim="form.frpcDiagnosticsAddr" placeholder="127.0.0.1:9321"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col v-if="form.diagnosticsEnabled" :span="24">
+                                <a-alert type="warning" show-icon message="启用诊断必须两端版本完全匹配，不支持旧节点兼容" description="Windows Python 加 --diagnostics --frpc-diagnostics 127.0.0.1:9320；执行 python -m reverse_socks --print-diagnostics-config 生成境内 frpc 根部配置。诊断握手及认证未完成时拒绝新的应用会话、超时后断开 RSX3，不会静默降级。保存并应用会按原逻辑重启 frpc/Agent。" style="margin-bottom:12px"></a-alert>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
                                 <a-form-item label="frpc 专用 WARP SOCKS5（必须本机）">
                                     <a-input v-model.trim="form.warpAddr" placeholder="127.0.0.1:40000"></a-input>
                                 </a-form-item>
@@ -179,7 +193,7 @@
                             <a-col :span="24">
                                 <a-alert type="info" show-icon
                                     message="目标网站出站与 frpc 隧道出站相互独立"
-                                    description="填 127.0.0.1:40001 时，RSX3 / RSX2 目标 TCP 和 UDP 会经 Xray SOCKS5 入站，再按 Xray routing.rules 匹配：命中域名走 warp，其他目标可以走 freedom。frpc 控制、STUN、打洞、XTCP QUIC 仍仅使用上方的 WARP 40000。Xray SOCKS5 不可用时目标流量失败，不会绕过 Xray 回退。请先在入站列表建立监听 127.0.0.1:40001 的 SOCKS5（含 UDP）入站。"
+                                    description="填 127.0.0.1:40001 时，RSX3 目标 TCP 和 UDP 会经 Xray SOCKS5 入站，再按 Xray routing.rules 匹配：命中域名走 warp，其他目标可以走 freedom。frpc 控制、STUN、打洞、XTCP QUIC 仍仅使用上方的 WARP 40000。Xray SOCKS5 不可用时目标流量失败，不会绕过 Xray 回退。请先在入站列表建立监听 127.0.0.1:40001 的 SOCKS5（含 UDP）入站。"
                                     style="margin-bottom: 12px;"></a-alert>
                             </a-col>
                             <a-col :xs="24" :md="12">
@@ -222,7 +236,7 @@
                                 </a-col>
                             </template>
                             <a-col :xs="24" :md="24">
-                                <a-form-item label="RSX3 / RSX2 共享密钥（境内 Python REVERSE_SOCKS_TOKEN）">
+                                <a-form-item label="RSX3 共享密钥（境内 Python REVERSE_SOCKS_TOKEN）">
                                     <a-input v-model="form.token" autocomplete="off"
                                         placeholder="至少 16 个字符"></a-input>
                                 </a-form-item>
@@ -257,6 +271,7 @@
     </a-layout>
 </a-layout>
 {{template "js" .}}
+{{template "component/rsxDiagnostics" .}}
 <script>
     const app = new Vue({
         delimiters: ['[[', ']]'],
@@ -273,6 +288,8 @@
                 congestionMode: 'cubic',
                 targetMbps: 16,
                 maxMbps: 24,
+                diagnosticsEnabled: false,
+                frpcDiagnosticsAddr: '127.0.0.1:9321',
                 visitorAddr: '127.0.0.1:6000',
                 udpBindAddr: '127.0.0.1:6002',
                 udpPeerAddr: '127.0.0.1:6001',
@@ -290,8 +307,8 @@
                 frpsServerPort: 7000,
                 frpcUser: '',
                 frpsToken: '',
-                xtcpVisitorName: 'rsx2_outside',
-                xtcpServerName: 'rsx2_node',
+                xtcpVisitorName: 'rsx3_outside',
+                xtcpServerName: 'rsx3_node',
                 xtcpSecretKey: '',
                 stunServer: ''
             },
@@ -345,6 +362,7 @@
                         'transport.quic.maxMbps = ' + Number(this.form.maxMbps)
                     ] : []),
                     'natHoleSTUNServer = ' + quoted(this.form.stunServer),
+                    ...(this.form.diagnosticsEnabled ? ['# Diagnostics 根部字段及域分离 HMAC token 由后端保存时生成', '# 本机诊断监听：' + this.form.frpcDiagnosticsAddr] : []),
                     '',
                     '[[visitors]]',
                     'name = ' + quoted(this.form.xtcpVisitorName),
@@ -396,6 +414,23 @@
                     this.loading = false;
                 }
             },
+            async restartWARP() {
+                this.$confirm({
+                    title: '重启 WARP',
+                    content: '将先停止本面板管理的 frpc 和 Agent，再重启系统 wireproxy.service，并按已保存的启用状态恢复连接。现有 WARP 连接会短暂中断，确定继续吗？',
+                    okText: '重启',
+                    cancelText: '取消',
+                    onOk: async () => {
+                        this.loading = true;
+                        try {
+                            const res = await HttpUtil.post('/xui/reverse-socks/restart-warp');
+                            if (res.obj) this.applyView(res.obj);
+                        } finally {
+                            this.loading = false;
+                        }
+                    }
+                });
+            },
             async fetchRestartLogs() {
                 const res = await HttpUtil.post('/xui/reverse-socks/restart-logs');
                 if (res.success && res.obj && res.obj.enabled) {
@@ -404,7 +439,7 @@
             },
             applyView(v) {
                 if (!v) return;
-                for (const key of ['enabled', 'protocol', 'congestionMode', 'targetMbps', 'maxMbps',
+                for (const key of ['enabled', 'protocol', 'congestionMode', 'targetMbps', 'maxMbps', 'diagnosticsEnabled', 'frpcDiagnosticsAddr',
                     'visitorAddr', 'udpBindAddr',
                     'udpPeerAddr', 'warpAddr', 'targetSocksAddr', 'targetSocksUsername',
                     'targetSocksPassword', 'warpProbe', 'warpUsername',

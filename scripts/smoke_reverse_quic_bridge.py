@@ -241,7 +241,7 @@ def main():
                 "--restart=false"
             ])
             time.sleep(.3)
-            start("overseas-bridge", [xray, "run", "-c", str(bridge_path)])
+            bridgep = start("overseas-bridge", [xray, "run", "-c", str(bridge_path)])
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
                 for name, proc, _ in processes:

@@ -46,6 +46,9 @@ func TestReverseQUICIsolatedSidecarHasNoOldRoutingOrInbound(t *testing.T) {
 	if api["listen"] != "127.0.0.1:62790" {
 		t.Fatalf("sidecar API must be isolated from main Xray: %v", api)
 	}
+	if !strings.Contains(string(sidecar.LogConfig), "\"loglevel\":\"debug\"") {
+		t.Fatal("independent Xray must log Brutal negotiation and reverse errors for diagnosis")
+	}
 	if !strings.Contains(string(sidecar.OutboundConfigs), "\"port\":40000") {
 		t.Fatal("transport SOCKS must use explicitly configured port 40000")
 	}

@@ -511,7 +511,10 @@ func BuildIsolatedReverseQUICConfig(c ReverseQUICBridgeConfig) (*xray.Config, er
 		return nil, fmt.Errorf("未启用独立反向 Bridge")
 	}
 	base := &xray.Config{
-		LogConfig:       json_util.RawMessage(`{"loglevel":"info"}`),
+		// Debug is scoped only to this isolated Xray process. It is required
+		// to see QUIC Brutal negotiation and reverse Worker registration errors.
+		// The manager filters/sanitizes lines before forwarding to x-ui logs.
+		LogConfig:       json_util.RawMessage(`{"loglevel":"debug"}`),
 		RouterConfig:    json_util.RawMessage(`{"rules":[]}`),
 		OutboundConfigs: json_util.RawMessage(`[]`),
 		API:             json_util.RawMessage(`{"tag":"api","listen":"127.0.0.1:62790","services":["StatsService"]}`),

@@ -26,7 +26,7 @@ var reverseQUICSidecar reverseQUICSidecarManager
 var reverseQUICInteresting = []string{
 	"reverse", "bridge", "hysteria", "quic", "brutal", "dialer",
 	"worker", "mux", "failed", "error", "timeout", "refused",
-	"reset", "socks", "udp", "tls", "disconnect",
+	"reset", "disconnect",
 }
 
 func sanitizeReverseQUICLog(line string, cfg ReverseQUICBridgeConfig) string {

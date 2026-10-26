@@ -108,7 +108,7 @@ func TestNativeHysteriaIsMergedIntoExistingXrayRouting(t *testing.T) {
 	if err := database.InitDB(filepath.Join(t.TempDir(), "hy2-native.db")); err != nil {
 		t.Fatal(err)
 	}
-	template := `{"api":{"listen":"127.0.0.1:62789","services":["StatsService"]},
+	template := `{"api":{"tag":"api","listen":"127.0.0.1:62789","services":["StatsService"]},
 	"outbounds":[{"tag":"direct","protocol":"freedom","settings":{}},
 	{"tag":"warp","protocol":"socks","settings":{"servers":[{"address":"127.0.0.1","port":40000}]}}],
 	"routing":{"rules":[{"type":"field","domain":["domain:example.test"],"outboundTag":"warp"}]}}`

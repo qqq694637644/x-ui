@@ -19,10 +19,11 @@ type XUIController struct {
 	endpointController     *EndpointController
 	reverseSocksController *ReverseSocksController
 	reverseSocksService    *service.ReverseSocksService
+	directSocksService     *service.DirectSocksService
 }
 
-func NewXUIController(g *gin.RouterGroup, agent *service.ReverseSocksService) *XUIController {
-	a := &XUIController{reverseSocksService: agent}
+func NewXUIController(g *gin.RouterGroup, agent *service.ReverseSocksService, direct *service.DirectSocksService) *XUIController {
+	a := &XUIController{reverseSocksService: agent, directSocksService: direct}
 	a.initRouter(g)
 	return a
 }
@@ -38,6 +39,7 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	g.GET("/subscription", a.subscription)
 	g.GET("/setting", a.setting)
 	g.GET("/reverse-socks", a.reverseSocks)
+	g.GET("/reverse-socks-ipv6", a.reverseSocksIPv6)
 
 	a.inboundController = NewInboundController(g)
 	a.tunnelController = NewTunnelController(g)
@@ -45,6 +47,7 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	a.settingController = NewSettingController(g, a.reverseSocksService)
 	a.endpointController = NewEndpointController(g)
 	a.reverseSocksController = NewReverseSocksController(g, a.reverseSocksService)
+	NewDirectSocksController(g, a.directSocksService)
 }
 
 func (a *XUIController) index(c *gin.Context) {
@@ -79,4 +82,8 @@ func (a *XUIController) setting(c *gin.Context) {
 
 func (a *XUIController) reverseSocks(c *gin.Context) {
 	html(c, "reverse_socks.html", "XTCP 反向 SOCKS5 / WARP", nil)
+}
+
+func (a *XUIController) reverseSocksIPv6(c *gin.Context) {
+	html(c, "reverse_socks_ipv6.html", "IPv6 DDNS 直连反向 SOCKS5", nil)
 }

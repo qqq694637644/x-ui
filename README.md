@@ -15,6 +15,7 @@
 - 更多高级配置项，详见面板
 - 隧道支持公网直连和 VMess/mKCP Portal 反向模式；无公网 IP 的 B 端可主动连接 A
 - RSX3-only 反向 SOCKS5 / WARP：境外经定制 frpc XTCP Visitor 连接境内 Python NAT Node，每个 TCP 会话走独立 QUIC Stream，UDP 经 QUIC DATAGRAM；frpc 控制与打洞强制 WARP，最终网站可经 Xray SOCKS5 按域名分流。支持面板、Diagnostics、自检与原始报告，详见 [部署说明](docs/REVERSE_SOCKS_EXIT.md)
+- **新增独立的 RSX3 IPv6 DDNS 直连功能**：在 `/xui/reverse-socks-ipv6` 页面管理独立的 Go QUIC Client，使用 AAAA 动态解析直接连接境内 Windows QUIC Listener，保留 RSX3 HMAC、独立 TCP Streams 与 QUIC DATAGRAM。出口可明确选择原生 VPS 或 Xray SOCKS5。**旧 FRP/XTCP/WARP 模式与页面完整保留**，新模式默认关闭，详见 [独立部署说明](docs/REVERSE_SOCKS_IPV6.md)。
 
 ## 隧道模式
 

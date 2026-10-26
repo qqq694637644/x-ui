@@ -10,6 +10,12 @@ import (
 )
 
 type Config struct {
+	// DirectQUIC is used only by the separate IPv6/DDNS runtime. It never
+	// changes the historical XTCP/WARP configuration or its validation.
+	DirectQUIC bool `json:"-"`
+	// DirectTarget enables explicit native TCP/UDP egress only for DirectQUIC.
+	// Legacy FRP deployments keep their historical SOCKS-only routing.
+	DirectTarget bool `json:"-"`
 	// RSX3 is the sole supported wire protocol; saved legacy configurations
 	// are rejected rather than silently downgraded or reinterpreted.
 	Protocol    string `json:"protocol,omitempty"`
@@ -62,6 +68,33 @@ func localhostAddr(addr string) error {
 // Validate deliberately rejects all non-loopback egress proxy endpoints.
 // There is no direct egress path or fallback to the VPS public IP.
 func (c Config) Validate() error {
+	if c.DirectQUIC {
+		if c.Protocol != "rsx3" || len(c.Token) < 16 {
+			return errors.New("direct QUIC requires RSX3 and a 16+ character token")
+		}
+		if c.DirectTarget {
+			if c.TargetSOCKSAddr != "" || c.TargetSOCKSUsername != "" || c.TargetSOCKSPassword != "" {
+				return errors.New("native target must not have a SOCKS5 address or credentials")
+			}
+		} else {
+			if c.TargetSOCKSAddr == "" {
+				return errors.New("direct QUIC SOCKS5 egress requires an explicit loopback proxy")
+			}
+			if err := localhostAddr(c.TargetSOCKSAddr); err != nil {
+				return err
+			}
+		}
+		if (c.TargetSOCKSUsername == "") != (c.TargetSOCKSPassword == "") || len(c.TargetSOCKSUsername) > 255 || len(c.TargetSOCKSPassword) > 255 {
+			return errors.New("target SOCKS5 username/password must both be set or both empty (max 255 bytes)")
+		}
+		if c.DiagnosticsEnabled {
+			return errors.New("direct QUIC Diagnostics is not yet supported")
+		}
+		if c.RetryInterval <= 0 {
+			return errors.New("invalid retry interval")
+		}
+		return nil
+	}
 	if c.DiagnosticsEnabled {
 		if err := localhostAddr(c.FRPCDiagnosticsAddr); err != nil {
 			return err

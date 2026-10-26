@@ -111,6 +111,10 @@ func rsx3AuthenticateData(c net.Conn, secret []byte, epoch [16]byte, sid uint32)
 }
 
 func serveRSX3(ctx context.Context, c net.Conn, cfg Config, status func(string, string)) error {
+	return serveRSX3Transport(ctx, c, cfg, status, nil)
+}
+
+func serveRSX3Transport(ctx context.Context, c net.Conn, cfg Config, status func(string, string), direct directTransport) error {
 	defer c.Close()
 	authStart := time.Now()
 	epoch, err := rsx3AuthenticateControl(c, []byte(cfg.Token))
@@ -119,15 +123,19 @@ func serveRSX3(ctx context.Context, c net.Conn, cfg Config, status func(string, 
 	}
 	log.Printf("RSX3 metric control_auth_ms=%d", time.Since(authStart).Milliseconds())
 
-	bind, _ := net.ResolveUDPAddr("udp4", cfg.UDPBindAddr)
-	peer, _ := net.ResolveUDPAddr("udp4", cfg.UDPPeerAddr)
-	udpConn, err := net.ListenUDP("udp4", bind)
-	if err != nil {
-		return fmt.Errorf("RSX3 local datagram socket: %w", err)
+	var udpConn *net.UDPConn
+	var peer *net.UDPAddr
+	if direct == nil {
+		bind, _ := net.ResolveUDPAddr("udp4", cfg.UDPBindAddr)
+		peer, _ = net.ResolveUDPAddr("udp4", cfg.UDPPeerAddr)
+		udpConn, err = net.ListenUDP("udp4", bind)
+		if err != nil {
+			return fmt.Errorf("RSX3 local datagram socket: %w", err)
+		}
+		defer udpConn.Close()
 	}
-	defer udpConn.Close()
 	a := &agent{conn: c, udpConn: udpConn, udpPeer: peer, cfg: cfg,
-		streams: make(map[uint32]stream)}
+		streams: make(map[uint32]stream), direct: direct, directCtx: ctx}
 	a.sender = newFairWriter(c)
 	defer a.sender.close()
 	defer a.stopAll()
@@ -163,23 +171,25 @@ func serveRSX3(ctx context.Context, c net.Conn, cfg Config, status func(string, 
 	} else {
 		status("online", "")
 	}
-	go func() {
-		for controlCtx.Err() == nil {
-			status("warp-checking", "")
-			if err := probeWARP(controlCtx, cfg); err != nil {
-				if controlCtx.Err() == nil {
-					status("warp-error", err.Error())
+	if direct == nil {
+		go func() {
+			for controlCtx.Err() == nil {
+				status("warp-checking", "")
+				if err := probeWARP(controlCtx, cfg); err != nil {
+					if controlCtx.Err() == nil {
+						status("warp-error", err.Error())
+					}
+				} else {
+					status("warp-ready", "")
 				}
-			} else {
-				status("warp-ready", "")
+				select {
+				case <-controlCtx.Done():
+					return
+				case <-time.After(30 * time.Second):
+				}
 			}
-			select {
-			case <-controlCtx.Done():
-				return
-			case <-time.After(30 * time.Second):
-			}
-		}
-	}()
+		}()
+	}
 	// Ensure a panel stop or frpc restart interrupts blocking readFrame.
 	done := make(chan struct{})
 	defer close(done)
@@ -290,7 +300,12 @@ func (control *rsx3Control) handleTCP(ctx context.Context, sid uint32, host stri
 
 	beginDial := time.Now()
 	dialer := net.Dialer{Timeout: 8 * time.Second}
-	visitor, err := dialer.DialContext(ctx, "tcp", control.agent.cfg.VisitorAddr)
+	var visitor net.Conn
+	if control.agent.direct != nil {
+		visitor, err = control.agent.direct.OpenStream(ctx)
+	} else {
+		visitor, err = dialer.DialContext(ctx, "tcp", control.agent.cfg.VisitorAddr)
+	}
 	dialMS := time.Since(beginDial).Milliseconds()
 	if err != nil {
 		log.Printf("RSX3 metric tcp_error sid=%d step=visitor_stream target_ms=%d visitor_ms=%d type=%T",

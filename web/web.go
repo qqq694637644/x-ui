@@ -90,6 +90,7 @@ type Server struct {
 	settingService service.SettingService
 	inboundService service.InboundService
 	reverseSocks   *service.ReverseSocksService
+	directSocks    *service.DirectSocksService
 
 	cron *cron.Cron
 
@@ -230,7 +231,7 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	s.index = controller.NewIndexController(g)
 	s.server = controller.NewServerController(g)
 	s.subscription = controller.NewSubscriptionController(g)
-	s.xui = controller.NewXUIController(g, s.reverseSocks)
+	s.xui = controller.NewXUIController(g, s.reverseSocks, s.directSocks)
 
 	return engine, nil
 }
@@ -358,6 +359,10 @@ func (s *Server) Start() (err error) {
 	if err := s.reverseSocks.Start(s.ctx); err != nil {
 		logger.Warning("reverse SOCKS5 is disabled until its Web configuration is corrected:", err)
 	}
+	s.directSocks = service.NewDirectSocksService()
+	if err := s.directSocks.Start(s.ctx); err != nil {
+		logger.Warning("direct IPv6 SOCKS5 is disabled until its Web configuration is corrected:", err)
+	}
 
 	engine, err := s.initRouter()
 	if err != nil {
@@ -424,6 +429,9 @@ func (s *Server) Stop() error {
 	// with newly restored children.
 	if s.reverseSocks != nil {
 		s.reverseSocks.Stop()
+	}
+	if s.directSocks != nil {
+		s.directSocks.Stop()
 	}
 	s.cancel()
 	if s.cron != nil {

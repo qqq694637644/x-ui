@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+{{template "head" .}}
+<body>
+<a-layout id="app" v-cloak>
+    {{template "commonSider" .}}
+    <a-layout id="content-layout">
+        <a-layout-content style="margin: 24px 16px;">
+            <a-spin :spinning="loading">
+                <a-card title="IPv6 DDNS · RSX3 直连 QUIC（独立功能）">
+                    <a-alert type="info" show-icon
+                        message="不依赖 FRPC / FRPS / STUN / XTCP / 传输 WARP"
+                        description="境外 VPS 使用 DDNS AAAA 记录直连境内 Windows 的 IPv6 UDP Listener；每条 TCP 会话独立 QUIC Stream，UDP 使用 QUIC DATAGRAM。此页面与原来的 FRP/XTCP/WARP 页面、数据库配置和进程完全独立。"
+                        style="margin-bottom: 18px;"></a-alert>
+                    <a-alert type="warning" show-icon message="Windows 对端必须安装匹配的 nat_node Direct-QUIC 版本"
+                        description="先启动 Windows 的 --direct-quic 监听，配置证书 DNS SAN 与 DDNS 一致，然后再启用此处。出口可明确选择 VPS 原生网或本机 Xray SOCKS5，绝不自动切换。Diagnostics 暂不支持此新模式。"
+                        style="margin-bottom: 16px;"></a-alert>
+                    <a-space style="margin-bottom: 16px;" :size="12">
+                        <a-tag :color="form.enabled ? 'green' : 'default'">[[ form.enabled ? '已启用' : '已停用' ]]</a-tag>
+                        <a-tag :color="status.state === 'online' ? 'green' : status.state === 'error' ? 'red' : 'blue'">
+                            [[ status.state ]]
+                        </a-tag>
+                        <span v-if="status.connectedIP">当前 IPv6：[[ status.connectedIP ]]</span>
+                    </a-space>
+                    <a-alert v-if="status.message" type="warning" show-icon :message="status.message"
+                        style="margin-bottom: 16px;"></a-alert>
+                    <a-form layout="vertical">
+                        <a-row :gutter="20">
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="Windows IPv6 DDNS 域名（AAAA）">
+                                    <a-input v-model.trim="form.hostname" placeholder="rsx3.example.com"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="Windows QUIC UDP 端口">
+                                    <a-input-number v-model.number="form.port" :min="1" :max="65535" style="width:100%;"></a-input-number>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="24">
+                                <a-form-item label="Windows QUIC TLS 证书 SHA-256 指纹（DER 证书，64 位十六进制）">
+                                    <a-input v-model.trim="form.certSHA256" placeholder="完整证书 SHA-256 指纹（不是公钥哈希）"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="RSX3 共享密钥（至少 16 字符）">
+                                    <a-input-password v-model="form.token" autocomplete="new-password"
+                                        :placeholder="hasToken ? '已设置，留空保持不变' : '与 Windows REVERSE_SOCKS_TOKEN 一致'"></a-input-password>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="最终网站出口">
+                                    <a-select v-model="form.egressMode">
+                                        <a-select-option value="native">VPS 原生网络（不依赖其他 SOCKS）</a-select-option>
+                                        <a-select-option value="socks5">Xray 本机 SOCKS5 分流</a-select-option>
+                                    </a-select>
+                                </a-form-item>
+                            </a-col>
+                            <a-col v-if="form.egressMode === 'socks5'" :xs="24" :md="12">
+                                <a-form-item label="出口本机 Xray SOCKS5 地址">
+                                    <a-input v-model.trim="form.targetSocksAddr" placeholder="127.0.0.1:40001"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col v-if="form.egressMode === 'socks5'" :xs="24" :md="12">
+                                <a-form-item label="Xray SOCKS5 用户名（可选）">
+                                    <a-input v-model="form.targetSocksUsername" autocomplete="off"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col v-if="form.egressMode === 'socks5'" :xs="24" :md="12">
+                                <a-form-item label="Xray SOCKS5 密码（可选）">
+                                    <a-input-password v-model="form.targetSocksPassword" autocomplete="new-password"
+                                        :placeholder="hasTargetPassword ? '已设置，留空保持不变' : '无认证则留空'"></a-input-password>
+                                </a-form-item>
+                            </a-col>
+                        </a-row>
+                        <a-form-item>
+                            <a-switch v-model="form.enabled" checked-children="启用" un-checked-children="停用"></a-switch>
+                            <span style="margin-left: 12px;">保存并应用后独立启停，不修改旧方案</span>
+                        </a-form-item>
+                        <a-space>
+                            <a-button type="primary" @click="save">保存并应用</a-button>
+                            <a-button @click="restart" :disabled="!savedEnabled">重新解析 AAAA 并连接</a-button>
+                            <a-button @click="stop" :disabled="!savedEnabled">停用直连</a-button>
+                        </a-space>
+                    </a-form>
+                    <a-divider />
+                    <a-alert type="info" show-icon message="DDNS 更新与安全"
+                        description="Linux 每次重连重新查询 AAAA；运行中每 60 秒检查 AAAA 是否仍包含当前 IP，不包含则断开重连。TLS 校验证书指纹、DNS SAN 和有效期，再使用原有 RSX3 HMAC 验证会话。只有新页的配置启用时才连接公网 IPv6。"
+                    ></a-alert>
+                </a-card>
+            </a-spin>
+        </a-layout-content>
+    </a-layout>
+</a-layout>
+{{template "js" .}}
+<script>
+const app = new Vue({
+    delimiters: ['[[', ']]'],
+    el: '#app',
+    data: {
+        siderDrawer,
+        loading: false,
+        savedEnabled: false,
+        hasToken: false,
+        hasTargetPassword: false,
+        refreshTimer: null,
+        status: {state: 'stopped', message: '', connectedIP: ''},
+        form: {enabled: false, hostname: '', port: 8080, certSHA256: '',
+               egressMode: 'native', token: '', targetSocksAddr: '127.0.0.1:40001',
+               targetSocksUsername: '', targetSocksPassword: ''}
+    },
+    methods: {
+        apply(v) {
+            if (!v) return;
+            for (const k of ['enabled','hostname','port','certSHA256','egressMode','targetSocksAddr','targetSocksUsername']) {
+                this.form[k] = v[k];
+            }
+            this.form.token = '';
+            this.form.targetSocksPassword = '';
+            this.hasToken = !!v.hasToken;
+            this.hasTargetPassword = !!v.hasTargetPassword;
+            this.savedEnabled = !!v.enabled;
+            this.status = v.status || this.status;
+        },
+        async refresh() {
+            const r = await HttpUtil.post('/xui/reverse-socks-ipv6/config');
+            if (r.success) this.apply(r.obj);
+        },
+        async save() {
+            this.loading = true;
+            try {
+                const r = await HttpUtil.post('/xui/reverse-socks-ipv6/save', this.form);
+                if (r.success) this.apply(r.obj);
+            } finally { this.loading = false; }
+        },
+        async restart() {
+            this.loading = true;
+            try {
+                const r = await HttpUtil.post('/xui/reverse-socks-ipv6/restart');
+                if (r.success) this.apply(r.obj);
+            } finally { this.loading = false; }
+        },
+        async stop() {
+            this.loading = true;
+            try {
+                const r = await HttpUtil.post('/xui/reverse-socks-ipv6/stop');
+                if (r.success) this.apply(r.obj);
+            } finally { this.loading = false; }
+        }
+    },
+    async mounted() {
+        await this.refresh();
+        this.refreshTimer = setInterval(() => {
+            if (this.loading) return;
+            HttpUtil.post('/xui/reverse-socks-ipv6/config').then(r => {
+                if (r.success && r.obj) {
+                    this.status = r.obj.status || this.status;
+                    this.savedEnabled = !!r.obj.enabled;
+                }
+            });
+        }, 5000);
+    },
+    beforeDestroy() { clearInterval(this.refreshTimer); }
+});
+</script>
+</body>
+</html>

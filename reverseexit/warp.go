@@ -130,6 +130,14 @@ func warpTCP(ctx context.Context, cfg Config, host string, port int) (*net.TCPCo
 }
 
 func targetTCP(ctx context.Context, cfg Config, host string, port int) (*net.TCPConn, error) {
+	if cfg.DirectQUIC && cfg.DirectTarget {
+		dialer := net.Dialer{Timeout: 8 * time.Second}
+		c, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+		if err != nil {
+			return nil, err
+		}
+		return c.(*net.TCPConn), nil
+	}
 	return socksTCP(ctx, cfg.targetEndpoint(), host, port)
 }
 

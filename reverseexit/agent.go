@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -21,14 +22,24 @@ type stream interface {
 	stop()
 }
 
+// directTransport replaces only the FRPC Visitor and localhost datagram hop.
+// TCP/UDP session authentication and SOCKS5 relay stay identical to RSX3.
+type directTransport interface {
+	OpenStream(context.Context) (net.Conn, error)
+	SendDatagram([]byte) error
+	ReceiveDatagram(context.Context) ([]byte, error)
+}
+
 type agent struct {
-	conn    net.Conn
-	udpConn *net.UDPConn
-	udpPeer *net.UDPAddr
-	cfg     Config
-	sender  *fairWriter
-	mu      sync.Mutex
-	streams map[uint32]stream
+	conn      net.Conn
+	udpConn   *net.UDPConn
+	udpPeer   *net.UDPAddr
+	direct    directTransport
+	directCtx context.Context
+	cfg       Config
+	sender    *fairWriter
+	mu        sync.Mutex
+	streams   map[uint32]stream
 }
 
 // Run retries exclusively through the existing local XTCP Visitor. Destinations
@@ -67,6 +78,30 @@ func Run(ctx context.Context, cfg Config, onState func(string, string)) error {
 // Session ID (4 BE bytes) + unmodified RFC1928 UDP packet. Neither UDP
 // payloads nor their retransmission are ever carried through the TCP mux.
 func (a *agent) datagramLoop() {
+	if a.direct != nil {
+		for {
+			data, err := a.direct.ReceiveDatagram(a.directCtx)
+			if err != nil {
+				return
+			}
+			if len(data) < 9 || len(data) > udpLinkMax {
+				continue
+			}
+			sid := binary.BigEndian.Uint32(data[:4])
+			if sid == 0 {
+				continue
+			}
+			if _, _, _, err := decodeUDP(data[4:]); err != nil {
+				continue
+			}
+			a.mu.Lock()
+			s := a.streams[sid]
+			a.mu.Unlock()
+			if udp, ok := s.(*udpStream); ok {
+				udp.deliverDatagram(append([]byte(nil), data[4:]...))
+			}
+		}
+	}
 	buf := make([]byte, 65535)
 	for {
 		n, from, err := a.udpConn.ReadFromUDP(buf)
@@ -99,6 +134,9 @@ func (a *agent) sendUDP(sid uint32, packet []byte) error {
 	data := make([]byte, len(packet)+4)
 	binary.BigEndian.PutUint32(data[:4], sid)
 	copy(data[4:], packet)
+	if a.direct != nil {
+		return a.direct.SendDatagram(data)
+	}
 	_, err := a.udpConn.WriteToUDP(data, a.udpPeer)
 	if err == nil {
 		a.cfg.Meter.UDP("received", "", len(packet))
@@ -200,6 +238,10 @@ func (s *udpStream) deliverDatagram(data []byte) {
 
 func (s *udpStream) run() {
 	defer s.stop()
+	if s.agent.cfg.DirectQUIC && s.agent.cfg.DirectTarget {
+		s.runNativeUDP()
+		return
+	}
 	control, socket, relay, err := targetUDP(context.Background(), s.agent.cfg)
 	if err != nil {
 		_ = s.agent.send(frame{udpResult, s.id, []byte{5}})
@@ -264,6 +306,65 @@ func (s *udpStream) run() {
 			} else {
 				s.agent.cfg.Meter.UDP("sent", "", len(data))
 			}
+		}
+	}
+}
+
+// runNativeUDP is an explicit direct-mode egress. Each requested UDP target
+// gets an independent connected socket, so responses cannot be spoofed by
+// unrelated destinations and the original SOCKS5 address can be reconstructed.
+func (s *udpStream) runNativeUDP() {
+	peers := make(map[string]*net.UDPConn)
+	defer func() {
+		for _, c := range peers {
+			_ = c.Close()
+		}
+	}()
+	if err := s.agent.send(frame{udpResult, s.id, []byte{0}}); err != nil {
+		return
+	}
+	for {
+		select {
+		case <-s.done:
+			return
+		case packet := <-s.in:
+			host, port, payload, err := decodeUDP(packet)
+			if err != nil {
+				continue
+			}
+			key := net.JoinHostPort(host, fmt.Sprint(port))
+			c := peers[key]
+			if c == nil {
+				// Bound a single UDP association, even when applications supply many destinations.
+				if len(peers) >= 128 {
+					continue
+				}
+				addr, err := net.ResolveUDPAddr("udp", key)
+				if err != nil {
+					continue
+				}
+				c, err = net.DialUDP("udp", nil, addr)
+				if err != nil {
+					continue
+				}
+				peers[key] = c
+				go func(peer *net.UDPConn, h string, p int) {
+					buf := make([]byte, 65535)
+					for {
+						n, err := peer.Read(buf)
+						if err != nil {
+							return
+						}
+						head, err := encodeTarget(h, p)
+						if err != nil {
+							return
+						}
+						packet := append(append([]byte{0, 0, 0}, head...), buf[:n]...)
+						_ = s.agent.sendUDP(s.id, packet)
+					}
+				}(c, host, port)
+			}
+			_, _ = c.Write(payload)
 		}
 	}
 }

@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -51,6 +52,30 @@ func TestReverseQUICIsolatedSidecarHasNoOldRoutingOrInbound(t *testing.T) {
 	}
 	if !strings.Contains(string(sidecar.OutboundConfigs), "\"port\":40000") {
 		t.Fatal("transport SOCKS must use explicitly configured port 40000")
+	}
+}
+
+func TestReverseQUICWarpSOCKSOutageRecoveryRestartsBridgeOnly(t *testing.T) {
+	var down bool
+	for _, tc := range []struct {
+		description string
+		probeErr    error
+		wantDown    bool
+		wantRestart bool
+	}{
+		{"healthy", nil, false, false},
+		{"WARP lost", errors.New("connection refused"), true, false},
+		{"WARP still lost", errors.New("connection refused"), true, false},
+		{"WARP restored", nil, false, true},
+		{"WARP stable", nil, false, false},
+	} {
+		t.Run(tc.description, func(t *testing.T) {
+			var restart bool
+			down, restart = reverseQUICWarpRecoveryTransition(down, tc.probeErr)
+			if down != tc.wantDown || restart != tc.wantRestart {
+				t.Fatalf("WARP outage transition: down=%v restart=%v, expected down=%v restart=%v", down, restart, tc.wantDown, tc.wantRestart)
+			}
+		})
 	}
 }
 

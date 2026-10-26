@@ -435,12 +435,14 @@ func (s *Server) Stop() error {
 	if s.reverseSocks != nil {
 		s.reverseSocks.Stop()
 	}
-	if err := service.StopReverseQUICSidecar(); err != nil {
-		logger.Warning("stop isolated Reverse QUIC Bridge failed:", err)
-	}
 	s.cancel()
 	if s.cron != nil {
 		s.cron.Stop()
+	}
+	// Stop the watchdog before stopping the Bridge so shutdown cannot race
+	// against a scheduled sidecar recovery/restart.
+	if err := service.StopReverseQUICSidecar(); err != nil {
+		logger.Warning("stop isolated Reverse QUIC Bridge failed:", err)
 	}
 	s.xrayService.StopXray()
 	var err1 error

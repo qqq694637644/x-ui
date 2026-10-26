@@ -75,10 +75,45 @@ func collectReverseQUICLogLocked(cfg ReverseQUICBridgeConfig) {
 func monitorReverseQUICSidecar(ctx context.Context, proc *xray.Process, cfg ReverseQUICBridgeConfig) {
 	ticker := time.NewTicker(1100 * time.Millisecond)
 	defer ticker.Stop()
+	warpTicker := time.NewTicker(2 * time.Second)
+	defer warpTicker.Stop()
+	warpDown := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-warpTicker.C:
+			reverseQUICSidecar.Lock()
+			current := reverseQUICSidecar.process == proc && proc.IsRunning()
+			reverseQUICSidecar.Unlock()
+			if !current {
+				return
+			}
+			probeCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+			probeErr := checkSOCKS5(probeCtx, reverseQUICSOCKS{Address: cfg.TransportSOCKSAddress}, true)
+			cancel()
+			previouslyDown := warpDown
+			warpDown, shouldRestart := reverseQUICWarpRecoveryTransition(warpDown, probeErr)
+			if warpDown && !previouslyDown {
+				logger.Warningf("reverse QUIC WARP SOCKS5 %s unavailable (UDP ASSOCIATE): %v", cfg.TransportSOCKSAddress, probeErr)
+				reverseQUICSidecar.Lock()
+				if reverseQUICSidecar.process == proc {
+					appendReverseQUICLogLocked("WARP SOCKS5 " + cfg.TransportSOCKSAddress + " 掉线；QUIC/UDP 不允许直连兜底")
+				}
+				reverseQUICSidecar.Unlock()
+			}
+			if shouldRestart {
+				logger.Infof("reverse QUIC WARP SOCKS5 %s restored; recycling isolated Bridge to renew QUIC session", cfg.TransportSOCKSAddress)
+				reverseQUICSidecar.Lock()
+				if reverseQUICSidecar.process == proc {
+					appendReverseQUICLogLocked("WARP SOCKS5 已恢复，正在重启独立 Bridge 以重新建立 QUIC 会话")
+				}
+				reverseQUICSidecar.Unlock()
+				if err := restartReverseQUICSidecarAfterWarpRecovery(proc); err != nil {
+					logger.Warning("reverse QUIC Bridge recovery restart failed:", err)
+				}
+				return
+			}
 		case <-ticker.C:
 			reverseQUICSidecar.Lock()
 			if reverseQUICSidecar.process != proc {
@@ -102,6 +137,24 @@ func monitorReverseQUICSidecar(ctx context.Context, proc *xray.Process, cfg Reve
 	}
 }
 
+// Xray 26.3.27's Hysteria2 UDP socket may not recover after the local
+// SOCKS5 process is killed and restarted. An explicit Bridge-only restart is
+// required on a detected WARP outage -> recovery transition.
+func reverseQUICWarpRecoveryTransition(wasDown bool, probeErr error) (isDown, restartBridge bool) {
+	if probeErr != nil {
+		return true, false
+	}
+	return false, wasDown
+}
+
+func restartReverseQUICSidecarAfterWarpRecovery(previous *xray.Process) error {
+	cfg, err := (&ReverseQUICBridgeService{}).load()
+	if err != nil || !cfg.Enabled {
+		return err
+	}
+	return applyReverseQUICSidecarWithOptions(cfg, true, previous)
+}
+
 func stopReverseQUICSidecarLocked(cfg ReverseQUICBridgeConfig) error {
 	if reverseQUICSidecar.process == nil {
 		return nil
@@ -121,8 +174,17 @@ func stopReverseQUICSidecarLocked(cfg ReverseQUICBridgeConfig) error {
 // before disrupting the running sidecar, and rolls back the prior process if
 // a new child exits unexpectedly on startup. It never restarts x-ui's main Xray.
 func applyReverseQUICSidecar(cfg ReverseQUICBridgeConfig) error {
+	return applyReverseQUICSidecarWithOptions(cfg, false, nil)
+}
+
+func applyReverseQUICSidecarWithOptions(cfg ReverseQUICBridgeConfig, forceRestart bool, expectedProcess *xray.Process) error {
 	reverseQUICSidecar.Lock()
 	defer reverseQUICSidecar.Unlock()
+	// A save or restart may have replaced this process since the health probe.
+	// Do not interrupt a newly configured Bridge with a stale recovery event.
+	if expectedProcess != nil && reverseQUICSidecar.process != expectedProcess {
+		return nil
+	}
 
 	if !cfg.Enabled {
 		if err := stopReverseQUICSidecarLocked(cfg); err != nil {
@@ -140,7 +202,7 @@ func applyReverseQUICSidecar(cfg ReverseQUICBridgeConfig) error {
 		return fmt.Errorf("独立 QUIC Bridge 配置校验失败: %w", err)
 	}
 	old := reverseQUICSidecar.process
-	if old != nil && old.IsRunning() && old.GetConfig().Equals(next) {
+	if !forceRestart && old != nil && old.IsRunning() && old.GetConfig().Equals(next) {
 		return nil
 	}
 	var previous *xray.Config

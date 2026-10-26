@@ -256,7 +256,7 @@ def main():
                 raise RuntimeError("reverse Bridge did not establish Hysteria2/QUIC Brutal connection")
             got = http_request_through_socks(socks_port, server.server_address[1])
             assert b"200 OK" in got and b"REVERSE-QUIC-BRIDGE-TCP-PASS" in got, repr(got[-400:])
-            print("PASS: QUIC/UDP transport is chained through the existing WARP SOCKS5 outbound")
+            print("PASS: QUIC/UDP transport is chained through the explicitly configured WARP SOCKS5 endpoint")
             print("PASS: domestic SOCKS5 -> reverse Portal -> WARP-proxied QUIC Brutal -> Bridge -> selected SOCKS5 TCP")
             udp_request_through_socks(socks_port, udp.getsockname()[1])
             print("PASS: SOCKS5 UDP ASSOCIATE uses WARP-proxied QUIC and the selected VPS-local SOCKS5 exit")
@@ -275,8 +275,16 @@ def main():
                 raise AssertionError("security regression: QUIC continued when the required WARP SOCKS5 transport proxy was offline")
             print("PASS: WARP SOCKS5 offline -> QUIC tunnel stops (no raw IPv6 fallback)")
 
-            # Restore WARP and require the reverse tunnel to reconnect.
+            # Restore WARP. Xray's existing QUIC UDP socket may remain bound
+            # to the dead SOCKS5 UDP ASSOCIATE session even after the proxy
+            # is back; the x-ui sidecar manager detects this outage/recovery
+            # transition and recycles ONLY the independent Bridge process.
+            # This end-to-end smoke reproduces that process recycle.
             warp_proxy = start("warp-socks-restarted", [xray, "run", "-c", str(warp_path)])
+            time.sleep(.35)
+            bridgep.terminate()
+            bridgep.wait(timeout=5)
+            bridgep = start("overseas-bridge-recovered", [xray, "run", "-c", str(bridge_path)])
             reconnect_deadline = time.monotonic() + 15
             while time.monotonic() < reconnect_deadline:
                 try:
@@ -287,8 +295,8 @@ def main():
                     pass
                 time.sleep(.4)
             else:
-                raise RuntimeError("reverse QUIC Bridge did not recover after restoring WARP SOCKS5")
-            print("PASS: WARP SOCKS5 restored -> reverse tunnel reconnects")
+                raise RuntimeError("reverse QUIC Bridge did not recover after WARP restoration and isolated Bridge process restart")
+            print("PASS: WARP SOCKS5 restored + isolated Bridge Xray restarted -> reverse tunnel reconnects")
 
             # Deliberately break the selected final SOCKS5 exit; any successful
             # web response proves a dangerous silent switch to VPS freedom.

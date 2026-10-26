@@ -419,18 +419,25 @@ func (s *Server) Start() (err error) {
 }
 
 func (s *Server) Stop() error {
-	s.cancel()
+	// Finish the Agent and owned frpc shutdown before canceling the parent
+	// context. Restarting the panel must not overlap old RSX3/WARP sockets
+	// with newly restored children.
 	if s.reverseSocks != nil {
 		s.reverseSocks.Stop()
 	}
-	s.xrayService.StopXray()
+	s.cancel()
 	if s.cron != nil {
 		s.cron.Stop()
 	}
+	s.xrayService.StopXray()
 	var err1 error
 	var err2 error
 	if s.httpServer != nil {
-		err1 = s.httpServer.Shutdown(s.ctx)
+		// s.ctx was canceled above; passing it to Shutdown would abort HTTP
+		// draining immediately instead of waiting for active requests.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err1 = s.httpServer.Shutdown(shutdownCtx)
 	}
 	if s.listener != nil {
 		err2 = s.listener.Close()

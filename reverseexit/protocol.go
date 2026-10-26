@@ -1,6 +1,6 @@
 package reverseexit
 
-// RSX2 control framing. UDP_DATA on the reliable stream is forbidden.
+// RSX3 authenticated control framing; TCP payloads use separate QUIC streams.
 
 import (
 	"bytes"
@@ -17,10 +17,7 @@ const (
 
 	openTCP   byte = 1
 	tcpResult byte = 2
-	tcpData   byte = 3
-	tcpFIN    byte = 4
 	tcpRST    byte = 5
-	tcpWindow byte = 11
 	openUDP   byte = 6
 	udpResult byte = 7
 	udpClose  byte = 8
@@ -43,7 +40,7 @@ func readFrame(r io.Reader) (frame, error) {
 	}
 	size := binary.BigEndian.Uint32(header[5:])
 	if size > maxPayload {
-		return frame{}, errors.New("RSX2 oversized frame")
+		return frame{}, errors.New("RSX3 oversized control frame")
 	}
 	data := make([]byte, int(size))
 	if _, err := io.ReadFull(r, data); err != nil {
@@ -54,7 +51,7 @@ func readFrame(r io.Reader) (frame, error) {
 
 func writeFrame(w io.Writer, f frame) error {
 	if len(f.data) > maxPayload {
-		return errors.New("RSX2 oversized payload")
+		return errors.New("RSX3 oversized control payload")
 	}
 	var header [9]byte
 	header[0] = f.kind

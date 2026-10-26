@@ -40,6 +40,8 @@ func socksHandshake(ctx context.Context, proxy socksEndpoint, command byte, dest
 		return nil, "", 0, fmt.Errorf("local SOCKS5 %s unreachable: %w", proxy.addr, err)
 	}
 	c := upstream.(*net.TCPConn)
+	stopCancel := onContextCancelled(ctx, func() { _ = c.Close() })
+	defer stopCancel()
 	ok := false
 	defer func() {
 		if !ok {

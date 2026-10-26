@@ -4,15 +4,19 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
+	"x-ui/rsxdiag"
 )
 
 // RuntimeStatus does not expose authentication material.
 type RuntimeStatus struct {
-	Enabled   bool   `json:"enabled"`
-	State     string `json:"state"`
-	Error     string `json:"error"`
-	WARPState string `json:"warpState"`
-	WARPError string `json:"warpError"`
+	Enabled       bool       `json:"enabled"`
+	State         string     `json:"state"`
+	Error         string     `json:"error"`
+	WARPState     string     `json:"warpState"`
+	WARPError     string     `json:"warpError"`
+	WARPFailures  int        `json:"warpFailures"`
+	WARPCheckedAt *time.Time `json:"warpCheckedAt,omitempty"`
 }
 
 // Manager owns precisely one in-process exit Agent. Save/Start/Stop are
@@ -23,6 +27,8 @@ type Manager struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	status  RuntimeStatus
+	meter   *rsxdiag.Meter
+	peer    *DiagnosticPeer
 }
 
 func NewManager() *Manager {
@@ -35,14 +41,30 @@ func (m *Manager) Status() RuntimeStatus {
 	return m.status
 }
 
+func (m *Manager) Metrics() *rsxdiag.Meter         { m.mu.Lock(); defer m.mu.Unlock(); return m.meter }
+func (m *Manager) DiagnosticPeer() *DiagnosticPeer { m.mu.Lock(); defer m.mu.Unlock(); return m.peer }
+func (m *Manager) setDiagnosticPeer(old, next *DiagnosticPeer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if old == nil || m.peer == old {
+		m.peer = next
+	}
+}
+
 func (m *Manager) setStatus(state, message string) {
 	m.mu.Lock()
 	if state == "warp-ready" || state == "warp-error" || state == "warp-checking" {
 		switch state {
 		case "warp-ready":
 			m.status.WARPState = "ready"
+			m.status.WARPFailures = 0
+			now := time.Now().UTC()
+			m.status.WARPCheckedAt = &now
 		case "warp-error":
 			m.status.WARPState = "unavailable"
+			m.status.WARPFailures++
+			now := time.Now().UTC()
+			m.status.WARPCheckedAt = &now
 		default:
 			m.status.WARPState = "checking"
 		}
@@ -52,6 +74,9 @@ func (m *Manager) setStatus(state, message string) {
 	}
 	m.status.State = state
 	m.status.Error = message
+	if m.meter != nil {
+		m.meter.Event("agent_"+state, message, "")
+	}
 	if state != "online" {
 		m.status.WARPState = "unknown"
 		m.status.WARPError = ""
@@ -78,6 +103,14 @@ func (m *Manager) Apply(parent context.Context, config Config, enabled bool) err
 	m.cancel = nil
 	m.done = nil
 	m.status = RuntimeStatus{Enabled: enabled, State: "stopped", WARPState: "unknown"}
+	m.peer = nil
+	if config.DiagnosticsEnabled && enabled {
+		m.meter = rsxdiag.NewMeter("go-agent")
+		config.Meter = m.meter
+		config.DiagnosticPeerChanged = m.setDiagnosticPeer
+	} else {
+		m.meter = nil
+	}
 	if !enabled {
 		m.mu.Unlock()
 		return nil

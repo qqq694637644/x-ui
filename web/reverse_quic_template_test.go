@@ -12,12 +12,12 @@ func TestReverseQUICHasOwnPageAndLocalSOCKS5ExitControls(t *testing.T) {
 	}
 	html := string(page)
 	for _, required := range []string{
-		"/xui/reverse-quic/config", "/xui/reverse-quic/save", "/xui/reverse-quic/status",
+		"/xui/reverse-quic/config", "/xui/reverse-quic/save", "/xui/reverse-quic/status", "/xui/reverse-quic/diagnostics",
 		"refreshStatus", "reverse-quic-card", "QUIC Brutal 反向隧道异常",
 		"windowsSpeedCommand", "测速", "windows_reverse_test.ps1",
 		"reverse-node.internal", "form.publicHost", "form.publicPort",
 		"form.brutalUp", "form.brutalDown",
-		"force-brutal", "form.transportProxyTag", "sockopt.dialerProxy",
+		"force-brutal", "form.transportSocksAddress", "127.0.0.1:40000",
 		"UDP ASSOCIATE", "form.egressMode", "form.socks5Address",
 		"form.socks5Username", "form.socks5Password", "importFragment",
 		"境外 VPS 主动访问境内", "旧 FRP",

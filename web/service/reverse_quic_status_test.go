@@ -216,14 +216,14 @@ func TestReverseQUICStatusEnabledButXrayStopped(t *testing.T) {
 	if err := database.GetDB().Create(&model.Setting{Key: reverseQUICSettingKey, Value: string(raw)}).Error; err != nil {
 		t.Fatal(err)
 	}
-	lock.Lock()
-	previous := p
-	p = nil
-	lock.Unlock()
+	reverseQUICSidecar.Lock()
+	previous := reverseQUICSidecar.process
+	reverseQUICSidecar.process = nil
+	reverseQUICSidecar.Unlock()
 	defer func() {
-		lock.Lock()
-		p = previous
-		lock.Unlock()
+		reverseQUICSidecar.Lock()
+		reverseQUICSidecar.process = previous
+		reverseQUICSidecar.Unlock()
 	}()
 	status, err := (&ReverseQUICBridgeService{}).Status(context.Background())
 	if err != nil {

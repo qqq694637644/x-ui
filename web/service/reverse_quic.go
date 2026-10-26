@@ -18,16 +18,17 @@ import (
 // listens on the public IPv6 Hysteria2 UDP port. Xray on this VPS is the Bridge:
 // it actively dials the Portal and receives reverse SOCKS5 requests.
 //
-// We intentionally do not reuse the old FRP/RSX3 manager or create a second
-// QUIC protocol implementation. Xray 26.3.27 provides both reverse and Brutal.
+// An independent Xray 26.3.27 process is owned by x-ui for this Bridge.
+// Neither the panel's existing routing nor its Xray process are modified.
 const reverseQUICSettingKey = "reverseQuicBridgeConfig"
 
 const (
-	reverseQUICBridgeTag             = "reverse-node-bridge"
-	reverseQUICOutboundTag           = "reverse-node-hysteria"
-	reverseQUICEgressTag             = "reverse-node-egress"
-	reverseQUICTransportProxyDefault = "warp"
-	reverseQUICDomain                = "reverse-node.internal"
+	reverseQUICBridgeTag        = "reverse-node-bridge"
+	reverseQUICOutboundTag      = "reverse-node-hysteria"
+	reverseQUICEgressTag        = "reverse-node-egress"
+	reverseQUICTransportTag     = "reverse-node-transport-socks"
+	reverseQUICTransportDefault = "127.0.0.1:40000"
+	reverseQUICDomain           = "reverse-node.internal"
 )
 
 var reverseQUICHostLabel = regexp.MustCompile("^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$")
@@ -36,38 +37,38 @@ var reverseQUICPin = regexp.MustCompile("^[a-fA-F0-9]{64}$")
 // ReverseQUICBridgeConfig is independent of the legacy FRP reverse SOCKS form.
 // It only supports Xray-native Hysteria2/QUIC force-brutal.
 type ReverseQUICBridgeConfig struct {
-	Enabled           bool   `json:"enabled" form:"enabled"`
-	Domain            string `json:"domain" form:"domain"`
-	PublicHost        string `json:"publicHost" form:"publicHost"`
-	PublicPort        int    `json:"publicPort" form:"publicPort"`
-	Auth              string `json:"auth" form:"auth"`
-	ServerName        string `json:"serverName" form:"serverName"`
-	CertificatePin    string `json:"certificatePin" form:"certificatePin"`
-	BrutalUp          string `json:"brutalUp" form:"brutalUp"`
-	BrutalDown        string `json:"brutalDown" form:"brutalDown"`
-	TransportProxyTag string `json:"transportProxyTag" form:"transportProxyTag"`
-	EgressMode        string `json:"egressMode" form:"egressMode"`
-	SOCKS5Address     string `json:"socks5Address" form:"socks5Address"`
-	SOCKS5Username    string `json:"socks5Username" form:"socks5Username"`
-	SOCKS5Password    string `json:"socks5Password" form:"socks5Password"`
+	Enabled               bool   `json:"enabled" form:"enabled"`
+	Domain                string `json:"domain" form:"domain"`
+	PublicHost            string `json:"publicHost" form:"publicHost"`
+	PublicPort            int    `json:"publicPort" form:"publicPort"`
+	Auth                  string `json:"auth" form:"auth"`
+	ServerName            string `json:"serverName" form:"serverName"`
+	CertificatePin        string `json:"certificatePin" form:"certificatePin"`
+	BrutalUp              string `json:"brutalUp" form:"brutalUp"`
+	BrutalDown            string `json:"brutalDown" form:"brutalDown"`
+	TransportSOCKSAddress string `json:"transportSocksAddress" form:"transportSocksAddress"`
+	EgressMode            string `json:"egressMode" form:"egressMode"`
+	SOCKS5Address         string `json:"socks5Address" form:"socks5Address"`
+	SOCKS5Username        string `json:"socks5Username" form:"socks5Username"`
+	SOCKS5Password        string `json:"socks5Password" form:"socks5Password"`
 }
 
 type ReverseQUICBridgeService struct {
-	mu          sync.Mutex
-	settings    SettingService
-	restartXray func() error // test hook; production uses XrayService.RestartXray
+	mu            sync.Mutex
+	settings      SettingService
+	restartBridge func() error // test hook; production restarts only the isolated Bridge
 }
 
 func defaultReverseQUICBridgeConfig() ReverseQUICBridgeConfig {
 	return ReverseQUICBridgeConfig{
-		Enabled:           false,
-		Domain:            reverseQUICDomain,
-		PublicPort:        18443,
-		BrutalUp:          "24mbps", // VPS sends to Windows; Windows downloads.
-		BrutalDown:        "16mbps", // VPS receives from Windows; Windows uploads.
-		TransportProxyTag: reverseQUICTransportProxyDefault,
-		EgressMode:        "direct",
-		SOCKS5Address:     "127.0.0.1:40001",
+		Enabled:               false,
+		Domain:                reverseQUICDomain,
+		PublicPort:            18443,
+		BrutalUp:              "24mbps", // VPS sends to Windows; Windows downloads.
+		BrutalDown:            "16mbps", // VPS receives from Windows; Windows uploads.
+		TransportSOCKSAddress: reverseQUICTransportDefault,
+		EgressMode:            "direct",
+		SOCKS5Address:         "127.0.0.1:40001",
 	}
 }
 
@@ -78,7 +79,7 @@ func normalizeReverseQUICBridgeConfig(c ReverseQUICBridgeConfig) ReverseQUICBrid
 	c.CertificatePin = strings.ToLower(strings.TrimSpace(c.CertificatePin))
 	c.BrutalUp = strings.ToLower(strings.TrimSpace(c.BrutalUp))
 	c.BrutalDown = strings.ToLower(strings.TrimSpace(c.BrutalDown))
-	c.TransportProxyTag = strings.TrimSpace(c.TransportProxyTag)
+	c.TransportSOCKSAddress = strings.TrimSpace(c.TransportSOCKSAddress)
 	c.EgressMode = strings.TrimSpace(c.EgressMode)
 	c.SOCKS5Address = strings.TrimSpace(c.SOCKS5Address)
 	c.SOCKS5Username = strings.TrimSpace(c.SOCKS5Username)
@@ -91,8 +92,8 @@ func normalizeReverseQUICBridgeConfig(c ReverseQUICBridgeConfig) ReverseQUICBrid
 	if c.EgressMode == "" {
 		c.EgressMode = "direct"
 	}
-	if c.TransportProxyTag == "" {
-		c.TransportProxyTag = reverseQUICTransportProxyDefault
+	if c.TransportSOCKSAddress == "" {
+		c.TransportSOCKSAddress = reverseQUICTransportDefault
 	}
 	if c.EgressMode == "direct" {
 		c.SOCKS5Username = ""
@@ -147,29 +148,36 @@ func validateReverseQUICBridgeConfig(c ReverseQUICBridgeConfig) error {
 	if err := validateHysteriaBrutalRate(c.BrutalDown); err != nil {
 		return fmt.Errorf("VPS Brutal 下载速率: %w", err)
 	}
-	if c.TransportProxyTag == "" || strings.ContainsAny(c.TransportProxyTag, "\t\r\n ") {
-		return fmt.Errorf("隧道传输必须指定现有的 SOCKS5 WARP 出站 tag（默认 warp）")
+	if err := validateReverseQUICLoopbackSOCKS(c.TransportSOCKSAddress); err != nil {
+		return fmt.Errorf("隧道 WARP SOCKS5 地址: %w", err)
 	}
 	switch c.EgressMode {
 	case "direct":
 	case "socks5":
-		host, port, err := net.SplitHostPort(c.SOCKS5Address)
-		if err != nil {
-			return fmt.Errorf("本机 SOCKS5 地址必须为 127.0.0.1:端口，IPv6 回环请用 [::1]:端口")
-		}
-		ip := net.ParseIP(host)
-		if ip == nil || !ip.IsLoopback() {
-			return fmt.Errorf("真实出口 SOCKS5 仅允许本机回环地址 127.0.0.1 或 ::1")
-		}
-		portNum, err := strconv.Atoi(port)
-		if err != nil || portNum < 1 || portNum > 65535 {
-			return fmt.Errorf("SOCKS5 端口无效")
+		if err := validateReverseQUICLoopbackSOCKS(c.SOCKS5Address); err != nil {
+			return fmt.Errorf("真实出口 SOCKS5 地址: %w", err)
 		}
 		if c.SOCKS5Username == "" && c.SOCKS5Password != "" {
 			return fmt.Errorf("SOCKS5 密码需要同时提供用户名")
 		}
 	default:
 		return fmt.Errorf("只支持直连或本机 SOCKS5 两种真实出口")
+	}
+	return nil
+}
+
+func validateReverseQUICLoopbackSOCKS(address string) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("必须明确填写 127.0.0.1:端口，IPv6 回环用 [::1]:端口")
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("只允许本机回环地址，不能使用远程 SOCKS5")
+	}
+	number, err := strconv.Atoi(port)
+	if err != nil || number < 1 || number > 65535 {
+		return fmt.Errorf("SOCKS5 端口无效")
 	}
 	return nil
 }
@@ -215,9 +223,9 @@ func (s *ReverseQUICBridgeService) Save(in ReverseQUICBridgeConfig) (ReverseQUIC
 	if !next.Enabled && !prev.Enabled {
 		return next, nil
 	}
-	restart := s.restartXray
+	restart := s.restartBridge
 	if restart == nil {
-		restart = func() error { return (&XrayService{}).RestartXray(false) }
+		restart = restartReverseQUICSidecarFromSettings
 	}
 	if err := restart(); err != nil {
 		oldJSON, jsonErr := json.Marshal(prev)
@@ -245,8 +253,8 @@ func reverseQUICRawArray(raw json.RawMessage, description string) ([]json.RawMes
 	return out, nil
 }
 
-// This only appends to the existing Xray instance; it does not replace the
-// template's outbounds, routing rules or other reverse Portal/Bridge entries.
+// applyReverseQUICBridge assembles only the independent Bridge's isolated
+// config. It is never applied to the x-ui main Xray template.
 func applyReverseQUICBridge(config *xray.Config, c ReverseQUICBridgeConfig) error {
 	c = normalizeReverseQUICBridgeConfig(c)
 	if err := validateReverseQUICBridgeConfig(c); err != nil {
@@ -287,7 +295,6 @@ func applyReverseQUICBridge(config *xray.Config, c ReverseQUICBridgeConfig) erro
 	if err != nil {
 		return err
 	}
-	transportProxyFound := false
 	for _, outbound := range outbounds {
 		var item struct {
 			Tag      string `json:"tag"`
@@ -296,21 +303,12 @@ func applyReverseQUICBridge(config *xray.Config, c ReverseQUICBridgeConfig) erro
 		if err := json.Unmarshal(outbound, &item); err != nil {
 			return fmt.Errorf("已有 Xray 出站无效: %w", err)
 		}
-		if item.Tag == c.TransportProxyTag {
-			if item.Protocol != "socks" {
-				return fmt.Errorf("隧道传输出站 %q 必须是 SOCKS5（protocol=socks），以便经 WARP 代理 UDP/QUIC", c.TransportProxyTag)
-			}
-			transportProxyFound = true
-		}
-		if item.Tag == reverseQUICOutboundTag || item.Tag == reverseQUICEgressTag {
+		if item.Tag == reverseQUICTransportTag || item.Tag == reverseQUICOutboundTag || item.Tag == reverseQUICEgressTag {
 			return fmt.Errorf("已有 Xray 出站占用新 Bridge 保留的 tag %q", item.Tag)
 		}
 	}
-	if !transportProxyFound {
-		return fmt.Errorf("找不到隧道传输 WARP SOCKS5 出站 tag %q；请在现有 Xray 出站中配置本机 WARP SOCKS5，并在本页填写对应 tag", c.TransportProxyTag)
-	}
 	for _, inbound := range config.InboundConfigs {
-		if inbound.Tag == reverseQUICBridgeTag || inbound.Tag == reverseQUICOutboundTag || inbound.Tag == reverseQUICEgressTag {
+		if inbound.Tag == reverseQUICBridgeTag || inbound.Tag == reverseQUICTransportTag || inbound.Tag == reverseQUICOutboundTag || inbound.Tag == reverseQUICEgressTag {
 			return fmt.Errorf("已有 Xray 入站占用新 Bridge 保留的 tag %q", inbound.Tag)
 		}
 	}
@@ -323,6 +321,21 @@ func applyReverseQUICBridge(config *xray.Config, c ReverseQUICBridgeConfig) erro
 		tls["pinnedPeerCertSha256"] = c.CertificatePin
 		tls["verifyPeerCertByName"] = c.ServerName
 	}
+	transportHost, transportPortString, _ := net.SplitHostPort(c.TransportSOCKSAddress)
+	transportPort, _ := strconv.Atoi(transportPortString)
+	transportOutbound, err := json.Marshal(map[string]interface{}{
+		"tag":      reverseQUICTransportTag,
+		"protocol": "socks",
+		"settings": map[string]interface{}{
+			"servers": []interface{}{map[string]interface{}{
+				"address": transportHost, "port": transportPort,
+			}},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	outbounds = append(outbounds, transportOutbound)
 	hy2 := map[string]interface{}{
 		"tag":      reverseQUICOutboundTag,
 		"protocol": "hysteria",
@@ -341,7 +354,7 @@ func applyReverseQUICBridge(config *xray.Config, c ReverseQUICBridgeConfig) erro
 			},
 			"sockopt": map[string]interface{}{
 				"domainStrategy": "UseIPv6",
-				"dialerProxy":    c.TransportProxyTag,
+				"dialerProxy":    reverseQUICTransportTag,
 			},
 			"finalmask": map[string]interface{}{
 				"quicParams": map[string]interface{}{
@@ -489,26 +502,30 @@ func enableReverseQUICOutboundStats(config *xray.Config) error {
 	return nil
 }
 
-// BuildReverseQUICFixtureConfig reuses the production Bridge generator in
-// isolated two-process Xray smoke tests. It never reads or modifies the panel
-// database; it is not a second implementation of the network protocol.
-func BuildReverseQUICFixtureConfig(c ReverseQUICBridgeConfig, warpSOCKSAddress string) (*xray.Config, error) {
-	warpHost, warpPort, err := net.SplitHostPort(warpSOCKSAddress)
-	if err != nil {
-		return nil, fmt.Errorf("fixture WARP SOCKS5 address: %w", err)
-	}
-	warpIP := net.ParseIP(warpHost)
-	warpPortNum, err := strconv.Atoi(warpPort)
-	if err != nil || warpIP == nil || !warpIP.IsLoopback() || warpPortNum < 1 || warpPortNum > 65535 {
-		return nil, fmt.Errorf("fixture WARP SOCKS5 must be a loopback address with a valid port")
+// BuildIsolatedReverseQUICConfig generates the entire sidecar Xray config.
+// The main Xray template, SOCKS5 inbounds, DNS and routing are not imported.
+// This prevents accidental recirculation through the panel's own rules.
+func BuildIsolatedReverseQUICConfig(c ReverseQUICBridgeConfig) (*xray.Config, error) {
+	c = normalizeReverseQUICBridgeConfig(c)
+	if !c.Enabled {
+		return nil, fmt.Errorf("未启用独立反向 Bridge")
 	}
 	base := &xray.Config{
-		LogConfig:       json_util.RawMessage(`{"loglevel":"debug"}`),
+		LogConfig:       json_util.RawMessage(`{"loglevel":"info"}`),
 		RouterConfig:    json_util.RawMessage(`{"rules":[]}`),
-		OutboundConfigs: json_util.RawMessage(fmt.Sprintf(`[{"tag":%q,"protocol":"socks","settings":{"servers":[{"address":%q,"port":%d}]}},{"tag":"legacy-direct","protocol":"freedom","settings":{}}]`, c.TransportProxyTag, warpHost, warpPortNum)),
+		OutboundConfigs: json_util.RawMessage(`[]`),
+		API:             json_util.RawMessage(`{"tag":"api","listen":"127.0.0.1:62790","services":["StatsService"]}`),
+		Stats:           json_util.RawMessage(`{}`),
 	}
 	if err := applyReverseQUICBridge(base, c); err != nil {
 		return nil, err
 	}
 	return base, nil
+}
+
+// BuildReverseQUICFixtureConfig keeps CI wired to the exact production
+// generator while overriding only the simulated loopback WARP endpoint.
+func BuildReverseQUICFixtureConfig(c ReverseQUICBridgeConfig, warpSOCKSAddress string) (*xray.Config, error) {
+	c.TransportSOCKSAddress = warpSOCKSAddress
+	return BuildIsolatedReverseQUICConfig(c)
 }

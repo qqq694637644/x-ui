@@ -15,19 +15,19 @@
                 <a-card class="reverse-quic-card" title="境外 Xray Bridge → 境内 Windows Portal · Hysteria2 / QUIC Brutal">
                     <a-alert type="info" show-icon
                         message="连接方向：境外 VPS 主动访问境内 DDNS IPv6；业务请求由境内 SOCKS5 反向交给 VPS 出口"
-                        description="唯一传输协议为 Xray-core 26.3.27 原生 Hysteria2 / QUIC + force-brutal。隧道的 UDP/QUIC 拨号也必须经由 VPS 现有 SOCKS5 WARP 出站（sockopt.dialerProxy），不允许裸连境内 IPv6。此处配置 VPS reverse.bridges，不是 VPS 入站。旧 FRP / RSX3 页面全部保留。"
+                        description="独立运行一个 Xray 26.3.27 Bridge 进程，不向 x-ui 原有 Xray 注入路由；QUIC UDP 强制经本机 127.0.0.1:40000 的 WARP SOCKS5 访问境内 IPv6，传输仅支持 force-brutal。旧 FRP / RSX3 页面完整保留。"
                         style="margin-bottom:16px;"></a-alert>
                     <a-row :gutter="16">
                         <a-col :xs="24" :md="12">
                             <a-form-item label="启用境外 QUIC Brutal Bridge">
                                 <a-switch v-model="form.enabled"></a-switch>
-                                <span style="margin-left:12px;">[[ form.enabled ? '启用后生成 Bridge 并重启 Xray' : '仅保存，不向 Xray 添加 Bridge' ]]</span>
+                                <span style="margin-left:12px;">[[ form.enabled ? '启用独立 Bridge Xray 进程' : '停用独立 Bridge，不影响主 Xray' ]]</span>
                             </a-form-item>
                         </a-col>
                         <a-col :xs="24" :md="12">
                             <a-space>
                                 <a-button @click="refresh">重新读取</a-button>
-                                <a-button type="primary" @click="save">保存并应用到现有 Xray</a-button>
+                                <a-button type="primary" @click="save">保存并启动/重启独立 Xray</a-button>
                             </a-space>
                         </a-col>
                     </a-row>
@@ -39,11 +39,11 @@
                     <template v-else>
                         <a-alert show-icon :type="status.state === 'down' ? 'error' : (status.state === 'active' ? 'success' : 'warning')"
                             :message="status.message"
-                            description="检测层级：VPS Xray 进程 → WARP SOCKS5 UDP ASSOCIATE → 网站出口 SOCKS5 → Xray 出站业务计数。没有反向业务数据时无法仅从 VPS 区分空闲与掉线，请在 Windows 1081 SOCKS5 执行下方测试。"
+                            description="检测层级：独立 Bridge Xray 进程 → 127.0.0.1:40000 WARP SOCKS5 UDP ASSOCIATE → 所选出口 SOCKS5 → 独立 Xray 业务计数。空闲与掉线仍须 Windows SOCKS5 1081 端到端探测区分。"
                             style="margin-bottom:16px"></a-alert>
                         <a-row :gutter="16">
                             <a-col :xs="24" :sm="12" :md="6">
-                                <a-statistic title="VPS Xray 进程" :value="status.xrayRunning ? '运行中' : '已停止'"></a-statistic>
+                                <a-statistic title="独立 Bridge Xray 进程" :value="status.xrayRunning ? '运行中' : '已停止'"></a-statistic>
                             </a-col>
                             <a-col :xs="24" :sm="12" :md="6">
                                 <a-statistic title="WARP SOCKS5 UDP" :value="status.warpUdpReady ? '握手通过' : '未通过'"></a-statistic>
@@ -73,6 +73,15 @@
                         <a-button :loading="checkingStatus" @click="refreshStatus">立即检测</a-button>
                         <span style="color:#888">每 5 秒自动检测；出现进程退出或 SOCKS5 握手失败时弹出掉线通知。</span>
                     </a-space>
+                </a-card>
+
+                <a-card class="reverse-quic-card" title="独立 Xray 诊断日志（用于定位 Bridge 注册与 WARP UDP 故障）">
+                    <a-alert type="info" show-icon
+                        message="独立 Bridge Xray 输出会筛选重要事件写入 x-ui 服务日志，SSH 上也可以通过 x-ui 菜单 12 查看。"
+                        description="此处显示独立进程最近 120 条日志。密码、Hysteria2 auth 和证书指纹均会在向页面返回前脱敏。"
+                        style="margin-bottom:12px"></a-alert>
+                    <a-button @click="refreshDiagnostics" :loading="loadingDiagnostics">读取诊断日志</a-button>
+                    <a-textarea style="margin-top:12px" :value="diagnosticLines.join('\n')" :rows="9" readonly></a-textarea>
                 </a-card>
 
                 <a-card class="reverse-quic-card" title="Windows SOCKS5 端到端测速 / 持续掉线监测">
@@ -149,16 +158,16 @@
                 <a-card class="reverse-quic-card" title="隧道传输网络（强制经过 WARP SOCKS5）">
                     <a-alert type="warning" show-icon
                         message="QUIC 传输本身也走 WARP，不是只把最终网站流量送进 WARP"
-                        description="这里填写现有 Xray 出站中的 SOCKS5 tag，默认 warp。Xray 会把 Hysteria2 的 UDP socket 通过该 SOCKS5 的 UDP ASSOCIATE 转发到境内 DDNS IPv6；不会直接裸连。所选出站必须指向 VPS 上的 WARP SOCKS5 服务，并且该服务必须支持 UDP ASSOCIATE/IPv6。"
+                        description="明确填 WARP SOCKS5 代理地址，默认 127.0.0.1:40000（wireproxy）。独立 Xray 内部自动创建专用 SOCKS 出站，QUIC/UDP 使用该出站连接境内 IPv6；不再要求填写 warp 标签，也不依赖主 Xray 的 SOCKS 出站或路由规则。"
                         style="margin-bottom:16px"></a-alert>
                     <a-form layout="vertical">
-                        <a-form-item label="现有 WARP SOCKS5 出站 Tag（必须是 protocol=socks）">
-                            <a-input v-model.trim="form.transportProxyTag" placeholder="warp"></a-input>
+                        <a-form-item label="WARP SOCKS5 实际转发地址（端口明确填写）">
+                            <a-input v-model.trim="form.transportSocksAddress" placeholder="127.0.0.1:40000"></a-input>
                         </a-form-item>
                     </a-form>
                     <a-alert type="info" show-icon
-                        message="复用现有 WARP 出站，不再启动第二个 Xray"
-                        description="保存时校验这个 tag 已存在且 protocol=socks，并写入 Hysteria2 出站的 streamSettings.sockopt.dialerProxy。该字段是隧道传输的强制链式代理，不影响下面独立配置的真实网站出口。"></a-alert>
+                        message="独立 Xray 进程，只复用现有 Xray 可执行文件，不复用主 Xray 路由"
+                        description="独立进程内部将 127.0.0.1:40000 映射到固定的私有 SOCKS 出站供 sockopt.dialerProxy 使用；用户不需要配置任何出站 Tag。"></a-alert>
                 </a-card>
 
                 <a-card class="reverse-quic-card" title="QUIC Brutal（唯一传输模式）">
@@ -184,7 +193,7 @@
                 <a-card class="reverse-quic-card" title="真实互联网出口（境外 VPS）">
                     <a-alert type="warning" show-icon
                         message="这是隧道完成后，目标网站实际使用的出口"
-                        description="选择本机 SOCKS5 时，反向业务必须通过指定 SOCKS5（例如 127.0.0.1:40001 接已有 Xray/WARP 分流）。出口故障时请求失败，不会偷偷切回 freedom。隧道传输另由上面的 WARP SOCKS5 tag 强制承载。"
+                        description="出口与 WARP 隧道代理分开配置。若填 127.0.0.1:40001，会进入主 Xray 的 SOCKS5 入站并再次经过原有分流（可能需要账号密码）；若要直接使用 WARP 出网，可选本机 SOCKS5 127.0.0.1:40000。出口故障时不自动切回 freedom。"
                         style="margin-bottom:16px"></a-alert>
                     <a-form layout="vertical">
                         <a-form-item label="出口模式">
@@ -215,7 +224,7 @@
                     </a-form>
                     <a-alert type="info" show-icon
                         message="独立运行，不修改旧 FRP"
-                        description="只把 reverse.bridges、两个专用 Xray 出站（QUIC 隧道、真实出口）和优先路由规则加入现有 Xray 配置；旧 FRPC/FRPS、RSX3 Agent 及其配置仍保留。"
+                        description="x-ui 管理一个专用的 Bridge Xray 进程及独立配置 bin/reverse-quic-bridge.json。主 Xray 模板、普通入站和域名分流不被反向配置改写；旧 FRPC/FRPS、RSX3 Agent 原样保留。"
                         style="margin-top:12px"></a-alert>
                 </a-card>
 
@@ -233,7 +242,7 @@
     const defaultBridgeForm = () => ({
         enabled: false, domain: 'reverse-node.internal', publicHost: '',
         publicPort: 18443, auth: '', serverName: '', certificatePin: '',
-        brutalUp: '24mbps', brutalDown: '16mbps', transportProxyTag: 'warp',
+        brutalUp: '24mbps', brutalDown: '16mbps', transportSocksAddress: '127.0.0.1:40000',
         egressMode: 'direct', socks5Address: '127.0.0.1:40001',
         socks5Username: '', socks5Password: ''
     });
@@ -246,6 +255,8 @@
             checkingStatus: false,
             status: null,
             statusTimer: null,
+            diagnosticLines: [],
+            loadingDiagnostics: false,
             testSocksPort: 1081,
             testSizeMB: 20,
             form: defaultBridgeForm(),
@@ -259,6 +270,15 @@
             }
         },
         methods: {
+            async refreshDiagnostics() {
+                this.loadingDiagnostics = true;
+                try {
+                    const msg = await HttpUtil.post('/xui/reverse-quic/diagnostics');
+                    if (msg.success && Array.isArray(msg.obj)) this.diagnosticLines = msg.obj;
+                } finally {
+                    this.loadingDiagnostics = false;
+                }
+            },
             async refreshStatus() {
                 if (this.checkingStatus) return;
                 this.checkingStatus = true;

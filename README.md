@@ -15,7 +15,7 @@
 - 更多高级配置项，详见面板
 - 隧道支持公网直连和 VMess/mKCP Portal 反向模式；无公网 IP 的 B 端可主动连接 A
 - RSX3-only 反向 SOCKS5 / WARP：境外经定制 frpc XTCP Visitor 连接境内 Python NAT Node，每个 TCP 会话走独立 QUIC Stream，UDP 经 QUIC DATAGRAM；frpc 控制与打洞强制 WARP，最终网站可经 Xray SOCKS5 按域名分流。支持面板、Diagnostics、自检与原始报告，详见 [部署说明](docs/REVERSE_SOCKS_EXIT.md)
-- **Xray 26.3.27 原生 IPv6 / Hysteria2 / QUIC Brutal 反向 SOCKS5**：独立「IPv6 QUIC Brutal 反向 SOCKS5」页面由境外 VPS x-ui 配置 Xray `reverse.bridges`，**境外 VPS 主动连接境内 Windows** 的 `reverse_node`（Xray `reverse.portals` + DDNS IPv6 UDP 入站）。**隧道 QUIC/UDP 本身强制通过 VPS 现有 WARP SOCKS5 出站 tag（默认 `warp`，Xray `sockopt.dialerProxy`），不能裸连境内 IPv6**；该 SOCKS5 必须支持 UDP ASSOCIATE。真实网站出口另可选 **VPS freedom** 或 **VPS 本机 SOCKS5**（例如 `127.0.0.1:40001`）。只支持 Hysteria2 TLS+h3 / `force-brutal`，隧道 WARP 或最终 SOCKS5 故障均不直连兜底。**旧 FRP/XTCP/WARP 页面和配置完整保留**。详见 [反向 QUIC Brutal 与出口配置](docs/HYSTERIA2_XRAY26327.md)。
+- **Xray 26.3.27 原生 IPv6 / Hysteria2 / QUIC Brutal 反向 SOCKS5**：独立「IPv6 QUIC Brutal 反向 SOCKS5」页面管理**另一套独立 Xray 进程**（共用相同的 Xray 可执行文件，但不共用主 Xray 的入站、出站、路由及 `bin/config.json`）。境外 VPS 的 Bridge 主动连接境内 Windows `reverse_node` Portal。**隧道 QUIC/UDP 强制经本机 WARP SOCKS5 `127.0.0.1:40000` 转发至境内 IPv6**（可在新页面修改实际 SOCKS5 地址），不依赖原模板里的 `warp` 出站标签；WARP SOCKS5 必须支持 UDP ASSOCIATE。真实网站出口另外选择 VPS `freedom`，或指定本机 SOCKS5（`127.0.0.1:40001` 接主 Xray 的原域名分流，或 `127.0.0.1:40000` 直接 WARP）。仅支持 TLS+h3 / `force-brutal`，不裸连、不自动直连兜底。**旧 FRP/XTCP/WARP 页面与配置完整保留**。详见 [反向 QUIC Brutal 独立进程与出口配置](docs/HYSTERIA2_XRAY26327.md)。
 
 ## 隧道模式
 

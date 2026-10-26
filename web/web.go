@@ -309,6 +309,16 @@ func (s *Server) startTask() {
 	if err != nil {
 		logger.Warning("start xray failed:", err)
 	}
+	if err := service.StartReverseQUICSidecar(); err != nil {
+		logger.Warning("start isolated Reverse QUIC Bridge failed:", err)
+	}
+	// The independent Bridge must recover if its own Xray child crashes.
+	// This watchdog does not restart the panel's main Xray.
+	s.cron.AddFunc("@every 30s", func() {
+		if err := service.EnsureReverseQUICSidecar(); err != nil {
+			logger.Warning("ensure isolated Reverse QUIC Bridge failed:", err)
+		}
+	})
 	// 每 30 秒检查一次 xray 是否在运行
 	s.cron.AddJob("@every 30s", job.NewCheckXrayRunningJob())
 
@@ -424,6 +434,9 @@ func (s *Server) Stop() error {
 	// with newly restored children.
 	if s.reverseSocks != nil {
 		s.reverseSocks.Stop()
+	}
+	if err := service.StopReverseQUICSidecar(); err != nil {
+		logger.Warning("stop isolated Reverse QUIC Bridge failed:", err)
 	}
 	s.cancel()
 	if s.cron != nil {

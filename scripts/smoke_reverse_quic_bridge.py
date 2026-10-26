@@ -160,7 +160,7 @@ def main():
             "certificatePin": stream["tlsSettings"]["pinnedPeerCertSha256"],
             "brutalUp": stream["finalmask"]["quicParams"]["brutalUp"],
             "brutalDown": stream["finalmask"]["quicParams"]["brutalDown"],
-            "transportProxyTag": "warp",
+            "transportSocksAddress": "127.0.0.1:" + str(warp_port),
             "egressMode": "socks5",
             "socks5Address": "127.0.0.1:" + str(exit_port)
         }
@@ -178,7 +178,10 @@ def main():
         assert next(x for x in bridge["outbounds"] if x["tag"] == "reverse-node-egress")["protocol"] == "socks"
         hy2 = next(x for x in bridge["outbounds"] if x["tag"] == "reverse-node-hysteria")
         assert hy2["streamSettings"]["finalmask"]["quicParams"]["congestion"] == "force-brutal"
-        assert hy2["streamSettings"]["sockopt"]["dialerProxy"] == "warp", "QUIC transport must be chained through the WARP SOCKS5 outbound"
+        assert hy2["streamSettings"]["sockopt"]["dialerProxy"] == "reverse-node-transport-socks", "QUIC transport must be chained through the explicit WARP SOCKS5 outbound"
+        transport = next(x for x in bridge["outbounds"] if x["tag"] == "reverse-node-transport-socks")
+        assert transport["settings"]["servers"] == [{"address": "127.0.0.1", "port": warp_port}]
+        assert not bridge.get("inbounds"), "isolated Bridge must not reuse the main Xray's SOCKS5 inbounds"
         check_config(xray, state / "xray-portal.json")
         check_config(xray, bridge_path)
         proxy_config = {

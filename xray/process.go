@@ -61,6 +61,15 @@ func NewProcess(xrayConfig *Config) *Process {
 	return p
 }
 
+// NewIsolatedProcess uses the same Xray binary but owns a different process
+// and a private configuration file. It must never overwrite bin/config.json.
+func NewIsolatedProcess(xrayConfig *Config, configPath string) *Process {
+	p := &Process{newProcess(xrayConfig)}
+	p.process.configPath = configPath
+	runtime.SetFinalizer(p, stopProcess)
+	return p
+}
+
 func ValidateConfig(xrayConfig *Config) error {
 	data, err := json.MarshalIndent(xrayConfig, "", "  ")
 	if err != nil {
@@ -93,8 +102,9 @@ func ValidateConfig(xrayConfig *Config) error {
 }
 
 type process struct {
-	cmd  *exec.Cmd
-	done chan struct{}
+	cmd        *exec.Cmd
+	done       chan struct{}
+	configPath string
 
 	version string
 	apiPort int
@@ -207,7 +217,12 @@ func (p *process) Start() (err error) {
 		return common.NewErrorf("生成 xray 配置文件失败: %v", err)
 	}
 	configPath := GetConfigPath()
-	err = os.WriteFile(configPath, data, fs.ModePerm)
+	fileMode := fs.ModePerm
+	if p.configPath != "" {
+		configPath = p.configPath
+		fileMode = 0600
+	}
+	err = os.WriteFile(configPath, data, fileMode)
 	if err != nil {
 		return common.NewErrorf("写入配置文件失败: %v", err)
 	}

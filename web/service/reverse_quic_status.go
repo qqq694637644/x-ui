@@ -253,21 +253,22 @@ func (s *ReverseQUICBridgeService) Status(ctx context.Context) (ReverseQUICStatu
 	if !cfg.Enabled {
 		return result, nil
 	}
-	lock.Lock()
-	process := p
+	process, lastSidecarError, _ := reverseQUICSidecarSnapshot()
 	running := process != nil && process.IsRunning()
 	var activeConfig *xray.Config
 	if running {
 		activeConfig = process.GetConfig()
 	}
-	lock.Unlock()
 	result.XrayRunning = running
 	if !running {
-		result.State, result.Message = "down", "x-ui 管理的 Xray 已停止：反向隧道离线"
+		result.State, result.Message = "down", "独立 Reverse QUIC Xray 已停止：反向隧道离线"
+		if lastSidecarError != "" {
+			result.Message += "；" + lastSidecarError
+		}
 		return result, nil
 	}
 
-	warp, err := lookupReverseSOCKSOutbound(activeConfig, cfg.TransportProxyTag)
+	warp, err := lookupReverseSOCKSOutbound(activeConfig, reverseQUICTransportTag)
 	if err != nil {
 		result.State, result.Message, result.WarpDetail = "down", "隧道 WARP 出站配置错误", err.Error()
 		return result, nil

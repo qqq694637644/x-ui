@@ -21,8 +21,8 @@ func testReverseQUICBridgeConfig() ReverseQUICBridgeConfig {
 		Auth:           "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		CertificatePin: strings.Repeat("a", 64),
 		BrutalUp:       "24mbps", BrutalDown: "16mbps",
-		TransportProxyTag: "warp",
-		EgressMode:        "socks5", SOCKS5Address: "127.0.0.1:40001",
+		TransportSOCKSAddress: "127.0.0.1:40000",
+		EgressMode:            "socks5", SOCKS5Address: "127.0.0.1:40001",
 		SOCKS5Username: "username", SOCKS5Password: "password",
 	}
 }
@@ -78,10 +78,15 @@ func TestReverseQUICBridgeAppendsReverseAndForcesSelectedSOCKS5Exit(t *testing.T
 		t.Fatal("VPS must create Bridge, not Portal")
 	}
 	outbounds := parseOutbounds(t, x.OutboundConfigs)
-	if len(outbounds) != 4 {
+	if len(outbounds) != 5 {
 		t.Fatalf("old outbounds were lost: %v", outbounds)
 	}
 	_ = findOutbound(t, outbounds, "warp")
+	transport := findOutbound(t, outbounds, reverseQUICTransportTag)
+	proxy := transport["settings"].(map[string]interface{})["servers"].([]interface{})[0].(map[string]interface{})
+	if transport["protocol"] != "socks" || proxy["address"] != "127.0.0.1" || proxy["port"] != float64(40000) {
+		t.Fatalf("WARP transport address must be explicit (127.0.0.1:40000): %#v", transport)
+	}
 	hy := findOutbound(t, outbounds, reverseQUICOutboundTag)
 	if hy["protocol"] != "hysteria" {
 		t.Fatal("reverse connection is not Hysteria2")
@@ -103,8 +108,8 @@ func TestReverseQUICBridgeAppendsReverseAndForcesSelectedSOCKS5Exit(t *testing.T
 	if stream["sockopt"].(map[string]interface{})["domainStrategy"] != "UseIPv6" {
 		t.Fatal("domestic DDNS should use IPv6")
 	}
-	if stream["sockopt"].(map[string]interface{})["dialerProxy"] != cfg.TransportProxyTag {
-		t.Fatal("Hysteria2 QUIC transport must be chained through the existing WARP SOCKS5 outbound")
+	if stream["sockopt"].(map[string]interface{})["dialerProxy"] != reverseQUICTransportTag {
+		t.Fatal("Hysteria2 QUIC must chain to the dedicated 127.0.0.1:40000 outbound")
 	}
 	egress := findOutbound(t, outbounds, reverseQUICEgressTag)
 	if egress["protocol"] != "socks" {
@@ -165,7 +170,8 @@ func TestReverseQUICRejectsInvalidConfigAndCollisions(t *testing.T) {
 		{"ipv4 host", func(c *ReverseQUICBridgeConfig) { c.PublicHost = "127.0.0.1" }},
 		{"bad pin", func(c *ReverseQUICBridgeConfig) { c.CertificatePin = "bad" }},
 		{"bad brutal", func(c *ReverseQUICBridgeConfig) { c.BrutalUp = "bbr" }},
-		{"missing transport tag", func(c *ReverseQUICBridgeConfig) { c.TransportProxyTag = " " }},
+		{"invalid WARP SOCKS port", func(c *ReverseQUICBridgeConfig) { c.TransportSOCKSAddress = "127.0.0.1:99999" }},
+		{"remote WARP SOCKS", func(c *ReverseQUICBridgeConfig) { c.TransportSOCKSAddress = "8.8.8.8:40000" }},
 		{"not socks", func(c *ReverseQUICBridgeConfig) { c.EgressMode = "warp-fallback" }},
 		{"nonlocal socks", func(c *ReverseQUICBridgeConfig) { c.SOCKS5Address = "8.8.8.8:1080" }},
 		{"bad socks port", func(c *ReverseQUICBridgeConfig) { c.SOCKS5Address = "127.0.0.1:70000" }},
@@ -192,11 +198,8 @@ func TestReverseQUICRejectsInvalidConfigAndCollisions(t *testing.T) {
 		{"duplicate outbound", func(x *xray.Config) {
 			x.OutboundConfigs = json_util.RawMessage("[{\"tag\":\"reverse-node-egress\",\"protocol\":\"freedom\"}]")
 		}},
-		{"transport tag is not socks", func(x *xray.Config) {
-			x.OutboundConfigs = json_util.RawMessage("[{\"tag\":\"warp\",\"protocol\":\"freedom\"}]")
-		}},
-		{"transport tag missing", func(x *xray.Config) {
-			x.OutboundConfigs = json_util.RawMessage("[{\"tag\":\"other\",\"protocol\":\"socks\"}]")
+		{"transport reserved tag conflict", func(x *xray.Config) {
+			x.OutboundConfigs = json_util.RawMessage("[{\"tag\":\"reverse-node-transport-socks\",\"protocol\":\"socks\"}]")
 		}},
 		{"invalid routing", func(x *xray.Config) { x.RouterConfig = json_util.RawMessage("bad-json") }},
 	} {
@@ -219,7 +222,7 @@ func TestReverseQUICSaveRollbackPreservesLegacyFRP(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := 0
-	s := &ReverseQUICBridgeService{restartXray: func() error { calls++; return nil }}
+	s := &ReverseQUICBridgeService{restartBridge: func() error { calls++; return nil }}
 	if _, err := s.Save(testReverseQUICBridgeConfig()); err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +231,7 @@ func TestReverseQUICSaveRollbackPreservesLegacyFRP(t *testing.T) {
 	}
 	changed := testReverseQUICBridgeConfig()
 	changed.BrutalUp = "88mbps"
-	s.restartXray = func() error { return errors.New("injected restart failure") }
+	s.restartBridge = func() error { return errors.New("injected restart failure") }
 	if _, err := s.Save(changed); err == nil {
 		t.Fatal("restart failure must reject save")
 	}
@@ -248,7 +251,7 @@ func TestReverseQUICSaveRollbackPreservesLegacyFRP(t *testing.T) {
 	}
 }
 
-func TestReverseQUICIntegratedWithProductionXrayConfig(t *testing.T) {
+func TestReverseQUICIsolatedFromProductionXrayConfig(t *testing.T) {
 	if err := database.InitDB(filepath.Join(t.TempDir(), "quic-integration.db")); err != nil {
 		t.Fatal(err)
 	}
@@ -264,13 +267,23 @@ func TestReverseQUICIntegratedWithProductionXrayConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(cfg.Reverse), "\"bridges\"") ||
-		!strings.Contains(string(cfg.OutboundConfigs), "reverse-node-egress") ||
-		!strings.Contains(string(cfg.RouterConfig), "reverse-node-hysteria") {
-		t.Fatal("real Xray config omitted new reverse Bridge")
+	if strings.Contains(string(cfg.Reverse), "\"bridges\"") ||
+		strings.Contains(string(cfg.OutboundConfigs), "reverse-node-egress") ||
+		strings.Contains(string(cfg.RouterConfig), "reverse-node-hysteria") {
+		t.Fatal("normal x-ui Xray config must never contain isolated reverse Bridge")
 	}
 	if !strings.Contains(string(cfg.OutboundConfigs), "\"port\":40000") ||
 		!strings.Contains(string(cfg.RouterConfig), "domain:example.test") {
 		t.Fatal("real Xray config replaced existing WARP rules")
+	}
+	isolated, err := BuildIsolatedReverseQUICConfig(testReverseQUICBridgeConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(isolated.Reverse), "\"bridges\"") ||
+		!strings.Contains(string(isolated.OutboundConfigs), "\"port\":40000") ||
+		!strings.Contains(string(isolated.RouterConfig), "reverse-node-hysteria") ||
+		len(isolated.InboundConfigs) != 0 {
+		t.Fatal("independent Bridge must exclusively own its isolated config with no unrelated inbounds")
 	}
 }

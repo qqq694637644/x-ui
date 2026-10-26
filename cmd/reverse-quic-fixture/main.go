@@ -14,9 +14,10 @@ import (
 func main() {
 	profile := flag.String("profile", "", "JSON ReverseQUICBridgeConfig")
 	output := flag.String("output", "", "output Xray config path")
+	warpSOCKSAddress := flag.String("warp-socks-address", "", "local WARP SOCKS5 address used by the fixture")
 	flag.Parse()
-	if *profile == "" || *output == "" {
-		fmt.Fprintln(os.Stderr, "--profile and --output are required")
+	if *profile == "" || *output == "" || *warpSOCKSAddress == "" {
+		fmt.Fprintln(os.Stderr, "--profile, --output and --warp-socks-address are required")
 		os.Exit(2)
 	}
 	raw, err := os.ReadFile(*profile)
@@ -30,7 +31,7 @@ func main() {
 	if !cfg.Enabled {
 		exit(fmt.Errorf("Bridge profile must be enabled for smoke test"))
 	}
-	generated, err := service.BuildReverseQUICFixtureConfig(cfg)
+	generated, err := service.BuildReverseQUICFixtureConfig(cfg, *warpSOCKSAddress)
 	if err != nil {
 		exit(err)
 	}

@@ -15,7 +15,7 @@
                 <a-card class="reverse-quic-card" title="境外 Xray Bridge → 境内 Windows Portal · Hysteria2 / QUIC Brutal">
                     <a-alert type="info" show-icon
                         message="连接方向：境外 VPS 主动访问境内 DDNS IPv6；业务请求由境内 SOCKS5 反向交给 VPS 出口"
-                        description="唯一传输协议为 Xray-core 26.3.27 原生 Hysteria2 / QUIC + force-brutal。此处配置的是 VPS 的 reverse.bridges 与 Hysteria2 出站，不是 VPS 入站。旧 FRP / RSX3 / WARP 页面全部保留。"
+                        description="唯一传输协议为 Xray-core 26.3.27 原生 Hysteria2 / QUIC + force-brutal。隧道的 UDP/QUIC 拨号也必须经由 VPS 现有 SOCKS5 WARP 出站（sockopt.dialerProxy），不允许裸连境内 IPv6。此处配置 VPS reverse.bridges，不是 VPS 入站。旧 FRP / RSX3 页面全部保留。"
                         style="margin-bottom:16px;"></a-alert>
                     <a-row :gutter="16">
                         <a-col :xs="24" :md="12">
@@ -74,6 +74,21 @@
                     </a-form>
                 </a-card>
 
+                <a-card class="reverse-quic-card" title="隧道传输网络（强制经过 WARP SOCKS5）">
+                    <a-alert type="warning" show-icon
+                        message="QUIC 传输本身也走 WARP，不是只把最终网站流量送进 WARP"
+                        description="这里填写现有 Xray 出站中的 SOCKS5 tag，默认 warp。Xray 会把 Hysteria2 的 UDP socket 通过该 SOCKS5 的 UDP ASSOCIATE 转发到境内 DDNS IPv6；不会直接裸连。所选出站必须指向 VPS 上的 WARP SOCKS5 服务，并且该服务必须支持 UDP ASSOCIATE/IPv6。"
+                        style="margin-bottom:16px"></a-alert>
+                    <a-form layout="vertical">
+                        <a-form-item label="现有 WARP SOCKS5 出站 Tag（必须是 protocol=socks）">
+                            <a-input v-model.trim="form.transportProxyTag" placeholder="warp"></a-input>
+                        </a-form-item>
+                    </a-form>
+                    <a-alert type="info" show-icon
+                        message="复用现有 WARP 出站，不再启动第二个 Xray"
+                        description="保存时校验这个 tag 已存在且 protocol=socks，并写入 Hysteria2 出站的 streamSettings.sockopt.dialerProxy。该字段是隧道传输的强制链式代理，不影响下面独立配置的真实网站出口。"></a-alert>
+                </a-card>
+
                 <a-card class="reverse-quic-card" title="QUIC Brutal（唯一传输模式）">
                     <a-alert type="info" show-icon style="margin-bottom:16px"
                         message="强制使用 Xray Hysteria2 / QUIC / TLS / force-brutal，无 BBR、XTCP、FRP 回退"
@@ -97,7 +112,7 @@
                 <a-card class="reverse-quic-card" title="真实互联网出口（境外 VPS）">
                     <a-alert type="warning" show-icon
                         message="这是隧道完成后，目标网站实际使用的出口"
-                        description="选择本机 SOCKS5 时，反向请求必须通过指定本机 SOCKS5（例如 127.0.0.1:40001 接已有 Xray/WARP 分流）。SOCKS5 故障则请求失败，不会偷偷切回 VPS freedom；传输层 QUIC 始终直接访问境内 IPv6。"
+                        description="选择本机 SOCKS5 时，反向业务必须通过指定 SOCKS5（例如 127.0.0.1:40001 接已有 Xray/WARP 分流）。出口故障时请求失败，不会偷偷切回 freedom。隧道传输另由上面的 WARP SOCKS5 tag 强制承载。"
                         style="margin-bottom:16px"></a-alert>
                     <a-form layout="vertical">
                         <a-form-item label="出口模式">
@@ -146,7 +161,7 @@
     const defaultBridgeForm = () => ({
         enabled: false, domain: 'reverse-node.internal', publicHost: '',
         publicPort: 18443, auth: '', serverName: '', certificatePin: '',
-        brutalUp: '24mbps', brutalDown: '16mbps',
+        brutalUp: '24mbps', brutalDown: '16mbps', transportProxyTag: 'warp',
         egressMode: 'direct', socks5Address: '127.0.0.1:40001',
         socks5Username: '', socks5Password: ''
     });

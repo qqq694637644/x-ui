@@ -23,10 +23,11 @@ import (
 const reverseQUICSettingKey = "reverseQuicBridgeConfig"
 
 const (
-	reverseQUICBridgeTag   = "reverse-node-bridge"
-	reverseQUICOutboundTag = "reverse-node-hysteria"
-	reverseQUICEgressTag   = "reverse-node-egress"
-	reverseQUICDomain      = "reverse-node.internal"
+	reverseQUICBridgeTag             = "reverse-node-bridge"
+	reverseQUICOutboundTag           = "reverse-node-hysteria"
+	reverseQUICEgressTag             = "reverse-node-egress"
+	reverseQUICTransportProxyDefault = "warp"
+	reverseQUICDomain                = "reverse-node.internal"
 )
 
 var reverseQUICHostLabel = regexp.MustCompile("^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$")
@@ -35,19 +36,20 @@ var reverseQUICPin = regexp.MustCompile("^[a-fA-F0-9]{64}$")
 // ReverseQUICBridgeConfig is independent of the legacy FRP reverse SOCKS form.
 // It only supports Xray-native Hysteria2/QUIC force-brutal.
 type ReverseQUICBridgeConfig struct {
-	Enabled        bool   `json:"enabled" form:"enabled"`
-	Domain         string `json:"domain" form:"domain"`
-	PublicHost     string `json:"publicHost" form:"publicHost"`
-	PublicPort     int    `json:"publicPort" form:"publicPort"`
-	Auth           string `json:"auth" form:"auth"`
-	ServerName     string `json:"serverName" form:"serverName"`
-	CertificatePin string `json:"certificatePin" form:"certificatePin"`
-	BrutalUp       string `json:"brutalUp" form:"brutalUp"`
-	BrutalDown     string `json:"brutalDown" form:"brutalDown"`
-	EgressMode     string `json:"egressMode" form:"egressMode"`
-	SOCKS5Address  string `json:"socks5Address" form:"socks5Address"`
-	SOCKS5Username string `json:"socks5Username" form:"socks5Username"`
-	SOCKS5Password string `json:"socks5Password" form:"socks5Password"`
+	Enabled           bool   `json:"enabled" form:"enabled"`
+	Domain            string `json:"domain" form:"domain"`
+	PublicHost        string `json:"publicHost" form:"publicHost"`
+	PublicPort        int    `json:"publicPort" form:"publicPort"`
+	Auth              string `json:"auth" form:"auth"`
+	ServerName        string `json:"serverName" form:"serverName"`
+	CertificatePin    string `json:"certificatePin" form:"certificatePin"`
+	BrutalUp          string `json:"brutalUp" form:"brutalUp"`
+	BrutalDown        string `json:"brutalDown" form:"brutalDown"`
+	TransportProxyTag string `json:"transportProxyTag" form:"transportProxyTag"`
+	EgressMode        string `json:"egressMode" form:"egressMode"`
+	SOCKS5Address     string `json:"socks5Address" form:"socks5Address"`
+	SOCKS5Username    string `json:"socks5Username" form:"socks5Username"`
+	SOCKS5Password    string `json:"socks5Password" form:"socks5Password"`
 }
 
 type ReverseQUICBridgeService struct {
@@ -58,13 +60,14 @@ type ReverseQUICBridgeService struct {
 
 func defaultReverseQUICBridgeConfig() ReverseQUICBridgeConfig {
 	return ReverseQUICBridgeConfig{
-		Enabled:       false,
-		Domain:        reverseQUICDomain,
-		PublicPort:    18443,
-		BrutalUp:      "24mbps", // VPS sends to Windows; Windows downloads.
-		BrutalDown:    "16mbps", // VPS receives from Windows; Windows uploads.
-		EgressMode:    "direct",
-		SOCKS5Address: "127.0.0.1:40001",
+		Enabled:           false,
+		Domain:            reverseQUICDomain,
+		PublicPort:        18443,
+		BrutalUp:          "24mbps", // VPS sends to Windows; Windows downloads.
+		BrutalDown:        "16mbps", // VPS receives from Windows; Windows uploads.
+		TransportProxyTag: reverseQUICTransportProxyDefault,
+		EgressMode:        "direct",
+		SOCKS5Address:     "127.0.0.1:40001",
 	}
 }
 
@@ -75,6 +78,7 @@ func normalizeReverseQUICBridgeConfig(c ReverseQUICBridgeConfig) ReverseQUICBrid
 	c.CertificatePin = strings.ToLower(strings.TrimSpace(c.CertificatePin))
 	c.BrutalUp = strings.ToLower(strings.TrimSpace(c.BrutalUp))
 	c.BrutalDown = strings.ToLower(strings.TrimSpace(c.BrutalDown))
+	c.TransportProxyTag = strings.TrimSpace(c.TransportProxyTag)
 	c.EgressMode = strings.TrimSpace(c.EgressMode)
 	c.SOCKS5Address = strings.TrimSpace(c.SOCKS5Address)
 	c.SOCKS5Username = strings.TrimSpace(c.SOCKS5Username)
@@ -86,6 +90,9 @@ func normalizeReverseQUICBridgeConfig(c ReverseQUICBridgeConfig) ReverseQUICBrid
 	}
 	if c.EgressMode == "" {
 		c.EgressMode = "direct"
+	}
+	if c.TransportProxyTag == "" {
+		c.TransportProxyTag = reverseQUICTransportProxyDefault
 	}
 	if c.EgressMode == "direct" {
 		c.SOCKS5Username = ""
@@ -139,6 +146,9 @@ func validateReverseQUICBridgeConfig(c ReverseQUICBridgeConfig) error {
 	}
 	if err := validateHysteriaBrutalRate(c.BrutalDown); err != nil {
 		return fmt.Errorf("VPS Brutal 下载速率: %w", err)
+	}
+	if c.TransportProxyTag == "" || strings.ContainsAny(c.TransportProxyTag, "\t\r\n ") {
+		return fmt.Errorf("隧道传输必须指定现有的 SOCKS5 WARP 出站 tag（默认 warp）")
 	}
 	switch c.EgressMode {
 	case "direct":
@@ -277,16 +287,27 @@ func applyReverseQUICBridge(config *xray.Config, c ReverseQUICBridgeConfig) erro
 	if err != nil {
 		return err
 	}
+	transportProxyFound := false
 	for _, outbound := range outbounds {
 		var item struct {
-			Tag string `json:"tag"`
+			Tag      string `json:"tag"`
+			Protocol string `json:"protocol"`
 		}
 		if err := json.Unmarshal(outbound, &item); err != nil {
 			return fmt.Errorf("已有 Xray 出站无效: %w", err)
 		}
+		if item.Tag == c.TransportProxyTag {
+			if item.Protocol != "socks" {
+				return fmt.Errorf("隧道传输出站 %q 必须是 SOCKS5（protocol=socks），以便经 WARP 代理 UDP/QUIC", c.TransportProxyTag)
+			}
+			transportProxyFound = true
+		}
 		if item.Tag == reverseQUICOutboundTag || item.Tag == reverseQUICEgressTag {
 			return fmt.Errorf("已有 Xray 出站占用新 Bridge 保留的 tag %q", item.Tag)
 		}
+	}
+	if !transportProxyFound {
+		return fmt.Errorf("找不到隧道传输 WARP SOCKS5 出站 tag %q；请在现有 Xray 出站中配置本机 WARP SOCKS5，并在本页填写对应 tag", c.TransportProxyTag)
 	}
 	for _, inbound := range config.InboundConfigs {
 		if inbound.Tag == reverseQUICBridgeTag || inbound.Tag == reverseQUICOutboundTag || inbound.Tag == reverseQUICEgressTag {
@@ -318,7 +339,10 @@ func applyReverseQUICBridge(config *xray.Config, c ReverseQUICBridgeConfig) erro
 				"version": 2,
 				"auth":    c.Auth,
 			},
-			"sockopt": map[string]interface{}{"domainStrategy": "UseIPv6"},
+			"sockopt": map[string]interface{}{
+				"domainStrategy": "UseIPv6",
+				"dialerProxy":    c.TransportProxyTag,
+			},
 			"finalmask": map[string]interface{}{
 				"quicParams": map[string]interface{}{
 					"congestion": "force-brutal",
@@ -435,11 +459,20 @@ func applyReverseQUICBridge(config *xray.Config, c ReverseQUICBridgeConfig) erro
 // BuildReverseQUICFixtureConfig reuses the production Bridge generator in
 // isolated two-process Xray smoke tests. It never reads or modifies the panel
 // database; it is not a second implementation of the network protocol.
-func BuildReverseQUICFixtureConfig(c ReverseQUICBridgeConfig) (*xray.Config, error) {
+func BuildReverseQUICFixtureConfig(c ReverseQUICBridgeConfig, warpSOCKSAddress string) (*xray.Config, error) {
+	warpHost, warpPort, err := net.SplitHostPort(warpSOCKSAddress)
+	if err != nil {
+		return nil, fmt.Errorf("fixture WARP SOCKS5 address: %w", err)
+	}
+	warpIP := net.ParseIP(warpHost)
+	warpPortNum, err := strconv.Atoi(warpPort)
+	if err != nil || warpIP == nil || !warpIP.IsLoopback() || warpPortNum < 1 || warpPortNum > 65535 {
+		return nil, fmt.Errorf("fixture WARP SOCKS5 must be a loopback address with a valid port")
+	}
 	base := &xray.Config{
 		LogConfig:       json_util.RawMessage(`{"loglevel":"debug"}`),
 		RouterConfig:    json_util.RawMessage(`{"rules":[]}`),
-		OutboundConfigs: json_util.RawMessage(`[{"tag":"legacy-direct","protocol":"freedom","settings":{}}]`),
+		OutboundConfigs: json_util.RawMessage(fmt.Sprintf(`[{"tag":%q,"protocol":"socks","settings":{"servers":[{"address":%q,"port":%d}]}},{"tag":"legacy-direct","protocol":"freedom","settings":{}}]`, c.TransportProxyTag, warpHost, warpPortNum)),
 	}
 	if err := applyReverseQUICBridge(base, c); err != nil {
 		return nil, err

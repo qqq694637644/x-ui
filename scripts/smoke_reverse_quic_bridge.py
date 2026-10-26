@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Actual Xray 26.3.27 smoke: domestic Portal, VPS Bridge and optional local SOCKS exit.
+"""Actual Xray 26.3.27 smoke: reverse Bridge with WARP-proxied QUIC transport.
 
 Builds both sides using their production generators:
 - reverse_node -> domestic reverse.portals + Hysteria2 listener + local SOCKS5
 - x-ui cmd/reverse-quic-fixture -> overseas reverse.bridges + QUIC Brutal outbound
-- third Xray -> a VPS-local SOCKS5 listener forwarding to freedom
+- one local SOCKS5 simulates the existing WARP outbound and must carry QUIC UDP
+- another VPS-local SOCKS5 is the selectable final website egress
 
 Checks TCP and UDP and deliberately stops the true SOCKS5 exit to ensure no
 silent fall-through to VPS direct.
@@ -135,6 +136,7 @@ def main():
         state = root / "domestic"
         public_port = free_port(socket.AF_INET6, socket.SOCK_DGRAM, "::1")
         socks_port = free_port(socket.AF_INET, socket.SOCK_STREAM, "127.0.0.1")
+        warp_port = free_port(socket.AF_INET, socket.SOCK_STREAM, "127.0.0.1")
         exit_port = free_port(socket.AF_INET, socket.SOCK_STREAM, "127.0.0.1")
         init = subprocess.run([
             reverse_node, "init", "--xray-path", xray, "--public-host", "::1",
@@ -158,6 +160,7 @@ def main():
             "certificatePin": stream["tlsSettings"]["pinnedPeerCertSha256"],
             "brutalUp": stream["finalmask"]["quicParams"]["brutalUp"],
             "brutalDown": stream["finalmask"]["quicParams"]["brutalDown"],
+            "transportProxyTag": "warp",
             "egressMode": "socks5",
             "socks5Address": "127.0.0.1:" + str(exit_port)
         }
@@ -165,6 +168,7 @@ def main():
         bridge_path = root / "xui-bridge.json"
         result = subprocess.run([
             fixture, "--profile", str(root / "bridge-profile.json"),
+            "--warp-socks-address", "127.0.0.1:" + str(warp_port),
             "--output", str(bridge_path)
         ], text=True, capture_output=True, timeout=30)
         if result.returncode:
@@ -172,7 +176,9 @@ def main():
         bridge = json.loads(bridge_path.read_text())
         assert "bridges" in bridge["reverse"] and "portals" not in bridge["reverse"]
         assert next(x for x in bridge["outbounds"] if x["tag"] == "reverse-node-egress")["protocol"] == "socks"
-        assert next(x for x in bridge["outbounds"] if x["tag"] == "reverse-node-hysteria")["streamSettings"]["finalmask"]["quicParams"]["congestion"] == "force-brutal"
+        hy2 = next(x for x in bridge["outbounds"] if x["tag"] == "reverse-node-hysteria")
+        assert hy2["streamSettings"]["finalmask"]["quicParams"]["congestion"] == "force-brutal"
+        assert hy2["streamSettings"]["sockopt"]["dialerProxy"] == "warp", "QUIC transport must be chained through the WARP SOCKS5 outbound"
         check_config(xray, state / "xray-portal.json")
         check_config(xray, bridge_path)
         proxy_config = {
@@ -186,6 +192,17 @@ def main():
         proxy_path = root / "vps-local-socks.json"
         proxy_path.write_text(json.dumps(proxy_config))
         check_config(xray, proxy_path)
+        warp_config = {
+            "log": {"loglevel": "warning"},
+            "inbounds": [
+                {"tag": "warp-socks", "listen": "127.0.0.1", "port": warp_port,
+                 "protocol": "socks", "settings": {"auth": "noauth", "udp": True, "ip": "127.0.0.1"}}
+            ],
+            "outbounds": [{"tag": "freedom", "protocol": "freedom", "settings": {}}],
+        }
+        warp_path = root / "warp-socks.json"
+        warp_path.write_text(json.dumps(warp_config))
+        check_config(xray, warp_path)
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -213,6 +230,7 @@ def main():
                 processes.append((name, proc, log))
                 return proc
 
+            warp_proxy = start("warp-socks", [xray, "run", "-c", str(warp_path)])
             proxy = start("vps-socks", [xray, "run", "-c", str(proxy_path)])
             time.sleep(.3)
             start("domestic-portal", [
@@ -235,12 +253,42 @@ def main():
                 raise RuntimeError("reverse Bridge did not establish Hysteria2/QUIC Brutal connection")
             got = http_request_through_socks(socks_port, server.server_address[1])
             assert b"200 OK" in got and b"REVERSE-QUIC-BRIDGE-TCP-PASS" in got, repr(got[-400:])
-            print("PASS: domestic SOCKS5 -> reverse Portal -> QUIC Brutal -> overseas Bridge -> VPS-local SOCKS5 TCP")
+            print("PASS: QUIC/UDP transport is chained through the existing WARP SOCKS5 outbound")
+            print("PASS: domestic SOCKS5 -> reverse Portal -> WARP-proxied QUIC Brutal -> Bridge -> selected SOCKS5 TCP")
             udp_request_through_socks(socks_port, udp.getsockname()[1])
-            print("PASS: SOCKS5 UDP ASSOCIATE uses VPS-local SOCKS5 through the reverse Bridge")
+            print("PASS: SOCKS5 UDP ASSOCIATE uses WARP-proxied QUIC and the selected VPS-local SOCKS5 exit")
             print("PASS: both Xray peers negotiated actual QUIC Brutal")
-            # Deliberately break the selected SOCKS5 exit; any successful web
-            # response proves a dangerous silent switch to VPS freedom.
+
+            # Kill WARP first. If the Hysteria dialer bypasses dialerProxy and
+            # uses the raw IPv6 socket, this request will still succeed.
+            warp_proxy.terminate()
+            warp_proxy.wait(timeout=5)
+            time.sleep(.35)
+            try:
+                without_warp = http_request_through_socks(socks_port, server.server_address[1])
+            except (OSError, ConnectionError, TimeoutError):
+                without_warp = b""
+            if b"REVERSE-QUIC-BRIDGE-TCP-PASS" in without_warp:
+                raise AssertionError("security regression: QUIC continued when the required WARP SOCKS5 transport proxy was offline")
+            print("PASS: WARP SOCKS5 offline -> QUIC tunnel stops (no raw IPv6 fallback)")
+
+            # Restore WARP and require the reverse tunnel to reconnect.
+            warp_proxy = start("warp-socks-restarted", [xray, "run", "-c", str(warp_path)])
+            reconnect_deadline = time.monotonic() + 15
+            while time.monotonic() < reconnect_deadline:
+                try:
+                    recovered = http_request_through_socks(socks_port, server.server_address[1])
+                    if b"REVERSE-QUIC-BRIDGE-TCP-PASS" in recovered:
+                        break
+                except (OSError, ConnectionError, TimeoutError):
+                    pass
+                time.sleep(.4)
+            else:
+                raise RuntimeError("reverse QUIC Bridge did not recover after restoring WARP SOCKS5")
+            print("PASS: WARP SOCKS5 restored -> reverse tunnel reconnects")
+
+            # Deliberately break the selected final SOCKS5 exit; any successful
+            # web response proves a dangerous silent switch to VPS freedom.
             proxy.terminate()
             proxy.wait(timeout=5)
             time.sleep(.25)
@@ -250,7 +298,7 @@ def main():
                 after = b""
             if b"REVERSE-QUIC-BRIDGE-TCP-PASS" in after:
                 raise AssertionError("security regression: SOCKS5 failure fell back to direct")
-            print("PASS: VPS-local SOCKS5 offline -> reverse business FAILS CLOSED (no direct fallback)")
+            print("PASS: selected final SOCKS5 offline -> reverse business FAILS CLOSED (no direct fallback)")
             passed = True
         finally:
             stop_udp.set()

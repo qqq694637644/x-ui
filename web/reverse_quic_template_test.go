@@ -15,7 +15,8 @@ func TestReverseQUICHasOwnPageAndLocalSOCKS5ExitControls(t *testing.T) {
 		"/xui/reverse-quic/config", "/xui/reverse-quic/save",
 		"reverse-node.internal", "form.publicHost", "form.publicPort",
 		"form.brutalUp", "form.brutalDown",
-		"force-brutal", "form.egressMode", "form.socks5Address",
+		"force-brutal", "form.transportProxyTag", "sockopt.dialerProxy",
+		"UDP ASSOCIATE", "form.egressMode", "form.socks5Address",
 		"form.socks5Username", "form.socks5Password", "importFragment",
 		"境外 VPS 主动访问境内", "旧 FRP",
 	} {

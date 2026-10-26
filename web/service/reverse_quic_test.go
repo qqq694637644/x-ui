@@ -21,7 +21,8 @@ func testReverseQUICBridgeConfig() ReverseQUICBridgeConfig {
 		Auth:           "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		CertificatePin: strings.Repeat("a", 64),
 		BrutalUp:       "24mbps", BrutalDown: "16mbps",
-		EgressMode: "socks5", SOCKS5Address: "127.0.0.1:40001",
+		TransportProxyTag: "warp",
+		EgressMode:        "socks5", SOCKS5Address: "127.0.0.1:40001",
 		SOCKS5Username: "username", SOCKS5Password: "password",
 	}
 }
@@ -102,6 +103,9 @@ func TestReverseQUICBridgeAppendsReverseAndForcesSelectedSOCKS5Exit(t *testing.T
 	if stream["sockopt"].(map[string]interface{})["domainStrategy"] != "UseIPv6" {
 		t.Fatal("domestic DDNS should use IPv6")
 	}
+	if stream["sockopt"].(map[string]interface{})["dialerProxy"] != cfg.TransportProxyTag {
+		t.Fatal("Hysteria2 QUIC transport must be chained through the existing WARP SOCKS5 outbound")
+	}
 	egress := findOutbound(t, outbounds, reverseQUICEgressTag)
 	if egress["protocol"] != "socks" {
 		t.Fatal("SOCKS5 must be true VPS egress")
@@ -161,6 +165,7 @@ func TestReverseQUICRejectsInvalidConfigAndCollisions(t *testing.T) {
 		{"ipv4 host", func(c *ReverseQUICBridgeConfig) { c.PublicHost = "127.0.0.1" }},
 		{"bad pin", func(c *ReverseQUICBridgeConfig) { c.CertificatePin = "bad" }},
 		{"bad brutal", func(c *ReverseQUICBridgeConfig) { c.BrutalUp = "bbr" }},
+		{"missing transport tag", func(c *ReverseQUICBridgeConfig) { c.TransportProxyTag = " " }},
 		{"not socks", func(c *ReverseQUICBridgeConfig) { c.EgressMode = "warp-fallback" }},
 		{"nonlocal socks", func(c *ReverseQUICBridgeConfig) { c.SOCKS5Address = "8.8.8.8:1080" }},
 		{"bad socks port", func(c *ReverseQUICBridgeConfig) { c.SOCKS5Address = "127.0.0.1:70000" }},
@@ -186,6 +191,12 @@ func TestReverseQUICRejectsInvalidConfigAndCollisions(t *testing.T) {
 		}},
 		{"duplicate outbound", func(x *xray.Config) {
 			x.OutboundConfigs = json_util.RawMessage("[{\"tag\":\"reverse-node-egress\",\"protocol\":\"freedom\"}]")
+		}},
+		{"transport tag is not socks", func(x *xray.Config) {
+			x.OutboundConfigs = json_util.RawMessage("[{\"tag\":\"warp\",\"protocol\":\"freedom\"}]")
+		}},
+		{"transport tag missing", func(x *xray.Config) {
+			x.OutboundConfigs = json_util.RawMessage("[{\"tag\":\"other\",\"protocol\":\"socks\"}]")
 		}},
 		{"invalid routing", func(x *xray.Config) { x.RouterConfig = json_util.RawMessage("bad-json") }},
 	} {

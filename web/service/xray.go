@@ -85,6 +85,13 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	bridge, err := (&ReverseQUICBridgeService{}).load()
+	if err != nil {
+		return nil, err
+	}
+	if err := applyReverseQUICBridge(xrayConfig, bridge); err != nil {
+		return nil, err
+	}
 	// Select Xray 26.3.27's native api.listen mode instead of the older
 	// tag=api dokodemo-door mode. Provision the loopback gRPC listener even
 	// when the user's stored template omitted the optional listen field.

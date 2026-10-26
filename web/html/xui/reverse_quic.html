@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+{{template "head" .}}
+<style>
+    @media (min-width: 769px) { .ant-layout-content { margin: 24px 16px; } }
+    .reverse-quic-card { margin-bottom: 18px; }
+    .reverse-quic-subtitle { color: rgba(0, 0, 0, 0.65); margin-bottom: 16px; }
+</style>
+<body>
+<a-layout id="app" v-cloak>
+    {{template "commonSider" .}}
+    <a-layout id="content-layout">
+        <a-layout-content>
+            <a-spin :spinning="loading" :delay="300">
+                <a-card class="reverse-quic-card" title="境外 Xray Bridge → 境内 Windows Portal · Hysteria2 / QUIC Brutal">
+                    <a-alert type="info" show-icon
+                        message="连接方向：境外 VPS 主动访问境内 DDNS IPv6；业务请求由境内 SOCKS5 反向交给 VPS 出口"
+                        description="唯一传输协议为 Xray-core 26.3.27 原生 Hysteria2 / QUIC + force-brutal。此处配置的是 VPS 的 reverse.bridges 与 Hysteria2 出站，不是 VPS 入站。旧 FRP / RSX3 / WARP 页面全部保留。"
+                        style="margin-bottom:16px;"></a-alert>
+                    <a-row :gutter="16">
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="启用境外 QUIC Brutal Bridge">
+                                <a-switch v-model="form.enabled"></a-switch>
+                                <span style="margin-left:12px;">[[ form.enabled ? '启用后生成 Bridge 并重启 Xray' : '仅保存，不向 Xray 添加 Bridge' ]]</span>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-space>
+                                <a-button @click="refresh">重新读取</a-button>
+                                <a-button type="primary" @click="save">保存并应用到现有 Xray</a-button>
+                            </a-space>
+                        </a-col>
+                    </a-row>
+                </a-card>
+
+                <a-card class="reverse-quic-card" title="境内 DDNS / TLS / 认证">
+                    <div class="reverse-quic-subtitle">从 Windows reverse_node 的 overseas-bridge.fragment.json 复制这些字段；不要把境内 Portal 的 IPv6 配成 VPS 地址。</div>
+                    <a-form layout="vertical">
+                        <a-row :gutter="18">
+                            <a-col :xs="24" :md="16">
+                                <a-form-item label="境内公网 DDNS 域名（AAAA）或公网 IPv6">
+                                    <a-input v-model.trim="form.publicHost" placeholder="my-windows.example.net"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="8">
+                                <a-form-item label="境内 QUIC UDP 监听端口">
+                                    <a-input-number v-model.number="form.publicPort" :min="1" :max="65535" style="width:100%"></a-input-number>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :span="24">
+                                <a-form-item label="两端 Xray reverse 的私有域名（必须一致，无需公网 DNS）">
+                                    <a-input v-model.trim="form.domain" placeholder="reverse-node.internal"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="Hysteria2 共享认证 auth（来自 reverse_node）">
+                                    <a-input type="password" v-model="form.auth" autocomplete="off" placeholder="粘贴境内生成的 auth，至少 32 字符"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="TLS ServerName（不填默认 DDNS）">
+                                    <a-input v-model.trim="form.serverName" placeholder="my-windows.example.net"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :span="24">
+                                <a-form-item label="TLS 证书 SHA-256 pin（自签名证书必填，受信任 CA 可留空）">
+                                    <a-input v-model.trim="form.certificatePin" placeholder="64 位十六进制，来自 reverse_node"></a-input>
+                                </a-form-item>
+                            </a-col>
+                        </a-row>
+                        <a-alert type="warning" show-icon
+                            message="不会跳过 TLS 验证"
+                            description="使用 Windows 自动生成的自签名证书时，必须粘贴 SHA-256 pin；pin 改变需在 VPS 重新保存。不要使用 allowInsecure 或禁用证书验证。"></a-alert>
+                    </a-form>
+                </a-card>
+
+                <a-card class="reverse-quic-card" title="QUIC Brutal（唯一传输模式）">
+                    <a-alert type="info" show-icon style="margin-bottom:16px"
+                        message="强制使用 Xray Hysteria2 / QUIC / TLS / force-brutal，无 BBR、XTCP、FRP 回退"
+                        description="速率从境外 VPS 的视角设置。若 Windows reverse_node 上传 16 Mbps、下载 24 Mbps，那么 VPS 的 Brutal 上传填 24mbps、下载填 16mbps。"></a-alert>
+                    <a-form layout="vertical">
+                        <a-row :gutter="18">
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="VPS 上传目标速率">
+                                    <a-input v-model.trim="form.brutalUp" placeholder="24mbps"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="VPS 下载目标速率">
+                                    <a-input v-model.trim="form.brutalDown" placeholder="16mbps"></a-input>
+                                </a-form-item>
+                            </a-col>
+                        </a-row>
+                    </a-form>
+                </a-card>
+
+                <a-card class="reverse-quic-card" title="真实互联网出口（境外 VPS）">
+                    <a-alert type="warning" show-icon
+                        message="这是隧道完成后，目标网站实际使用的出口"
+                        description="选择本机 SOCKS5 时，反向请求必须通过指定本机 SOCKS5（例如 127.0.0.1:40001 接已有 Xray/WARP 分流）。SOCKS5 故障则请求失败，不会偷偷切回 VPS freedom；传输层 QUIC 始终直接访问境内 IPv6。"
+                        style="margin-bottom:16px"></a-alert>
+                    <a-form layout="vertical">
+                        <a-form-item label="出口模式">
+                            <a-radio-group v-model="form.egressMode" button-style="solid">
+                                <a-radio-button value="direct">VPS 直接出口（freedom）</a-radio-button>
+                                <a-radio-button value="socks5">指定本机 SOCKS5 作为出口</a-radio-button>
+                            </a-radio-group>
+                        </a-form-item>
+                        <template v-if="form.egressMode === 'socks5'">
+                            <a-row :gutter="18">
+                                <a-col :xs="24" :md="12">
+                                    <a-form-item label="本机 SOCKS5 地址">
+                                        <a-input v-model.trim="form.socks5Address" placeholder="127.0.0.1:40001"></a-input>
+                                    </a-form-item>
+                                </a-col>
+                                <a-col :xs="24" :md="6">
+                                    <a-form-item label="SOCKS5 用户名（可选）">
+                                        <a-input v-model="form.socks5Username" autocomplete="off"></a-input>
+                                    </a-form-item>
+                                </a-col>
+                                <a-col :xs="24" :md="6">
+                                    <a-form-item label="SOCKS5 密码（可选）">
+                                        <a-input type="password" v-model="form.socks5Password" autocomplete="off"></a-input>
+                                    </a-form-item>
+                                </a-col>
+                            </a-row>
+                        </template>
+                    </a-form>
+                    <a-alert type="info" show-icon
+                        message="独立运行，不修改旧 FRP"
+                        description="只把 reverse.bridges、两个专用 Xray 出站（QUIC 隧道、真实出口）和优先路由规则加入现有 Xray 配置；旧 FRPC/FRPS、RSX3 Agent 及其配置仍保留。"
+                        style="margin-top:12px"></a-alert>
+                </a-card>
+
+                <a-card class="reverse-quic-card" title="从 reverse_node 导入配置（仅本浏览器解析）">
+                    <div class="reverse-quic-subtitle">可直接复制境内 reverse_node 生成的 overseas-bridge.fragment.json 内容，自动填入 DDNS、认证、域名、Brutal 和证书 pin。本页的真实出口选项仍由你自行选择。</div>
+                    <a-textarea v-model="fragmentText" :rows="5" placeholder="粘贴 overseas-bridge.fragment.json（包含密钥，不要公开分享）"></a-textarea>
+                    <a-button style="margin-top:10px" @click="importFragment">读取 Bridge 参数到上方表单（不保存）</a-button>
+                </a-card>
+            </a-spin>
+        </a-layout-content>
+    </a-layout>
+</a-layout>
+{{template "js" .}}
+<script>
+    const defaultBridgeForm = () => ({
+        enabled: false, domain: 'reverse-node.internal', publicHost: '',
+        publicPort: 18443, auth: '', serverName: '', certificatePin: '',
+        brutalUp: '24mbps', brutalDown: '16mbps',
+        egressMode: 'direct', socks5Address: '127.0.0.1:40001',
+        socks5Username: '', socks5Password: ''
+    });
+    const app = new Vue({
+        delimiters: ['[[', ']]'],
+        el: '#app',
+        data: {
+            siderDrawer,
+            loading: false,
+            form: defaultBridgeForm(),
+            fragmentText: ''
+        },
+        methods: {
+            async refresh() {
+                this.loading = true;
+                try {
+                    const msg = await HttpUtil.post('/xui/reverse-quic/config');
+                    if (msg.success && msg.obj) this.form = Object.assign(defaultBridgeForm(), msg.obj);
+                } finally {
+                    this.loading = false;
+                }
+            },
+            async save() {
+                this.loading = true;
+                try {
+                    const msg = await HttpUtil.postJSON('/xui/reverse-quic/save', this.form);
+                    if (msg.success && msg.obj) {
+                        this.form = Object.assign(defaultBridgeForm(), msg.obj);
+                        this.$message.success('境外 Reverse Bridge 已保存并应用');
+                    }
+                } finally {
+                    this.loading = false;
+                }
+            },
+            importFragment() {
+                try {
+                    const input = JSON.parse(this.fragmentText);
+                    const bridges = input.reverse && input.reverse.bridges;
+                    const outbound = (input.outbounds || []).find(x => x.protocol === 'hysteria');
+                    if (!bridges || !bridges[0] || !outbound ||
+                        !outbound.settings || !outbound.streamSettings) {
+                        throw new Error('没有找到 reverse.bridges 与 Hysteria2 出站');
+                    }
+                    const stream = outbound.streamSettings;
+                    const params = stream.finalmask && stream.finalmask.quicParams;
+                    const hy = stream.hysteriaSettings;
+                    const tls = stream.tlsSettings;
+                    if (!params || params.congestion !== 'force-brutal' ||
+                        !hy || hy.version !== 2 || !hy.auth || !tls) {
+                        throw new Error('必须是 Xray 26.3.27 的 Hysteria2 / force-brutal Bridge 片段');
+                    }
+                    Object.assign(this.form, {
+                        domain: bridges[0].domain || '',
+                        publicHost: outbound.settings.address || '',
+                        publicPort: Number(outbound.settings.port),
+                        auth: hy.auth,
+                        serverName: tls.serverName || outbound.settings.address || '',
+                        certificatePin: tls.pinnedPeerCertSha256 || '',
+                        brutalUp: params.brutalUp,
+                        brutalDown: params.brutalDown
+                    });
+                    this.fragmentText = '';
+                    this.$message.success('导入成功，请检查出口模式后保存');
+                } catch (err) {
+                    this.$message.error('导入失败：' + err.message);
+                }
+            }
+        },
+        mounted() {
+            this.refresh();
+        }
+    });
+</script>
+</body>
+</html>

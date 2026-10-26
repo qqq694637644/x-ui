@@ -16,7 +16,7 @@ func TestReverseQUICBridgeAPIIsWithinAuthenticatedXUIRouter(t *testing.T) {
 		c.AbortWithStatus(http.StatusUnauthorized)
 	})
 	NewReverseQUICController(group)
-	for _, endpoint := range []string{"config", "save"} {
+	for _, endpoint := range []string{"config", "save", "status"} {
 		request := httptest.NewRequest("POST", "/private/xui/reverse-quic/"+endpoint, strings.NewReader("{}"))
 		request.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()

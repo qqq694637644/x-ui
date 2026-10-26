@@ -17,7 +17,13 @@ func NewReverseQUICController(g *gin.RouterGroup) *ReverseQUICController {
 	g = g.Group("/reverse-quic")
 	g.POST("/config", a.get)
 	g.POST("/save", a.save)
+	g.POST("/status", a.status)
 	return a
+}
+
+func (a *ReverseQUICController) status(c *gin.Context) {
+	status, err := a.service.Status(c.Request.Context())
+	jsonObj(c, status, err)
 }
 
 func (a *ReverseQUICController) get(c *gin.Context) {

@@ -88,6 +88,39 @@
 
 ## 验证
 
+### x-ui 状态面板：自动检测与异常告警
+
+在 /xui/reverse-quic 顶部显示专用状态卡片，默认每 **5 秒**刷新：
+- VPS 管理的 Xray 进程状态。
+- WARP SOCKS5 传输：检查本机 WARP SOCKS5 的实际 UDP ASSOCIATE 握手，不只是探测 TCP 端口。
+- 可选真实出口 SOCKS5：实际握手是否接受；freedom 仅表示配置，不代表目标网站可达。
+- 最近的 Hysteria2 出站业务流量与样本 Mbps：从原有 Xray 26.3.27 StatsService **只读**获取出站字节计数，不重置统计；不是全链路压力测速结果。
+- Xray、WARP SOCKS5 UDP 或真实出口 SOCKS5 明确失败时弹红色告警。仅有流量长时间不变则显示“待确认”，因为无法区分空闲和 Portal 掉线。
+
+**重要边界：** Xray 26.3.27 的 StatsService 不能直接返回 reverse.bridges 当前成功注册的 Worker 数量。WARP UDP 握手成功或 Xray 进程运行不等于境内 Portal 已上线，真实连通性需要境内 Windows 的 SOCKS5 发起请求测试。
+
+### Windows 1081：连通性、测速和掉线检测
+
+按照当前的 --socks-port 1081，保持 Windows reverse_node.exe run 的窗口运行，另开 PowerShell：
+
+```powershell
+curl.exe -v --proxy socks5h://127.0.0.1:1081 --connect-timeout 10 --max-time 30 https://www.cloudflare.com/cdn-cgi/trace
+curl.exe -L --proxy socks5h://127.0.0.1:1081 --connect-timeout 10 --max-time 120 -o NUL -sS -w "HTTP %{http_code} | %{size_download} B | %{time_total}s | %{speed_download} B/s" "https://speed.cloudflare.com/__down?bytes=20000000"
+```
+
+curl 的 speed_download 是 B/s，Mbps = B/s × 8 / 1,000,000。40 Mbps 的理论带宽约为 5 MB/s；真实速度还取决于 WARP、VPS 出口、服务器等因素。
+
+可使用本仓库 [Windows PowerShell 测试脚本](../scripts/windows_reverse_test.ps1) 自动计算 Mbps、持续检测掉线，先下载该脚本至 Windows：
+
+```powershell
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/qqq694637644/x-ui/gpt/xray26327-native-hysteria2/scripts/windows_reverse_test.ps1" -OutFile ".\windows_reverse_test.ps1"
+./windows_reverse_test.ps1 -Mode Probe -SocksPort 1081
+./windows_reverse_test.ps1 -Mode Speed -SocksPort 1081 -SizeMB 20
+./windows_reverse_test.ps1 -Mode Watch -SocksPort 1081 -IntervalSeconds 15
+```
+
+Watch 每 15 秒通过整个反向路径请求 HTTPS，失败显示红色 [DOWN]、恢复显示 [RECOVERED]。x-ui 的自动轮询和 Windows 端到端检测相互补充。测速结果属于完整链路，不等于 QUIC Brutal 单独的理论吞吐。
+
 ```bash
 go test ./web/service -run TestReverseQUIC -count=1
 go run ./cmd/reverse-quic-fixture --profile profile.json --output bridge.json

@@ -453,6 +453,39 @@ func applyReverseQUICBridge(config *xray.Config, c ReverseQUICBridgeConfig) erro
 	config.Reverse = reverseJSON
 	config.RouterConfig = routerJSON
 	config.OutboundConfigs = outboundsJSON
+	return enableReverseQUICOutboundStats(config)
+}
+
+// Counters are observed read-only via the existing Xray 26.3.27 StatsService.
+// Preserve all previously configured policy/system fields and stats settings.
+func enableReverseQUICOutboundStats(config *xray.Config) error {
+	policy := make(map[string]json.RawMessage)
+	if len(bytes.TrimSpace(config.Policy)) > 0 && !bytes.Equal(bytes.TrimSpace(config.Policy), []byte("null")) {
+		if err := json.Unmarshal(config.Policy, &policy); err != nil {
+			return fmt.Errorf("已有 Xray policy 配置无效: %w", err)
+		}
+	}
+	system := make(map[string]json.RawMessage)
+	if len(bytes.TrimSpace(policy["system"])) > 0 && !bytes.Equal(bytes.TrimSpace(policy["system"]), []byte("null")) {
+		if err := json.Unmarshal(policy["system"], &system); err != nil {
+			return fmt.Errorf("已有 Xray policy.system 配置无效: %w", err)
+		}
+	}
+	system["statsOutboundUplink"] = json.RawMessage("true")
+	system["statsOutboundDownlink"] = json.RawMessage("true")
+	rawSystem, err := json.Marshal(system)
+	if err != nil {
+		return err
+	}
+	policy["system"] = rawSystem
+	rawPolicy, err := json.Marshal(policy)
+	if err != nil {
+		return err
+	}
+	if len(bytes.TrimSpace(config.Stats)) == 0 || bytes.Equal(bytes.TrimSpace(config.Stats), []byte("null")) {
+		config.Stats = json_util.RawMessage("{}")
+	}
+	config.Policy = rawPolicy
 	return nil
 }
 

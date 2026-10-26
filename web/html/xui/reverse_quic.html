@@ -33,6 +33,78 @@
                     </a-row>
                 </a-card>
 
+                <a-card class="reverse-quic-card" title="反向链路状态与实时业务流量">
+                    <a-alert v-if="!status" type="info" show-icon
+                        message="正在读取 VPS 状态；Windows Xray started 不代表 Bridge 已注册"></a-alert>
+                    <template v-else>
+                        <a-alert show-icon :type="status.state === 'down' ? 'error' : (status.state === 'active' ? 'success' : 'warning')"
+                            :message="status.message"
+                            description="检测层级：VPS Xray 进程 → WARP SOCKS5 UDP ASSOCIATE → 网站出口 SOCKS5 → Xray 出站业务计数。没有反向业务数据时无法仅从 VPS 区分空闲与掉线，请在 Windows 1081 SOCKS5 执行下方测试。"
+                            style="margin-bottom:16px"></a-alert>
+                        <a-row :gutter="16">
+                            <a-col :xs="24" :sm="12" :md="6">
+                                <a-statistic title="VPS Xray 进程" :value="status.xrayRunning ? '运行中' : '已停止'"></a-statistic>
+                            </a-col>
+                            <a-col :xs="24" :sm="12" :md="6">
+                                <a-statistic title="WARP SOCKS5 UDP" :value="status.warpUdpReady ? '握手通过' : '未通过'"></a-statistic>
+                            </a-col>
+                            <a-col :xs="24" :sm="12" :md="6">
+                                <a-statistic title="网站真实出口" :value="status.exitReady ? '握手通过/直连' : '未通过'"></a-statistic>
+                            </a-col>
+                            <a-col :xs="24" :sm="12" :md="6">
+                                <a-statistic title="最近反向业务" :value="status.lastTrafficAt ? new Date(status.lastTrafficAt * 1000).toLocaleTimeString() : '尚未确认'"></a-statistic>
+                            </a-col>
+                        </a-row>
+                        <a-row :gutter="16" style="margin-top:12px">
+                            <a-col :xs="24" :sm="12">
+                                <a-statistic title="实际隧道上传（近期业务统计，非测速）" :precision="2" suffix="Mbps" :value="status.uploadMbps || 0"></a-statistic>
+                            </a-col>
+                            <a-col :xs="24" :sm="12">
+                                <a-statistic title="实际隧道下载（近期业务统计，非测速）" :precision="2" suffix="Mbps" :value="status.downloadMbps || 0"></a-statistic>
+                            </a-col>
+                        </a-row>
+                        <p style="margin-top:12px;word-break:break-all;color:#777">
+                            WARP：[[ status.warpDetail ]]<br>
+                            出口：[[ status.exitDetail ]]<br>
+                            计数器：[[ status.trafficDetail ]]
+                        </p>
+                    </template>
+                    <a-space>
+                        <a-button :loading="checkingStatus" @click="refreshStatus">立即检测</a-button>
+                        <span style="color:#888">每 5 秒自动检测；出现进程退出或 SOCKS5 握手失败时弹出掉线通知。</span>
+                    </a-space>
+                </a-card>
+
+                <a-card class="reverse-quic-card" title="Windows SOCKS5 端到端测速 / 持续掉线监测">
+                    <a-alert type="info" show-icon
+                        message="测速必须从境内 Windows 通过本机 SOCKS5 发起，才能经过完整的反向 QUIC / WARP / 最终出口路径"
+                        description="VPS 的 TCP/UDP 握手与业务流量计数不能代替真实测速。默认按 Windows 当前启动参数使用 127.0.0.1:1081；将下方 PowerShell 命令复制到 Windows 的另一个终端执行。"
+                        style="margin-bottom:14px"></a-alert>
+                    <a-row :gutter="16">
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="Windows 本机 SOCKS5 端口">
+                                <a-input-number v-model.number="testSocksPort" :min="1" :max="65535" style="width:100%"></a-input-number>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="测速下载量（MB）">
+                                <a-input-number v-model.number="testSizeMB" :min="1" :max="200" style="width:100%"></a-input-number>
+                            </a-form-item>
+                        </a-col>
+                    </a-row>
+                    <a-textarea :value="windowsSpeedCommand" :rows="4" readonly></a-textarea>
+                    <div style="margin-top:10px">
+                        <a-button @click="copyWindowsSpeed">复制 Windows 测速命令</a-button>
+                        <a-button style="margin-left:8px" @click="copyWindowsProbe">复制 Windows 连通性检查命令</a-button>
+                        <a-button style="margin-left:8px" @click="copyWindowsWatch">复制 Windows 持续监测命令</a-button>
+                        <a style="margin-left:8px" href="https://github.com/qqq694637644/x-ui/blob/gpt/xray26327-native-hysteria2/scripts/windows_reverse_test.ps1" target="_blank" rel="noopener noreferrer">查看/下载 Windows 测试脚本</a>
+                    </div>
+                    <p style="color:#777;margin-top:12px">
+                        一次测速会输出 HTTP 状态、下载量、时间和平均速度；持续监测每 15 秒执行一次端到端 SOCKS5 请求，失败即在 Windows 终端输出红色告警。
+                        完整脚本见仓库 scripts/windows_reverse_test.ps1。
+                    </p>
+                </a-card>
+
                 <a-card class="reverse-quic-card" title="境内 DDNS / TLS / 认证">
                     <div class="reverse-quic-subtitle">从 Windows reverse_node 的 overseas-bridge.fragment.json 复制这些字段；不要把境内 Portal 的 IPv6 配成 VPS 地址。</div>
                     <a-form layout="vertical">
@@ -171,10 +243,65 @@
         data: {
             siderDrawer,
             loading: false,
+            checkingStatus: false,
+            status: null,
+            statusTimer: null,
+            testSocksPort: 1081,
+            testSizeMB: 20,
             form: defaultBridgeForm(),
             fragmentText: ''
         },
+        computed: {
+            windowsSpeedCommand() {
+                return 'curl.exe -L --proxy socks5h://127.0.0.1:' + this.testSocksPort +
+                    ' --connect-timeout 10 --max-time 120 -o NUL -sS -w "HTTP %{http_code} | %{size_download} bytes | %{time_total} sec | %{speed_download} B/s" ' +
+                    '"https://speed.cloudflare.com/__down?bytes=' + Math.floor(this.testSizeMB * 1000000) + '"';
+            }
+        },
         methods: {
+            async refreshStatus() {
+                if (this.checkingStatus) return;
+                this.checkingStatus = true;
+                try {
+                    const msg = await HttpUtil.post('/xui/reverse-quic/status');
+                    if (!msg.success || !msg.obj) return;
+                    const previous = this.status;
+                    this.status = msg.obj;
+                    if (msg.obj.enabled && msg.obj.state === 'down' && (!previous || previous.state !== 'down')) {
+                        this.$notification.error({
+                            message: 'QUIC Brutal 反向隧道异常',
+                            description: msg.obj.message + ' · ' + (msg.obj.warpDetail || msg.obj.exitDetail || ''),
+                            duration: 0
+                        });
+                    } else if (msg.obj.enabled && previous && previous.state === 'active' && msg.obj.state === 'unknown') {
+                        this.$notification.warning({
+                            message: '反向隧道超过 45 秒没有检测到业务流量',
+                            description: '可能只是空闲，也可能已掉线。请在 Windows 1081 的 SOCKS5 启动持续探测以区分。',
+                            duration: 0
+                        });
+                    }
+                } finally {
+                    this.checkingStatus = false;
+                }
+            },
+            async copyCommand(value) {
+                try {
+                    await navigator.clipboard.writeText(value);
+                    this.$message.success('已复制 Windows 命令');
+                } catch (error) {
+                    this.$message.warning('复制失败，请选中命令手动复制');
+                }
+            },
+            copyWindowsSpeed() {
+                this.copyCommand(this.windowsSpeedCommand);
+            },
+            copyWindowsProbe() {
+                this.copyCommand('curl.exe -v --proxy socks5h://127.0.0.1:' + this.testSocksPort +
+                    ' --connect-timeout 10 --max-time 30 https://www.cloudflare.com/cdn-cgi/trace');
+            },
+            copyWindowsWatch() {
+                this.copyCommand('powershell -NoProfile -ExecutionPolicy Bypass -File .\\windows_reverse_test.ps1 -Mode Watch -SocksPort ' + this.testSocksPort);
+            },
             async refresh() {
                 this.loading = true;
                 try {
@@ -191,6 +318,7 @@
                     if (msg.success && msg.obj) {
                         this.form = Object.assign(defaultBridgeForm(), msg.obj);
                         this.$message.success('境外 Reverse Bridge 已保存并应用');
+                        await this.refreshStatus();
                     }
                 } finally {
                     this.loading = false;
@@ -232,6 +360,11 @@
         },
         mounted() {
             this.refresh();
+            this.refreshStatus();
+            this.statusTimer = setInterval(() => this.refreshStatus(), 5000);
+        },
+        beforeDestroy() {
+            if (this.statusTimer) clearInterval(this.statusTimer);
         }
     });
 </script>

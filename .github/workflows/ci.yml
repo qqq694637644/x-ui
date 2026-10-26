@@ -44,6 +44,14 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Set up Node for browser model tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Test Hysteria2 form model and legacy inbound isolation
+        run: node web/assets/js/model/test_hysteria.cjs
+
   portal-smoke:
     name: Actual x-ui A + b_client_xray B smoke
     runs-on: ubuntu-latest
@@ -114,6 +122,9 @@ jobs:
           "$RUNNER_TEMP/xray-v26.3.27" version | tee "$RUNNER_TEMP/xray-version.txt"
           grep -Fq 'Xray 26.3.27' "$RUNNER_TEMP/xray-version.txt"
           grep -Fq 'd2758a0' "$RUNNER_TEMP/xray-version.txt"
+
+      - name: Native Hysteria2 / QUIC Brutal / TLS / SOCKS5 TCP and UDP loopback
+        run: python scripts/smoke_native_hysteria2.py --xray "$RUNNER_TEMP/xray-v26.3.27"
 
       - name: Validate managed endpoint health-check config with pinned Xray
         env:

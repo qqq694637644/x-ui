@@ -6,7 +6,7 @@
 
 - 系统状态监控
 - 支持多用户多协议，网页可视化操作
-- 支持的协议：vmess、vless、trojan、shadowsocks、dokodemo-door、socks、http
+- 支持的协议：vmess、vless、trojan、shadowsocks、dokodemo-door、socks、http、**hysteria2（原生 QUIC Brutal）**
 - 支持配置更多传输配置
 - 流量统计，限制流量，限制到期时间
 - 可自定义 xray 配置模板
@@ -15,6 +15,7 @@
 - 更多高级配置项，详见面板
 - 隧道支持公网直连和 VMess/mKCP Portal 反向模式；无公网 IP 的 B 端可主动连接 A
 - RSX3-only 反向 SOCKS5 / WARP：境外经定制 frpc XTCP Visitor 连接境内 Python NAT Node，每个 TCP 会话走独立 QUIC Stream，UDP 经 QUIC DATAGRAM；frpc 控制与打洞强制 WARP，最终网站可经 Xray SOCKS5 按域名分流。支持面板、Diagnostics、自检与原始报告，详见 [部署说明](docs/REVERSE_SOCKS_EXIT.md)
+- **Xray 26.3.27 原生 Hysteria2 / QUIC Brutal**：现有「入站」页直接管理 Xray 内核的 Hysteria2 TLS+h3/UDP、强认证和 force-brutal（含 TCP、UDP DATAGRAM）；Windows 端只需匹配版本的 Xray SOCKS5→Hysteria2 客户端，无须 FRPS、打洞、Python NAT Node 或另写 QUIC 协议。**旧 FRP/XTCP/WARP 仍完整保留**。详见 [原生 Hysteria2 配置与 Windows 环回测试](docs/HYSTERIA2_XRAY26327.md)。
 
 ## 隧道模式
 

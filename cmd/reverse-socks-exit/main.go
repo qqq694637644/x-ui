@@ -18,6 +18,8 @@ func main() {
 	directDDNS := flag.String("direct-ddns", "", "optional IPv6 DDNS hostname for direct QUIC mode; legacy FRP if empty")
 	directPort := flag.Int("direct-port", 8080, "direct QUIC UDP port on Windows")
 	directPin := flag.String("direct-cert-sha256", "", "SHA256 DER certificate pin of the Windows QUIC TLS certificate")
+	directTargetMbps := flag.Int("direct-brutal-target-mbps", 16, "direct QUIC Brutal target Mbps")
+	directMaxMbps := flag.Int("direct-brutal-max-mbps", 24, "direct QUIC Brutal maximum wire Mbps")
 	nativeTarget := flag.Bool("native-egress", false, "explicit native VPS TCP/UDP egress (only in direct QUIC mode)")
 	udpBind := flag.String("udp-bind", "127.0.0.1:6002", "UDP socket owned by Go (frpc datagram.peerAddr)")
 	udpPeer := flag.String("udp-frpc", "127.0.0.1:6001", "local frpc datagram.listenAddr")
@@ -45,7 +47,8 @@ func main() {
 		cfg.DirectQUIC = true
 		cfg.DirectTarget = *nativeTarget
 		err := reverseexit.RunDirect(ctx, reverseexit.DirectConfig{
-			Hostname: *directDDNS, Port: *directPort, CertSHA256: *directPin, Agent: cfg,
+			Hostname: *directDDNS, Port: *directPort, CertSHA256: *directPin,
+			TargetMbps: *directTargetMbps, MaxMbps: *directMaxMbps, Agent: cfg,
 		}, func(state, message string) {
 			log.Printf("RSX3 direct QUIC state=%s message=%s", state, message)
 		})

@@ -20,6 +20,8 @@ type DirectSocksSettings struct {
 	EgressMode          string `json:"egressMode" form:"egressMode"`
 	Hostname            string `json:"hostname" form:"hostname"`
 	Port                int    `json:"port" form:"port"`
+	TargetMbps          int    `json:"targetMbps" form:"targetMbps"`
+	MaxMbps             int    `json:"maxMbps" form:"maxMbps"`
 	CertSHA256          string `json:"certSHA256" form:"certSHA256"`
 	Token               string `json:"token" form:"token"`
 	TargetSOCKSAddr     string `json:"targetSocksAddr" form:"targetSocksAddr"`
@@ -54,7 +56,7 @@ func NewDirectSocksService() *DirectSocksService {
 }
 
 func (s *DirectSocksService) load() (DirectSocksSettings, error) {
-	cfg := DirectSocksSettings{Port: 8080, EgressMode: "native"}
+	cfg := DirectSocksSettings{Port: 8080, EgressMode: "native", TargetMbps: 16, MaxMbps: 24}
 	raw, err := s.settings.getString(directSocksKey)
 	if err != nil {
 		return cfg, err
@@ -74,6 +76,7 @@ func (c DirectSocksSettings) transport() reverseexit.DirectConfig {
 	}
 	return reverseexit.DirectConfig{
 		Hostname: strings.TrimSpace(c.Hostname), Port: c.Port,
+		TargetMbps: c.TargetMbps, MaxMbps: c.MaxMbps,
 		CertSHA256: strings.ToLower(strings.TrimSpace(c.CertSHA256)),
 		Agent: reverseexit.Config{
 			Protocol: "rsx3", DirectQUIC: true,

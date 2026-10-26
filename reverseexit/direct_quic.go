@@ -15,7 +15,8 @@ import (
 	"strings"
 	"time"
 
-	quic "github.com/quic-go/quic-go"
+	quic "github.com/apernet/quic-go"
+	"github.com/fatedier/frp/pkg/transport/xtcpbrutal"
 )
 
 const directALPN = "rsx3-direct-v1"
@@ -24,10 +25,15 @@ type DirectConfig struct {
 	Hostname   string
 	Port       int
 	CertSHA256 string
+	TargetMbps int
+	MaxMbps    int
 	Agent      Config
 }
 
 func (d DirectConfig) Validate() error {
+	if _, err := xtcpbrutal.NewSender(d.TargetMbps, d.MaxMbps); err != nil {
+		return err
+	}
 	if net.ParseIP(d.Hostname) != nil || len(d.Hostname) < 3 ||
 		len(d.Hostname) > 253 || !strings.Contains(d.Hostname, ".") ||
 		strings.ContainsAny(d.Hostname, " /:\\\r\n\t") {
@@ -46,11 +52,11 @@ func (d DirectConfig) Validate() error {
 	return d.Agent.Validate()
 }
 
-type directQUICTransport struct{ conn quic.Connection }
+type directQUICTransport struct{ conn *quic.Conn }
 
 type quicNetConn struct {
-	stream quic.Stream
-	conn   quic.Connection
+	stream *quic.Stream
+	conn   *quic.Conn
 }
 
 func (c *quicNetConn) Read(p []byte) (int, error)  { return c.stream.Read(p) }
@@ -137,7 +143,7 @@ func resolveAAAA(ctx context.Context, hostname string) ([]net.IP, error) {
 	}
 	return valid, nil
 }
-func directDial(ctx context.Context, d DirectConfig) (quic.Connection, net.IP, error) {
+func directDial(ctx context.Context, d DirectConfig) (*quic.Conn, net.IP, error) {
 	lookupCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	ips, err := resolveAAAA(lookupCtx, d.Hostname)
 	cancel()
@@ -151,6 +157,14 @@ func directDial(ctx context.Context, d DirectConfig) (quic.Connection, net.IP, e
 			directTLS(d), &quic.Config{EnableDatagrams: true, KeepAlivePeriod: 20 * time.Second})
 		stop()
 		if e == nil {
+			// Reuse the exact bounded Brutal sender from the existing FRP/XTCP
+			// stack. Its pacing rate, ACK ratio and cap are not approximated here.
+			sender, err := xtcpbrutal.NewSender(d.TargetMbps, d.MaxMbps)
+			if err != nil {
+				_ = conn.CloseWithError(0, "invalid Brutal configuration")
+				return nil, nil, err
+			}
+			conn.SetCongestionControl(sender)
 			return conn, ip, nil
 		}
 		last = e

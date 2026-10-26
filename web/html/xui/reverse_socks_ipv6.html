@@ -7,10 +7,10 @@
     <a-layout id="content-layout">
         <a-layout-content style="margin: 24px 16px;">
             <a-spin :spinning="loading">
-                <a-card title="IPv6 DDNS · RSX3 直连 QUIC（独立功能）">
+                <a-card title="IPv6 DDNS · RSX3 QUIC Brutal（独立功能）">
                     <a-alert type="info" show-icon
                         message="不依赖 FRPC / FRPS / STUN / XTCP / 传输 WARP"
-                        description="境外 VPS 使用 DDNS AAAA 记录直连境内 Windows 的 IPv6 UDP Listener；每条 TCP 会话独立 QUIC Stream，UDP 使用 QUIC DATAGRAM。此页面与原来的 FRP/XTCP/WARP 页面、数据库配置和进程完全独立。"
+                        description="境外 VPS 使用 DDNS AAAA 记录直连境内 Windows 的 IPv6 UDP Listener；QUIC 强制使用 bounded Brutal，TCP/UDP 业务继续复用 RSX3。旧 FRP/XTCP/WARP 页面及配置保持独立。"
                         style="margin-bottom: 18px;"></a-alert>
                     <a-alert type="warning" show-icon message="Windows 对端必须安装匹配的 nat_node Direct-QUIC 版本"
                         description="先启动 Windows 的 --direct-quic 监听，配置证书 DNS SAN 与 DDNS 一致，然后再启用此处。出口可明确选择 VPS 原生网或本机 Xray SOCKS5，绝不自动切换。Diagnostics 暂不支持此新模式。"
@@ -35,6 +35,17 @@
                                 <a-form-item label="Windows QUIC UDP 端口">
                                     <a-input-number v-model.number="form.port" :min="1" :max="65535" style="width:100%;"></a-input-number>
                                 </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="VPS → Windows QUIC Brutal 目标 Mbps">
+                                    <a-input-number v-model.number="form.targetMbps" :min="1" style="width:100%;"></a-input-number>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="VPS → Windows QUIC Brutal 最大 Mbps">
+                                    <a-input-number v-model.number="form.maxMbps" :min="1" style="width:100%;"></a-input-number>
+                                </a-form-item>
+                                <div>Windows → VPS 的发送速率由 Windows 的 --brutal-target-mbps / --brutal-max-mbps 单独设置。</div>
                             </a-col>
                             <a-col :xs="24" :md="24">
                                 <a-form-item label="Windows QUIC TLS 证书 SHA-256 指纹（DER 证书，64 位十六进制）">
@@ -104,14 +115,14 @@ const app = new Vue({
         hasTargetPassword: false,
         refreshTimer: null,
         status: {state: 'stopped', message: '', connectedIP: ''},
-        form: {enabled: false, hostname: '', port: 8080, certSHA256: '',
+        form: {enabled: false, hostname: '', port: 8080, targetMbps: 16, maxMbps: 24, certSHA256: '',
                egressMode: 'native', token: '', targetSocksAddr: '127.0.0.1:40001',
                targetSocksUsername: '', targetSocksPassword: ''}
     },
     methods: {
         apply(v) {
             if (!v) return;
-            for (const k of ['enabled','hostname','port','certSHA256','egressMode','targetSocksAddr','targetSocksUsername']) {
+            for (const k of ['enabled','hostname','port','targetMbps','maxMbps','certSHA256','egressMode','targetSocksAddr','targetSocksUsername']) {
                 this.form[k] = v[k];
             }
             this.form.token = '';

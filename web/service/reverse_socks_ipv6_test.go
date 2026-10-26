@@ -23,7 +23,7 @@ func TestDirectSocksSettingsIsolationAndSecretMasking(t *testing.T) {
 	}
 	defer direct.Stop()
 	input := DirectSocksSettings{Enabled: false, EgressMode: "native",
-		Hostname: "rsx3.example.test", Port: 8080,
+		Hostname: "rsx3.example.test", Port: 8080, TargetMbps: 16, MaxMbps: 24,
 		CertSHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		Token:      "my-secret-token-with-length"}
 	view, err := direct.Save(input)
@@ -51,6 +51,12 @@ func TestDirectSocksSettingsIsolationAndSecretMasking(t *testing.T) {
 	}
 	if saved.Token != "my-secret-token-with-length" || saved.Hostname != input.Hostname {
 		t.Fatalf("blank token did not preserve saved credential")
+	}
+	invalidRate := input
+	invalidRate.Enabled = true
+	invalidRate.TargetMbps, invalidRate.MaxMbps = 32, 16
+	if _, err := direct.Save(invalidRate); err == nil {
+		t.Fatal("accepted invalid bounded Brutal rates")
 	}
 	bad := input
 	bad.EgressMode = "unexpected"

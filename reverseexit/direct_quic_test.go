@@ -16,6 +16,8 @@ func validDirectConfig() DirectConfig {
 	return DirectConfig{
 		Hostname:   "rsx3.example.test",
 		Port:       8080,
+		TargetMbps: 16,
+		MaxMbps:    24,
 		CertSHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		Agent: Config{Protocol: "rsx3", Token: "shared-token-16characters",
 			TargetSOCKSAddr: "127.0.0.1:40001", RetryInterval: time.Second},
@@ -26,6 +28,15 @@ func TestDirectQUICIsIndependentOfWARPAndFRPC(t *testing.T) {
 	cfg := validDirectConfig()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("direct config rejected: %v", err)
+	}
+	badBrutal := cfg
+	badBrutal.TargetMbps = 0
+	if err := badBrutal.Validate(); err == nil {
+		t.Fatal("accepted direct QUIC without bounded Brutal")
+	}
+	badBrutal.TargetMbps, badBrutal.MaxMbps = 32, 16
+	if err := badBrutal.Validate(); err == nil {
+		t.Fatal("accepted Brutal maxMbps below targetMbps")
 	}
 	cfg.Hostname = "240e:36f::1"
 	if err := cfg.Validate(); err == nil {

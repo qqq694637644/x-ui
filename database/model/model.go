@@ -17,6 +17,7 @@ const (
 	Dokodemo    Protocol = "Dokodemo-door"
 	Http        Protocol = "http"
 	Trojan      Protocol = "trojan"
+	Hysteria    Protocol = "hysteria"
 	Shadowsocks Protocol = "shadowsocks"
 )
 

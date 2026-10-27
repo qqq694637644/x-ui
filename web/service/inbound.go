@@ -62,6 +62,9 @@ func managedInboundCriticalChanges(oldInbound *model.Inbound, nextInbound *model
 
 func validateInboundTransport(inbound *model.Inbound) error {
 	if strings.TrimSpace(inbound.StreamSettings) == "" {
+		if inbound.Protocol == model.Hysteria {
+			return fmt.Errorf("Hysteria2 入站必须配置 TLS 和 QUIC Brutal")
+		}
 		return nil
 	}
 	stream := struct {
@@ -72,6 +75,12 @@ func validateInboundTransport(inbound *model.Inbound) error {
 	}
 	if (strings.EqualFold(strings.TrimSpace(stream.Network), "xhttp") || strings.EqualFold(strings.TrimSpace(stream.Network), "splithttp")) && inbound.Protocol != model.VLESS {
 		return fmt.Errorf("XHTTP 传输仅支持 VLESS 入站")
+	}
+	if inbound.Protocol == model.Hysteria {
+		return validateHysteria2Inbound(inbound)
+	}
+	if strings.EqualFold(stream.Network, "hysteria") {
+		return fmt.Errorf("Hysteria2 传输必须使用 hysteria 入站协议")
 	}
 	return nil
 }

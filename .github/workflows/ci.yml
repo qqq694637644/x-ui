@@ -44,6 +44,14 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Set up Node for browser model tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Test Hysteria2 form model and legacy inbound isolation
+        run: node web/assets/js/model/test_hysteria.cjs
+
   portal-smoke:
     name: Actual x-ui A + b_client_xray B smoke
     runs-on: ubuntu-latest
@@ -65,6 +73,13 @@ jobs:
           repository: qqq694637644/Xray-core
           ref: d2758a023cd7f4174a5a5fa4ff66e487d4342ba0
           path: .build/xray-core-v26.3.27
+
+      - name: Checkout pinned reverse_node Windows Portal generator
+        uses: actions/checkout@v4
+        with:
+          repository: qqq694637644/reverse_node
+          ref: 537ea341248b9486e3c18c62910daef61d96ead4
+          path: .build/reverse_node
 
       - name: Set up Go
         id: setup-go
@@ -114,6 +129,21 @@ jobs:
           "$RUNNER_TEMP/xray-v26.3.27" version | tee "$RUNNER_TEMP/xray-version.txt"
           grep -Fq 'Xray 26.3.27' "$RUNNER_TEMP/xray-version.txt"
           grep -Fq 'd2758a0' "$RUNNER_TEMP/xray-version.txt"
+
+      - name: Native Hysteria2 / QUIC Brutal / TLS / SOCKS5 TCP and UDP loopback
+        run: python scripts/smoke_native_hysteria2.py --xray "$RUNNER_TEMP/xray-v26.3.27"
+
+      - name: Build real domestic Portal and x-ui overseas Bridge generators
+        run: |
+          go build -o "$RUNNER_TEMP/xui-reverse-quic-fixture" ./cmd/reverse-quic-fixture
+          (cd .build/reverse_node && go build -o "$RUNNER_TEMP/reverse-node-portal" .)
+
+      - name: Reverse Bridge QUIC Brutal and optional VPS-local SOCKS5 TCP UDP fail-closed smoke
+        run: |
+          python scripts/smoke_reverse_quic_bridge.py \
+            --xray "$RUNNER_TEMP/xray-v26.3.27" \
+            --reverse-node "$RUNNER_TEMP/reverse-node-portal" \
+            --fixture "$RUNNER_TEMP/xui-reverse-quic-fixture"
 
       - name: Validate managed endpoint health-check config with pinned Xray
         env:

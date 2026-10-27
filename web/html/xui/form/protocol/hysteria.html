@@ -1,0 +1,26 @@
+{{define "form/hysteria"}}
+<a-alert type="info" show-icon style="margin:12px 0"
+    message="Xray-core 26.3.27 原生 Hysteria2 / QUIC Brutal"
+    description="直接使用 Xray 内核的 TCP/UDP、TLS 与 Brutal；监听所选 IP 上的 UDP 端口，无 FRPS、STUN 或自定义 RSX3。请在下方提供有效的 TLS 证书路径。" />
+<a-form layout="inline">
+    <a-form-item label="Hysteria2 认证 auth">
+        <a-input type="password" v-model.trim="inbound.settings.clients[0].auth"
+                 style="width:340px;" placeholder="至少 16 字节强随机密码" />
+    </a-form-item>
+    <a-form-item>
+        <a-button @click="regenerateHysteriaAuth">重新生成随机 auth</a-button>
+    </a-form-item>
+    <a-form-item label="VPS Brutal 发送速率 (Mbps)">
+        <a-input-number v-model.number="inbound.stream.hysteria.brutalUp"
+                        :min="1" :max="99999" :step="1" style="width:125px;" />
+    </a-form-item>
+    <a-form-item label="VPS 向客户端建议的接收速率 (Mbps)">
+        <a-input-number v-model.number="inbound.stream.hysteria.brutalDown"
+                        :min="1" :max="99999" :step="1" style="width:125px;" />
+    </a-form-item>
+</a-form>
+<div style="margin-bottom:12px;color:#888">
+    传输固定为 hysteria、TLS + h3、force-brutal；两项速率会写入
+    streamSettings.finalmask.quicParams。Windows 客户端的发送速率单独配置，不会自动切换到 BBR。
+</div>
+{{end}}

@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+{{template "head" .}}
+<style>
+    @media (min-width: 769px) { .ant-layout-content { margin: 24px 16px; } }
+    .reverse-quic-card { margin-bottom: 18px; }
+    .reverse-quic-subtitle { color: rgba(0, 0, 0, 0.65); margin-bottom: 16px; }
+</style>
+<body>
+<a-layout id="app" v-cloak>
+    {{template "commonSider" .}}
+    <a-layout id="content-layout">
+        <a-layout-content>
+            <a-spin :spinning="loading" :delay="300">
+                <a-card class="reverse-quic-card" title="境外 Xray Bridge → 境内 Windows Portal · Hysteria2 / QUIC Brutal">
+                    <a-alert type="info" show-icon
+                        message="连接方向：境外 VPS 主动访问境内 DDNS IPv6；业务请求由境内 SOCKS5 反向交给 VPS 出口"
+                        description="独立运行一个 Xray 26.3.27 Bridge 进程，不向 x-ui 原有 Xray 注入路由；QUIC UDP 强制经本机 127.0.0.1:40000 的 WARP SOCKS5 访问境内 IPv6，传输仅支持 force-brutal。旧 FRP / RSX3 页面完整保留。"
+                        style="margin-bottom:16px;"></a-alert>
+                    <a-row :gutter="16">
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="启用境外 QUIC Brutal Bridge">
+                                <a-switch v-model="form.enabled"></a-switch>
+                                <span style="margin-left:12px;">[[ form.enabled ? '启用独立 Bridge Xray 进程' : '停用独立 Bridge，不影响主 Xray' ]]</span>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-space>
+                                <a-button @click="refresh">重新读取</a-button>
+                                <a-button type="primary" @click="save">保存并启动/重启独立 Xray</a-button>
+                            </a-space>
+                        </a-col>
+                    </a-row>
+                </a-card>
+
+                <a-card class="reverse-quic-card" title="反向链路状态与实时业务流量">
+                    <a-alert v-if="!status" type="info" show-icon
+                        message="正在读取 VPS 状态；Windows Xray started 不代表 Bridge 已注册"></a-alert>
+                    <template v-else>
+                        <a-alert show-icon :type="status.state === 'down' ? 'error' : (status.state === 'active' ? 'success' : 'warning')"
+                            :message="status.message"
+                            description="检测层级：独立 Bridge Xray 进程 → 127.0.0.1:40000 WARP SOCKS5 UDP ASSOCIATE → 所选出口 SOCKS5 → 独立 Xray 业务计数。空闲与掉线仍须 Windows SOCKS5 1081 端到端探测区分。"
+                            style="margin-bottom:16px"></a-alert>
+                        <a-row :gutter="16">
+                            <a-col :xs="24" :sm="12" :md="6">
+                                <a-statistic title="独立 Bridge Xray 进程" :value="status.xrayRunning ? '运行中' : '已停止'"></a-statistic>
+                            </a-col>
+                            <a-col :xs="24" :sm="12" :md="6">
+                                <a-statistic title="WARP SOCKS5 UDP" :value="status.warpUdpReady ? '握手通过' : '未通过'"></a-statistic>
+                            </a-col>
+                            <a-col :xs="24" :sm="12" :md="6">
+                                <a-statistic title="网站真实出口" :value="status.exitReady ? '握手通过/直连' : '未通过'"></a-statistic>
+                            </a-col>
+                            <a-col :xs="24" :sm="12" :md="6">
+                                <a-statistic title="最近反向业务" :value="status.lastTrafficAt ? new Date(status.lastTrafficAt * 1000).toLocaleTimeString() : '尚未确认'"></a-statistic>
+                            </a-col>
+                        </a-row>
+                        <a-row :gutter="16" style="margin-top:12px">
+                            <a-col :xs="24" :sm="12">
+                                <a-statistic title="实际隧道上传（近期业务统计，非测速）" :precision="2" suffix="Mbps" :value="status.uploadMbps || 0"></a-statistic>
+                            </a-col>
+                            <a-col :xs="24" :sm="12">
+                                <a-statistic title="实际隧道下载（近期业务统计，非测速）" :precision="2" suffix="Mbps" :value="status.downloadMbps || 0"></a-statistic>
+                            </a-col>
+                        </a-row>
+                        <p style="margin-top:12px;word-break:break-all;color:#777">
+                            WARP：[[ status.warpDetail ]]<br>
+                            出口：[[ status.exitDetail ]]<br>
+                            计数器：[[ status.trafficDetail ]]
+                        </p>
+                    </template>
+                    <a-space>
+                        <a-button :loading="checkingStatus" @click="refreshStatus">立即检测</a-button>
+                        <span style="color:#888">每 5 秒自动检测；出现进程退出或 SOCKS5 握手失败时弹出掉线通知。</span>
+                    </a-space>
+                </a-card>
+
+                <a-card class="reverse-quic-card" title="独立 Xray 诊断日志（用于定位 Bridge 注册与 WARP UDP 故障）">
+                    <a-alert type="info" show-icon
+                        message="独立 Bridge Xray 输出会筛选重要事件写入 x-ui 服务日志，SSH 上也可以通过 x-ui 菜单 12 查看。"
+                        description="此处显示独立进程最近 120 条日志。密码、Hysteria2 auth 和证书指纹均会在向页面返回前脱敏。"
+                        style="margin-bottom:12px"></a-alert>
+                    <a-button @click="refreshDiagnostics" :loading="loadingDiagnostics">读取诊断日志</a-button>
+                    <a-textarea style="margin-top:12px" :value="diagnosticLines.join('\n')" :rows="9" readonly></a-textarea>
+                </a-card>
+
+                <a-card class="reverse-quic-card" title="Windows SOCKS5 端到端测速 / 持续掉线监测">
+                    <a-alert type="info" show-icon
+                        message="测速必须从境内 Windows 通过本机 SOCKS5 发起，才能经过完整的反向 QUIC / WARP / 最终出口路径"
+                        description="VPS 的 TCP/UDP 握手与业务流量计数不能代替真实测速。默认按 Windows 当前启动参数使用 127.0.0.1:1081；将下方 PowerShell 命令复制到 Windows 的另一个终端执行。"
+                        style="margin-bottom:14px"></a-alert>
+                    <a-row :gutter="16">
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="Windows 本机 SOCKS5 端口">
+                                <a-input-number v-model.number="testSocksPort" :min="1" :max="65535" style="width:100%"></a-input-number>
+                            </a-form-item>
+                        </a-col>
+                        <a-col :xs="24" :md="12">
+                            <a-form-item label="测速下载量（MB）">
+                                <a-input-number v-model.number="testSizeMB" :min="1" :max="200" style="width:100%"></a-input-number>
+                            </a-form-item>
+                        </a-col>
+                    </a-row>
+                    <a-textarea :value="windowsSpeedCommand" :rows="4" readonly></a-textarea>
+                    <div style="margin-top:10px">
+                        <a-button @click="copyWindowsSpeed">复制 Windows 测速命令</a-button>
+                        <a-button style="margin-left:8px" @click="copyWindowsProbe">复制 Windows 连通性检查命令</a-button>
+                        <a-button style="margin-left:8px" @click="copyWindowsWatch">复制 Windows 持续监测命令</a-button>
+                        <a style="margin-left:8px" href="https://github.com/qqq694637644/x-ui/blob/gpt/xray26327-native-hysteria2/scripts/windows_reverse_test.ps1" target="_blank" rel="noopener noreferrer">查看/下载 Windows 测试脚本</a>
+                    </div>
+                    <p style="color:#777;margin-top:12px">
+                        一次测速会输出 HTTP 状态、下载量、时间和平均速度；持续监测每 15 秒执行一次端到端 SOCKS5 请求，失败即在 Windows 终端输出红色告警。
+                        完整脚本见仓库 scripts/windows_reverse_test.ps1。
+                    </p>
+                </a-card>
+
+                <a-card class="reverse-quic-card" title="境内 DDNS / TLS / 认证">
+                    <div class="reverse-quic-subtitle">从 Windows reverse_node 的 overseas-bridge.fragment.json 复制这些字段；不要把境内 Portal 的 IPv6 配成 VPS 地址。</div>
+                    <a-form layout="vertical">
+                        <a-row :gutter="18">
+                            <a-col :xs="24" :md="16">
+                                <a-form-item label="境内公网 DDNS 域名（AAAA）或公网 IPv6">
+                                    <a-input v-model.trim="form.publicHost" placeholder="my-windows.example.net"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="8">
+                                <a-form-item label="境内 QUIC UDP 监听端口">
+                                    <a-input-number v-model.number="form.publicPort" :min="1" :max="65535" style="width:100%"></a-input-number>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :span="24">
+                                <a-form-item label="两端 Xray reverse 的私有域名（必须一致，无需公网 DNS）">
+                                    <a-input v-model.trim="form.domain" placeholder="reverse-node.internal"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="Hysteria2 共享认证 auth（来自 reverse_node）">
+                                    <a-input type="password" v-model="form.auth" autocomplete="off" placeholder="粘贴境内生成的 auth，至少 32 字符"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="TLS ServerName（不填默认 DDNS）">
+                                    <a-input v-model.trim="form.serverName" placeholder="my-windows.example.net"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :span="24">
+                                <a-form-item label="TLS 证书 SHA-256 pin（自签名证书必填，受信任 CA 可留空）">
+                                    <a-input v-model.trim="form.certificatePin" placeholder="64 位十六进制，来自 reverse_node"></a-input>
+                                </a-form-item>
+                            </a-col>
+                        </a-row>
+                        <a-alert type="warning" show-icon
+                            message="不会跳过 TLS 验证"
+                            description="使用 Windows 自动生成的自签名证书时，必须粘贴 SHA-256 pin；pin 改变需在 VPS 重新保存。不要使用 allowInsecure 或禁用证书验证。"></a-alert>
+                    </a-form>
+                </a-card>
+
+                <a-card class="reverse-quic-card" title="隧道传输网络（强制经过 WARP SOCKS5）">
+                    <a-alert type="warning" show-icon
+                        message="QUIC 传输本身也走 WARP，不是只把最终网站流量送进 WARP"
+                        description="明确填 WARP SOCKS5 代理地址，默认 127.0.0.1:40000（wireproxy）。独立 Xray 内部自动创建专用 SOCKS 出站，QUIC/UDP 使用该出站连接境内 IPv6；不再要求填写 warp 标签，也不依赖主 Xray 的 SOCKS 出站或路由规则。"
+                        style="margin-bottom:16px"></a-alert>
+                    <a-form layout="vertical">
+                        <a-form-item label="WARP SOCKS5 实际转发地址（端口明确填写）">
+                            <a-input v-model.trim="form.transportSocksAddress" placeholder="127.0.0.1:40000"></a-input>
+                        </a-form-item>
+                    </a-form>
+                    <a-alert type="info" show-icon
+                        message="独立 Xray 进程，只复用现有 Xray 可执行文件，不复用主 Xray 路由"
+                        description="独立进程内部将 127.0.0.1:40000 映射到固定的私有 SOCKS 出站供 sockopt.dialerProxy 使用；用户不需要配置任何出站 Tag。"></a-alert>
+                </a-card>
+
+                <a-card class="reverse-quic-card" title="QUIC Brutal（唯一传输模式）">
+                    <a-alert type="info" show-icon style="margin-bottom:16px"
+                        message="强制使用 Xray Hysteria2 / QUIC / TLS / force-brutal，无 BBR、XTCP、FRP 回退"
+                        description="速率从境外 VPS 的视角设置。若 Windows reverse_node 上传 16 Mbps、下载 24 Mbps，那么 VPS 的 Brutal 上传填 24mbps、下载填 16mbps。"></a-alert>
+                    <a-form layout="vertical">
+                        <a-row :gutter="18">
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="VPS 上传目标速率">
+                                    <a-input v-model.trim="form.brutalUp" placeholder="24mbps"></a-input>
+                                </a-form-item>
+                            </a-col>
+                            <a-col :xs="24" :md="12">
+                                <a-form-item label="VPS 下载目标速率">
+                                    <a-input v-model.trim="form.brutalDown" placeholder="16mbps"></a-input>
+                                </a-form-item>
+                            </a-col>
+                        </a-row>
+                    </a-form>
+                </a-card>
+
+                <a-card class="reverse-quic-card" title="真实互联网出口（境外 VPS）">
+                    <a-alert type="warning" show-icon
+                        message="这是隧道完成后，目标网站实际使用的出口"
+                        description="出口与 WARP 隧道代理分开配置。若填 127.0.0.1:40001，会进入主 Xray 的 SOCKS5 入站并再次经过原有分流（可能需要账号密码）；若要直接使用 WARP 出网，可选本机 SOCKS5 127.0.0.1:40000。出口故障时不自动切回 freedom。"
+                        style="margin-bottom:16px"></a-alert>
+                    <a-form layout="vertical">
+                        <a-form-item label="出口模式">
+                            <a-radio-group v-model="form.egressMode" button-style="solid">
+                                <a-radio-button value="direct">VPS 直接出口（freedom）</a-radio-button>
+                                <a-radio-button value="socks5">指定本机 SOCKS5 作为出口</a-radio-button>
+                            </a-radio-group>
+                        </a-form-item>
+                        <template v-if="form.egressMode === 'socks5'">
+                            <a-row :gutter="18">
+                                <a-col :xs="24" :md="12">
+                                    <a-form-item label="本机 SOCKS5 地址">
+                                        <a-input v-model.trim="form.socks5Address" placeholder="127.0.0.1:40001"></a-input>
+                                    </a-form-item>
+                                </a-col>
+                                <a-col :xs="24" :md="6">
+                                    <a-form-item label="SOCKS5 用户名（可选）">
+                                        <a-input v-model="form.socks5Username" autocomplete="off"></a-input>
+                                    </a-form-item>
+                                </a-col>
+                                <a-col :xs="24" :md="6">
+                                    <a-form-item label="SOCKS5 密码（可选）">
+                                        <a-input type="password" v-model="form.socks5Password" autocomplete="off"></a-input>
+                                    </a-form-item>
+                                </a-col>
+                            </a-row>
+                        </template>
+                    </a-form>
+                    <a-alert type="info" show-icon
+                        message="独立运行，不修改旧 FRP"
+                        description="x-ui 管理一个专用的 Bridge Xray 进程及独立配置 bin/reverse-quic-bridge.json。主 Xray 模板、普通入站和域名分流不被反向配置改写；旧 FRPC/FRPS、RSX3 Agent 原样保留。"
+                        style="margin-top:12px"></a-alert>
+                </a-card>
+
+                <a-card class="reverse-quic-card" title="从 reverse_node 导入配置（仅本浏览器解析）">
+                    <div class="reverse-quic-subtitle">可直接复制境内 reverse_node 生成的 overseas-bridge.fragment.json 内容，自动填入 DDNS、认证、域名、Brutal 和证书 pin。本页的真实出口选项仍由你自行选择。</div>
+                    <a-textarea v-model="fragmentText" :rows="5" placeholder="粘贴 overseas-bridge.fragment.json（包含密钥，不要公开分享）"></a-textarea>
+                    <a-button style="margin-top:10px" @click="importFragment">读取 Bridge 参数到上方表单（不保存）</a-button>
+                </a-card>
+            </a-spin>
+        </a-layout-content>
+    </a-layout>
+</a-layout>
+{{template "js" .}}
+<script>
+    const defaultBridgeForm = () => ({
+        enabled: false, domain: 'reverse-node.internal', publicHost: '',
+        publicPort: 18443, auth: '', serverName: '', certificatePin: '',
+        brutalUp: '24mbps', brutalDown: '16mbps', transportSocksAddress: '127.0.0.1:40000',
+        egressMode: 'direct', socks5Address: '127.0.0.1:40001',
+        socks5Username: '', socks5Password: ''
+    });
+    const app = new Vue({
+        delimiters: ['[[', ']]'],
+        el: '#app',
+        data: {
+            siderDrawer,
+            loading: false,
+            checkingStatus: false,
+            status: null,
+            statusTimer: null,
+            diagnosticLines: [],
+            loadingDiagnostics: false,
+            testSocksPort: 1081,
+            testSizeMB: 20,
+            form: defaultBridgeForm(),
+            fragmentText: ''
+        },
+        computed: {
+            windowsSpeedCommand() {
+                return 'curl.exe -L --proxy socks5h://127.0.0.1:' + this.testSocksPort +
+                    ' --connect-timeout 10 --max-time 120 -o NUL -sS -w "HTTP %{http_code} | %{size_download} bytes | %{time_total} sec | %{speed_download} B/s" ' +
+                    '"https://speed.cloudflare.com/__down?bytes=' + Math.floor(this.testSizeMB * 1000000) + '"';
+            }
+        },
+        methods: {
+            async refreshDiagnostics() {
+                this.loadingDiagnostics = true;
+                try {
+                    const msg = await HttpUtil.post('/xui/reverse-quic/diagnostics');
+                    if (msg.success && Array.isArray(msg.obj)) this.diagnosticLines = msg.obj;
+                } finally {
+                    this.loadingDiagnostics = false;
+                }
+            },
+            async refreshStatus() {
+                if (this.checkingStatus) return;
+                this.checkingStatus = true;
+                try {
+                    const msg = await HttpUtil.post('/xui/reverse-quic/status');
+                    if (!msg.success || !msg.obj) return;
+                    const previous = this.status;
+                    this.status = msg.obj;
+                    if (msg.obj.enabled && msg.obj.state === 'down' && (!previous || previous.state !== 'down')) {
+                        this.$notification.error({
+                            message: 'QUIC Brutal 反向隧道异常',
+                            description: msg.obj.message + ' · ' + (msg.obj.warpDetail || msg.obj.exitDetail || ''),
+                            duration: 0
+                        });
+                    } else if (msg.obj.enabled && previous && previous.state === 'active' && msg.obj.state === 'unknown') {
+                        this.$notification.warning({
+                            message: '反向隧道超过 45 秒没有检测到业务流量',
+                            description: '可能只是空闲，也可能已掉线。请在 Windows 1081 的 SOCKS5 启动持续探测以区分。',
+                            duration: 0
+                        });
+                    }
+                } finally {
+                    this.checkingStatus = false;
+                }
+            },
+            async copyCommand(value) {
+                try {
+                    await navigator.clipboard.writeText(value);
+                    this.$message.success('已复制 Windows 命令');
+                } catch (error) {
+                    this.$message.warning('复制失败，请选中命令手动复制');
+                }
+            },
+            copyWindowsSpeed() {
+                this.copyCommand(this.windowsSpeedCommand);
+            },
+            copyWindowsProbe() {
+                this.copyCommand('curl.exe -v --proxy socks5h://127.0.0.1:' + this.testSocksPort +
+                    ' --connect-timeout 10 --max-time 30 https://www.cloudflare.com/cdn-cgi/trace');
+            },
+            copyWindowsWatch() {
+                this.copyCommand('powershell -NoProfile -ExecutionPolicy Bypass -File .\\windows_reverse_test.ps1 -Mode Watch -SocksPort ' + this.testSocksPort);
+            },
+            async refresh() {
+                this.loading = true;
+                try {
+                    const msg = await HttpUtil.post('/xui/reverse-quic/config');
+                    if (msg.success && msg.obj) this.form = Object.assign(defaultBridgeForm(), msg.obj);
+                } finally {
+                    this.loading = false;
+                }
+            },
+            async save() {
+                this.loading = true;
+                try {
+                    const msg = await HttpUtil.postJSON('/xui/reverse-quic/save', this.form);
+                    if (msg.success && msg.obj) {
+                        this.form = Object.assign(defaultBridgeForm(), msg.obj);
+                        this.$message.success('境外 Reverse Bridge 已保存并应用');
+                        await this.refreshStatus();
+                    }
+                } finally {
+                    this.loading = false;
+                }
+            },
+            importFragment() {
+                try {
+                    const input = JSON.parse(this.fragmentText);
+                    const bridges = input.reverse && input.reverse.bridges;
+                    const outbound = (input.outbounds || []).find(x => x.protocol === 'hysteria');
+                    if (!bridges || !bridges[0] || !outbound ||
+                        !outbound.settings || !outbound.streamSettings) {
+                        throw new Error('没有找到 reverse.bridges 与 Hysteria2 出站');
+                    }
+                    const stream = outbound.streamSettings;
+                    const params = stream.finalmask && stream.finalmask.quicParams;
+                    const hy = stream.hysteriaSettings;
+                    const tls = stream.tlsSettings;
+                    if (!params || params.congestion !== 'force-brutal' ||
+                        !hy || hy.version !== 2 || !hy.auth || !tls) {
+                        throw new Error('必须是 Xray 26.3.27 的 Hysteria2 / force-brutal Bridge 片段');
+                    }
+                    Object.assign(this.form, {
+                        domain: bridges[0].domain || '',
+                        publicHost: outbound.settings.address || '',
+                        publicPort: Number(outbound.settings.port),
+                        auth: hy.auth,
+                        serverName: tls.serverName || outbound.settings.address || '',
+                        certificatePin: tls.pinnedPeerCertSha256 || '',
+                        brutalUp: params.brutalUp,
+                        brutalDown: params.brutalDown
+                    });
+                    this.fragmentText = '';
+                    this.$message.success('导入成功，请检查出口模式后保存');
+                } catch (err) {
+                    this.$message.error('导入失败：' + err.message);
+                }
+            }
+        },
+        mounted() {
+            this.refresh();
+            this.refreshStatus();
+            this.statusTimer = setInterval(() => this.refreshStatus(), 5000);
+        },
+        beforeDestroy() {
+            if (this.statusTimer) clearInterval(this.statusTimer);
+        }
+    });
+</script>
+</body>
+</html>

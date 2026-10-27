@@ -38,7 +38,7 @@ func protocolsFromNetwork(network string) listenerProtocols {
 
 func transportProtocols(network string) listenerProtocols {
 	switch strings.ToLower(strings.TrimSpace(network)) {
-	case "mkcp", "kcp", "quic", "udp":
+	case "mkcp", "kcp", "quic", "hysteria", "udp":
 		return listenerUDP
 	case "":
 		return listenerTCP

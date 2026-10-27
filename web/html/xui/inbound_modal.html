@@ -50,6 +50,7 @@
         DOKODEMO: Protocols.DOKODEMO,
         SOCKS: Protocols.SOCKS,
         HTTP: Protocols.HTTP,
+        HYSTERIA: Protocols.HYSTERIA,
     };
 
     new Vue({
@@ -67,6 +68,17 @@
             }
         },
         methods: {
+            regenerateHysteriaAuth() {
+                const clients = this.inModal.inbound.settings.clients;
+                if (!clients.length) {
+                    clients.push(new Inbound.HysteriaSettings.Client());
+                } else {
+                    clients[0].auth = Inbound.HysteriaSettings.Client.generateAuth();
+                }
+                if (!clients[0].auth) {
+                    this.$message.error('浏览器不支持安全随机数生成，请手动输入强随机 auth');
+                }
+            },
             streamNetworkChange(oldValue) {
                 if (oldValue === 'kcp') {
                     this.inModal.inbound.tls = false;

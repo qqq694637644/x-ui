@@ -18,6 +18,7 @@ type XUIController struct {
 	settingController      *SettingController
 	endpointController     *EndpointController
 	reverseSocksController *ReverseSocksController
+	reverseQUICController  *ReverseQUICController
 	reverseSocksService    *service.ReverseSocksService
 }
 
@@ -38,6 +39,7 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	g.GET("/subscription", a.subscription)
 	g.GET("/setting", a.setting)
 	g.GET("/reverse-socks", a.reverseSocks)
+	g.GET("/reverse-quic", a.reverseQUIC)
 
 	a.inboundController = NewInboundController(g)
 	a.tunnelController = NewTunnelController(g)
@@ -45,6 +47,7 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	a.settingController = NewSettingController(g, a.reverseSocksService)
 	a.endpointController = NewEndpointController(g)
 	a.reverseSocksController = NewReverseSocksController(g, a.reverseSocksService)
+	a.reverseQUICController = NewReverseQUICController(g)
 }
 
 func (a *XUIController) index(c *gin.Context) {
@@ -79,4 +82,8 @@ func (a *XUIController) setting(c *gin.Context) {
 
 func (a *XUIController) reverseSocks(c *gin.Context) {
 	html(c, "reverse_socks.html", "XTCP 反向 SOCKS5 / WARP", nil)
+}
+
+func (a *XUIController) reverseQUIC(c *gin.Context) {
+	html(c, "reverse_quic.html", "IPv6 QUIC Brutal 反向 SOCKS5", nil)
 }
